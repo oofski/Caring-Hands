@@ -1,0 +1,50 @@
+// Thin wrapper over the preload-exposed IPC bridge. Every call returns the
+// resolved data or throws with the server-side error message.
+
+async function call(method, payload) {
+  const res = await window.api[method](payload);
+  if (!res || res.ok === false) {
+    throw new Error((res && res.error) || 'Something went wrong.');
+  }
+  return res.data;
+}
+
+export const api = {
+  login: (username, password) => call('authLogin', { username, password }),
+  logout: () => window.api.authLogout(),
+  current: () => call('authCurrent'),
+
+  listUsers: () => call('usersList'),
+  createUser: (p) => call('usersCreate', p),
+  updateUser: (p) => call('usersUpdate', p),
+
+  listEvents: () => call('eventsList'),
+  activeEvent: () => call('eventsActive'),
+  createEvent: (p) => call('eventsCreate', p),
+  setActiveEvent: (id) => call('eventsSetActive', id),
+
+  createPatient: (p) => call('patientsCreate', p),
+  updatePatient: (p) => call('patientsUpdate', p),
+  getPatient: (id) => call('patientsGet', id),
+  listPatients: (opts) => call('patientsList', opts),
+  records: (opts) => call('patientsRecords', opts),
+  searchAll: (term) => call('patientsSearchAll', term),
+
+  saveTriage: (patientId, data) => call('triageSave', { patientId, data }),
+  saveTreatment: (patientId, data, finalize) => call('treatmentSave', { patientId, data, finalize }),
+
+  addXray: (p) => call('xrayAdd', p),
+  getXray: (id) => call('xrayGet', id),
+
+  dashboard: () => call('statsDashboard'),
+  audit: (limit) => call('auditList', limit),
+
+  pdfPreview: (patientId, format) => call('pdfPreview', { patientId, format }),
+  pdfGenerate: (patientId, format) => call('pdfGenerate', { patientId, format }),
+  pdfPrint: (patientId, format) => call('pdfPrint', { patientId, format }),
+
+  backup: () => call('backupRun'),
+  exportEvent: () => call('exportEvent'),
+
+  openExternal: (url) => window.api.appOpenExternal(url),
+};

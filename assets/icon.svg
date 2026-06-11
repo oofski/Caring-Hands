@@ -1,0 +1,58 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#eaf6fb"/>
+      <stop offset="1" stop-color="#e7f4ec"/>
+    </linearGradient>
+    <linearGradient id="palm" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#2b8cbe"/>
+      <stop offset="1" stop-color="#1a6aa8"/>
+    </linearGradient>
+    <linearGradient id="ring" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#2b8cbe"/>
+      <stop offset="0.5" stop-color="#56b4d3"/>
+      <stop offset="1" stop-color="#7cb342"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Badge -->
+  <circle cx="256" cy="256" r="248" fill="url(#bg)"/>
+  <circle cx="256" cy="256" r="248" fill="none" stroke="url(#ring)" stroke-width="14"/>
+
+  <!-- Hand: palm + fingers built from rounded handprint forms -->
+  <g transform="translate(256 268)">
+    <!-- Palm -->
+    <path d="M-86 36
+             C-92 -6 -70 -40 -34 -52
+             C-12 -60 14 -60 36 -52
+             C72 -40 92 -6 86 36
+             C80 78 44 112 0 112
+             C-44 112 -80 78 -86 36 Z"
+          fill="url(#palm)"/>
+
+    <!-- Fingers (four) -->
+    <g fill="#56b4d3">
+      <rect x="-72" y="-118" width="30" height="80" rx="15"/>
+      <rect x="-34" y="-134" width="30" height="96" rx="15"/>
+      <rect x="6"   y="-134" width="30" height="96" rx="15"/>
+      <rect x="46"  y="-118" width="30" height="80" rx="15"/>
+    </g>
+    <!-- Thumb -->
+    <rect x="78" y="-44" width="30" height="74" rx="15" fill="#7cb342" transform="rotate(48 93 -7)"/>
+
+    <!-- Smaller green accent hand overlapping (worldwide / many hands) -->
+    <g fill="#7cb342" opacity="0.55" transform="translate(-30 18) scale(0.5)">
+      <path d="M-86 36 C-92 -6 -70 -40 -34 -52 C-12 -60 14 -60 36 -52 C72 -40 92 -6 86 36 C80 78 44 112 0 112 C-44 112 -80 78 -86 36 Z"/>
+    </g>
+
+    <!-- Heart in palm -->
+    <path d="M0 70
+             C-22 46 -44 30 -44 6
+             C-44 -10 -31 -22 -16 -22
+             C-7 -22 0 -16 0 -8
+             C0 -16 7 -22 16 -22
+             C31 -22 44 -10 44 6
+             C44 30 22 46 0 70 Z"
+          fill="#e8505b"/>
+  </g>
+</svg>

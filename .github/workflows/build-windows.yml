@@ -1,0 +1,66 @@
+name: Build Windows App
+
+on:
+  push:
+    branches:
+      - claude/confident-cori-tzj1sg
+    paths-ignore:
+      - '**.md'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build Windows installer + portable exe
+        run: npm run dist
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: List build output
+        shell: bash
+        run: ls -la release/ || dir release
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Caring-Hands-Windows
+          path: |
+            release/*.exe
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish downloadable release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.0.0-build.${{ github.run_number }}
+          name: Caring Hands v1.0.0 (build ${{ github.run_number }})
+          prerelease: true
+          body: |
+            ## Caring Hands Worldwide — Practice Management Software (v1.0)
+
+            Offline-first dental clinic app for Windows. Download an installer below and run it.
+
+            - **Caring-Hands-Setup-1.0.0.exe** — standard installer (creates Start-menu + desktop shortcuts).
+            - **Caring-Hands-Portable-1.0.0.exe** — portable, runs without installing (good for USB sticks).
+
+            Default sign-in accounts: `admin / admin`, `doctor / doctor`, `triage / triage`.
+            All data stays on the device — no cloud, fully offline.
+          files: |
+            release/*.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

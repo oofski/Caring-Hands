@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 560 120" width="560" height="120">
+  <defs>
+    <linearGradient id="lpalm" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#2b8cbe"/>
+      <stop offset="1" stop-color="#1a6aa8"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Emblem -->
+  <g transform="translate(60 60) scale(0.34)">
+    <g transform="translate(0 8)">
+      <path d="M-86 36 C-92 -6 -70 -40 -34 -52 C-12 -60 14 -60 36 -52 C72 -40 92 -6 86 36 C80 78 44 112 0 112 C-44 112 -80 78 -86 36 Z" fill="url(#lpalm)"/>
+      <g fill="#56b4d3">
+        <rect x="-72" y="-118" width="30" height="80" rx="15"/>
+        <rect x="-34" y="-134" width="30" height="96" rx="15"/>
+        <rect x="6" y="-134" width="30" height="96" rx="15"/>
+        <rect x="46" y="-118" width="30" height="80" rx="15"/>
+      </g>
+      <rect x="78" y="-44" width="30" height="74" rx="15" fill="#7cb342" transform="rotate(48 93 -7)"/>
+      <path d="M0 70 C-22 46 -44 30 -44 6 C-44 -10 -31 -22 -16 -22 C-7 -22 0 -16 0 -8 C0 -16 7 -22 16 -22 C31 -22 44 -10 44 6 C44 30 22 46 0 70 Z" fill="#e8505b"/>
+    </g>
+  </g>
+
+  <!-- Wordmark -->
+  <text x="124" y="54" font-family="Segoe UI, Arial, sans-serif" font-size="34" font-weight="700" letter-spacing="1" fill="#1a6aa8">CARING HANDS</text>
+  <text x="125" y="84" font-family="Segoe UI, Arial, sans-serif" font-size="20" font-weight="700" letter-spacing="6" fill="#7cb342">WORLDWIDE</text>
+  <text x="126" y="106" font-family="Segoe UI, Arial, sans-serif" font-size="11" font-weight="600" letter-spacing="2" fill="#6b7c8a">HELPING HANDS FOR HEALTHY LIVING</text>
+</svg>

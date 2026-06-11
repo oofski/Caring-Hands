@@ -1,0 +1,61 @@
+{
+  "name": "caring-hands",
+  "productName": "Caring Hands",
+  "version": "1.0.0",
+  "description": "Caring Hands Worldwide — offline-first practice management software for free dental clinics.",
+  "author": {
+    "name": "Caring Hands Worldwide",
+    "email": "randym@hfdg.com"
+  },
+  "license": "UNLICENSED",
+  "main": "src/main/main.js",
+  "scripts": {
+    "start": "electron .",
+    "icon": "node scripts/make-icon.js",
+    "pack": "electron-builder --dir",
+    "dist": "electron-builder --win --x64"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.8.1"
+  },
+  "devDependencies": {
+    "electron": "^31.7.7",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "org.caringhandsworldwide.practicemanagement",
+    "productName": "Caring Hands",
+    "copyright": "Copyright © 2026 Caring Hands Worldwide",
+    "asar": true,
+    "files": [
+      "src/**/*",
+      "assets/**/*",
+      "!**/*.map"
+    ],
+    "directories": {
+      "buildResources": "assets",
+      "output": "release"
+    },
+    "win": {
+      "icon": "assets/icon.ico",
+      "target": [
+        { "target": "nsis", "arch": ["x64"] },
+        { "target": "portable", "arch": ["x64"] }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Caring Hands",
+      "installerIcon": "assets/icon.ico",
+      "uninstallerIcon": "assets/icon.ico",
+      "artifactName": "Caring-Hands-Setup-${version}.${ext}"
+    },
+    "portable": {
+      "artifactName": "Caring-Hands-Portable-${version}.${ext}"
+    }
+  }
+}

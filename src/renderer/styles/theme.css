@@ -1,0 +1,104 @@
+/* ===== Design tokens — Caring Hands brand ===== */
+:root {
+  --blue-900:#0f3a5c; --blue-700:#1a6aa8; --blue-500:#2b8cbe; --blue-300:#56b4d3;
+  --blue-100:#dcebf6; --blue-50:#eaf4fb;
+  --green-700:#4e8a2f; --green-500:#7cb342; --green-100:#e7f4ec;
+  --teal-500:#1aa1a1;
+  --amber-500:#e0991a; --amber-100:#fbefd6;
+  --red-500:#d64545; --red-600:#b3261e; --red-100:#fdecec;
+  --purple-500:#7a5cc0;
+  --ink:#1f2d3a; --ink-soft:#46606f; --muted:#7088;
+  --muted:#6b7c8a;
+  --line:#d9e2ec; --line-soft:#e7eef4;
+  --bg:#eef4f8; --surface:#ffffff; --surface-2:#f7fafc;
+  --shadow:0 1px 3px rgba(15,58,92,.08), 0 6px 20px rgba(15,58,92,.06);
+  --shadow-lg:0 10px 40px rgba(15,58,92,.18);
+  --radius:14px; --radius-sm:9px; --radius-lg:22px;
+  --font: 'Segoe UI', system-ui, -apple-system, Roboto, Arial, sans-serif;
+}
+
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body { font-family: var(--font); color: var(--ink); background: var(--bg); font-size: 15px; line-height: 1.45; -webkit-font-smoothing: antialiased; }
+#app { height: 100vh; }
+h1,h2,h3 { margin: 0; font-weight: 700; color: var(--blue-900); }
+a { color: var(--blue-700); }
+.muted { color: var(--muted); }
+.small { font-size: 12px; }
+
+/* ===== App shell layout ===== */
+.app-shell { display: grid; grid-template-columns: 248px 1fr; height: 100vh; }
+.app-fullscreen { height: 100vh; }
+
+.sidebar {
+  background: linear-gradient(180deg, var(--blue-900), var(--blue-700));
+  color: #eaf4fb; display: flex; flex-direction: column; padding: 18px 14px; gap: 10px;
+}
+.sidebar-brand { display:flex; align-items:center; gap:10px; padding: 6px 8px 14px; border-bottom: 1px solid rgba(255,255,255,.12); }
+.brand-mark { width: 42px; height: 42px; border-radius: 10px; background:#fff; }
+.brand-name { font-weight: 800; font-size: 17px; color:#fff; letter-spacing:.3px; }
+.brand-sub { font-size: 10px; letter-spacing: 3px; color: var(--green-500); font-weight: 700; }
+.nav { display:flex; flex-direction: column; gap: 4px; margin-top: 8px; }
+.nav-item {
+  display:flex; align-items:center; gap: 12px; padding: 11px 14px; border: none; cursor: pointer;
+  background: transparent; color: #d6e8f5; border-radius: 10px; font-size: 15px; font-weight: 600; text-align:left;
+  transition: background .15s, color .15s;
+}
+.nav-item:hover { background: rgba(255,255,255,.10); color:#fff; }
+.nav-item--on { background: #fff; color: var(--blue-900); }
+.nav-icon { font-size: 17px; width: 22px; text-align:center; }
+.sidebar-foot { margin-top: auto; padding: 8px; }
+.offline-badge { font-size: 12px; color:#bfe3c9; display:flex; align-items:center; gap:6px; background: rgba(124,179,66,.18); padding:8px 10px; border-radius: 10px; }
+
+.main { display:flex; flex-direction: column; overflow: hidden; }
+.topbar {
+  height: 64px; flex: none; background: var(--surface); border-bottom: 1px solid var(--line);
+  display:flex; align-items:center; justify-content: space-between; padding: 0 26px;
+}
+.topbar-event { display:flex; flex-direction: column; }
+.te-label { font-size: 11px; text-transform: uppercase; letter-spacing: .6px; color: var(--muted); }
+.topbar-event strong { font-size: 15px; color: var(--blue-900); }
+.topbar-user { display:flex; align-items:center; gap: 14px; }
+.user-meta { display:flex; flex-direction: column; align-items: flex-end; gap: 2px; }
+.main-scroll { overflow-y: auto; padding: 24px 26px 60px; flex: 1; }
+
+/* ===== View headers ===== */
+.view-head { display:flex; align-items:flex-start; justify-content: space-between; margin-bottom: 18px; gap: 12px; }
+.view-head h1 { font-size: 26px; }
+.view-sub { color: var(--muted); margin: 4px 0 0; }
+.section-title { font-size: 15px; text-transform: uppercase; letter-spacing: .8px; color: var(--blue-700); margin: 22px 0 12px; }
+.section-title-row { display:flex; align-items:center; justify-content: space-between; }
+
+/* ===== Stat cards ===== */
+.stat-row { display:grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 14px; }
+.stat-card { background: var(--surface); border-radius: var(--radius); padding: 18px; box-shadow: var(--shadow); border-left: 5px solid var(--blue-500); }
+.stat-value { font-size: 34px; font-weight: 800; color: var(--blue-900); line-height: 1; }
+.stat-label { color: var(--muted); margin-top: 6px; font-size: 13px; }
+.stat--blue { border-color: var(--blue-500); } .stat--green { border-color: var(--green-500); }
+.stat--teal { border-color: var(--teal-500); } .stat--amber { border-color: var(--amber-500); }
+.stat--purple { border-color: var(--purple-500); }
+
+/* ===== Cards & layout ===== */
+.card { background: var(--surface); border-radius: var(--radius); padding: 18px; box-shadow: var(--shadow); margin-bottom: 16px; }
+.card--alert { border: 1px solid var(--red-100); background: #fff8f8; }
+.card-title { font-size: 14px; text-transform: uppercase; letter-spacing: .6px; color: var(--blue-700); margin-bottom: 12px; }
+.card-head-row { display:flex; align-items:center; justify-content: space-between; margin-bottom: 8px; }
+.split { display:grid; grid-template-columns: 1fr 1fr; gap: 18px; align-items: start; }
+.split .col--wide { }
+.col { min-width: 0; }
+@media (min-width: 1180px){ .split { grid-template-columns: 360px 1fr; } .split .col--wide { order: -1; } }
+.note-banner { background: var(--green-100); border: 1px solid #cfe9d6; color: var(--green-700); padding: 12px 16px; border-radius: 12px; margin-top: 8px; }
+.banner { padding: 12px 16px; border-radius: 12px; margin-bottom: 14px; font-weight: 600; }
+.banner--alert { background: var(--red-100); color: var(--red-600); border:1px solid #f3c6c4; }
+.banner--locked { background: var(--surface-2); color: var(--ink-soft); border:1px solid var(--line); }
+
+/* ===== Pills & flags ===== */
+.pill { display:inline-block; padding: 3px 10px; border-radius: 20px; font-size: 12px; font-weight: 700; }
+.pill--blue { background: var(--blue-50); color: var(--blue-700); }
+.pill--green { background: var(--green-100); color: var(--green-700); }
+.pill--teal { background: #def0f0; color: var(--teal-500); }
+.pill--amber { background: var(--amber-100); color: var(--amber-500); }
+.pill--purple { background: #efe9fb; color: var(--purple-500); }
+.pill--red { background: var(--red-100); color: var(--red-600); }
+.pill--gray { background: #eef1f4; color: var(--muted); }
+.flag-dot { color: var(--red-500); font-weight: 800; margin-left: 8px; font-size: 12px; }
