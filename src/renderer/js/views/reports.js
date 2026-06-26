@@ -1,6 +1,7 @@
 import { el, clear, toast } from '../dom.js';
 import { conditions } from '../i18n.js';
 import { api } from '../api.js';
+import { icon } from '../icons.js';
 
 export function renderReports(ctx) {
   const root = el('div', { class: 'view' });
@@ -35,10 +36,10 @@ export function renderReports(ctx) {
       el('div', { class: 'view-head' }, [
         el('div', {}, [el('h1', {}, ['Event Report']), el('p', { class: 'view-sub' }, [event ? event.name : 'No active event'])]),
         el('div', {}, [
-          el('button', { class: 'btn btn--ghost btn--sm', onClick: load }, ['↻ Refresh']),
+          el('button', { class: 'btn btn--ghost btn--sm', onClick: load }, [icon('refresh', { size: 15 }), 'Refresh']),
           el('button', { class: 'btn btn--primary btn--sm', onClick: async () => {
             try { const r = await api.exportEvent(); if (r.saved) toast(`Exported ${r.count} record(s)`, 'success'); } catch (e) { toast(e.message, 'error'); }
-          } }, ['⬇ Export JSON']),
+          } }, [icon('download', { size: 15 }), 'Export JSON']),
         ]),
       ]),
       el('div', { class: 'stat-row' }, [

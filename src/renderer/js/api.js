@@ -35,6 +35,8 @@ export const api = {
 
   addXray: (p) => call('xrayAdd', p),
   getXray: (id) => call('xrayGet', id),
+  listXrays: (patientId) => call('xrayList', patientId),
+  deleteXray: (id) => call('xrayDelete', id),
 
   dashboard: () => call('statsDashboard'),
   audit: (limit) => call('auditList', limit),
@@ -42,9 +44,14 @@ export const api = {
   pdfPreview: (patientId, format) => call('pdfPreview', { patientId, format }),
   pdfGenerate: (patientId, format) => call('pdfGenerate', { patientId, format }),
   pdfPrint: (patientId, format) => call('pdfPrint', { patientId, format }),
+  exportRecordUsb: (patientId) => call('recordExportUsb', { patientId }),
 
   backup: () => call('backupRun'),
   exportEvent: () => call('exportEvent'),
+
+  appVersion: () => call('appVersion'),
+  checkUpdate: (opts) => call('updateCheck', opts || {}),
+  installUpdate: (path) => call('updateInstall', { path }),
 
   openExternal: (url) => window.api.appOpenExternal(url),
 };

@@ -47,16 +47,23 @@ jobs:
       - name: Publish downloadable release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.0.0-build.${{ github.run_number }}
-          name: Caring Hands v1.0.0 (build ${{ github.run_number }})
+          tag_name: v1.0.1-build.${{ github.run_number }}
+          name: Caring Hands v1.0.1 (build ${{ github.run_number }})
           prerelease: true
           body: |
-            ## Caring Hands Worldwide — Practice Management Software (v1.0)
+            ## Caring Hands Worldwide — Practice Management Software (v1.0.1)
 
             Offline-first dental clinic app for Windows. Download an installer below and run it.
 
-            - **Caring-Hands-Setup-1.0.0.exe** — standard installer (creates Start-menu + desktop shortcuts).
-            - **Caring-Hands-Portable-1.0.0.exe** — portable, runs without installing (good for USB sticks).
+            **New in v1.0.1**
+            - Rebuilt **doctor view** that mirrors the paper Progress Note (fillings + surfaces + Ant/Post, extraction types, cleaning, anesthetic carps + location).
+            - Visual **odontogram ("the mouth")** — anatomical upper/lower arches, Universal 1–32 and primary A–T.
+            - **X-rays in the doctor view** — upload, thumbnail gallery, click-to-enlarge, station + count.
+            - Modern, sleek, **medically professional UI** redesign (line icons, clinical palette).
+            - **Software-update control in every view** (offline; reads a newer installer from USB/folder).
+
+            - **Caring-Hands-Setup-1.0.1.exe** — standard installer (creates Start-menu + desktop shortcuts).
+            - **Caring-Hands-Portable-1.0.1.exe** — portable, runs without installing (good for USB sticks).
 
             Default sign-in accounts: `admin / admin`, `doctor / doctor`, `triage / triage`.
             All data stays on the device — no cloud, fully offline.

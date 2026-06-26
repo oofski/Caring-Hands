@@ -2,6 +2,7 @@ import { el } from '../dom.js';
 import { t } from '../i18n.js';
 import { api } from '../api.js';
 import { store } from '../store.js';
+import { icon } from '../icons.js';
 
 export function renderLogin(ctx) {
   const username = el('input', { class: 'input', placeholder: t('login.username'), autofocus: true });
@@ -15,6 +16,7 @@ export function renderLogin(ctx) {
       store.setUser(user);
       const ev = await api.activeEvent();
       store.setEvent(ev);
+      if (ctx.afterLogin) ctx.afterLogin();
       ctx.navigate('dashboard');
     } catch (e) {
       error.textContent = e.message || t('login.error');
@@ -39,7 +41,7 @@ export function renderLogin(ctx) {
       class: 'btn btn--kiosk btn--block',
       onClick: () => ctx.navigate('kiosk'),
     }, [
-      el('span', { class: 'kiosk-icon', html: '&#129303;' }),
+      el('span', { class: 'kiosk-icon' }, [icon('clipboard', { size: 22 })]),
       el('span', {}, [
         el('strong', {}, [t('login.kiosk')]),
         el('small', {}, [t('login.kioskHint')]),

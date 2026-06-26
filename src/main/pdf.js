@@ -81,21 +81,38 @@ function field(label, value) {
   return `<td><div class="label">${esc(label)}</div><div class="val">${value == null || value === '' ? '—' : esc(value)}</div></td>`;
 }
 
+const EXT_LABELS = {
+  simple: 'Simple', impact_soft: 'Impact soft tissue', impact_bony: 'Impact part bony',
+  surgical: 'Surgical', root_tip: 'Root tip',
+};
+const CLEAN_LABELS = {
+  adult_prophy: 'Adult prophy', adult_fluoride: 'Adult fluoride', fluoride: 'Fluoride',
+  gross_debridement: 'Gross debridement', quad_deep_scaling: 'Quadrant deep scaling',
+  sealant: 'Sealant', ohi: 'Oral hygiene instruction',
+};
+const ANES_LABELS = { lidocaine: 'Lidocaine 2%', articaine: 'Articaine 4%', other: 'Other', supplemental: 'Supplemental' };
+
 function progressNoteBody(p) {
   const t = p.treatment || {};
   const tr = p.triage || {};
-  const fillings = (t.fillings || []).map(
-    (f) => `<span>#${esc(f.tooth)} · ${esc(f.surfaces || '')} ${esc(f.position || '')}</span>`
-  ).join('') || '<span class="muted">None</span>';
-  const extractions = (t.extractions || []).map(
-    (e) => `<span>#${esc(e.tooth)} · ${esc(e.type)}</span>`
-  ).join('') || '<span class="muted">None</span>';
-  const anesthetic = (t.anesthetic || []).map(
-    (a) => `<span>${esc(a.agent)} × ${esc(a.carps)} carp(s)${a.location ? ' · ' + esc(a.location) : ''}</span>`
-  ).join('') || '<span class="muted">None</span>';
+  const fillings = (t.fillings || []).map((f) => {
+    const surf = Array.isArray(f.surfaces) ? f.surfaces.join(',') : (f.surfaces || '');
+    const ap = [f.ant ? 'Ant' : '', f.post ? 'Post' : ''].filter(Boolean).join('/') || esc(f.position || '');
+    return `<span>#${esc(f.tooth)}${surf ? ' · surf ' + esc(surf) : ''}${ap ? ' · ' + esc(ap) : ''}</span>`;
+  }).join('') || '<span class="muted">None</span>';
+  const extractions = (t.extractions || []).map((e) => {
+    if (e.other) return `<span>Other: ${esc(e.other)}${e.tooth ? ' · #' + esc(e.tooth) : ''}</span>`;
+    const types = Array.isArray(e.types) ? e.types.map((k) => EXT_LABELS[k] || k).join(', ') : (e.type || '');
+    return `<span>#${esc(e.tooth)} · ${esc(types)}</span>`;
+  }).join('') || '<span class="muted">None</span>';
+  const anesEntries = Array.isArray(t.anesthetic)
+    ? t.anesthetic.map((a) => `<span>${esc(a.agent)} × ${esc(a.carps)} carp(s)${a.location ? ' · ' + esc(a.location) : ''}</span>`)
+    : Object.entries(t.anesthetic || {}).map(([k, v]) =>
+        `<span>${esc(ANES_LABELS[k] || k)}${v.carps ? ' × ' + esc(v.carps) + ' carp(s)' : ''}${v.location ? ' · ' + esc(v.location) : ''}</span>`);
+  const anesthetic = anesEntries.join('') || '<span class="muted">None</span>';
   const cleaning = Object.entries(t.cleaning || {})
-    .filter(([, v]) => v)
-    .map(([k]) => `<span>${esc(k)}</span>`)
+    .filter(([k, v]) => v && k !== 'quad_detail')
+    .map(([k]) => `<span>${esc(CLEAN_LABELS[k] || k)}${k === 'quad_deep_scaling' && t.cleaning.quad_detail ? ' (' + esc(t.cleaning.quad_detail) + ')' : ''}</span>`)
     .join('') || '<span class="muted">None</span>';
   const checklist = Object.entries(tr.checklist || {})
     .filter(([, v]) => v)

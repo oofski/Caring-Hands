@@ -10,10 +10,12 @@ const CHANNELS = [
   'patients:create', 'patients:update', 'patients:get', 'patients:list',
   'patients:records', 'patients:searchAll',
   'triage:save', 'treatment:save',
-  'xray:add', 'xray:get',
+  'xray:add', 'xray:get', 'xray:list', 'xray:delete',
   'stats:dashboard', 'audit:list',
   'pdf:preview', 'pdf:generate', 'pdf:print',
+  'record:exportUsb',
   'backup:run', 'export:event',
+  'app:version', 'update:check', 'update:install',
   'app:openExternal',
 ];
 

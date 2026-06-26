@@ -13,6 +13,7 @@ const fs = require('fs');
 const path = require('path');
 const db = require('./db');
 const pdf = require('./pdf');
+const updater = require('./updater');
 
 let currentUser = null;
 
@@ -33,12 +34,16 @@ const PERMS = {
   'treatment:save': ['admin', 'doctor'],
   'xray:add': ['admin', 'doctor', 'triage'],
   'xray:get': ['admin', 'doctor', 'triage'],
+  'xray:list': ['admin', 'doctor', 'triage'],
+  'xray:delete': ['admin', 'doctor', 'triage'],
   'pdf:generate': ['admin', 'doctor'],
   'pdf:preview': ['admin', 'doctor'],
   'pdf:print': ['admin', 'doctor'],
+  'record:exportUsb': ['admin', 'doctor'],
   'backup:run': ['admin'],
   'export:event': ['admin'],
   'audit:list': ['admin'],
+  // update:* and app:version are open to any signed-in user (available in any view).
 };
 
 function ensure(channel) {
@@ -124,6 +129,8 @@ function register(getMainWindow) {
   handle('xray:add', ({ patientId, station, image_png, note }) =>
     db.addXray(currentUser, patientId, { station, image_png, note }));
   handle('xray:get', (id) => db.getXray(id));
+  handle('xray:list', (patientId) => db.listXrays(patientId));
+  handle('xray:delete', (id) => db.deleteXray(currentUser, id));
 
   /* ---- Dashboard / audit ---- */
   ipcMain.handle('stats:dashboard', async () => {
@@ -206,6 +213,65 @@ function register(getMainWindow) {
     fs.writeFileSync(res.filePath, JSON.stringify(data, null, 2));
     db.audit(currentUser, 'export_event', 'event', data.event ? data.event.id : null, path.basename(res.filePath));
     return { saved: true, path: res.filePath, count: data.patients.length };
+  });
+
+  /* ---- Patient-portable record (USB the patient carries) ---- */
+  handle('record:exportUsb', async ({ patientId }) => {
+    const patient = db.getPatient(patientId);
+    if (!patient) throw new Error('Patient not found.');
+    const res = await dialog.showOpenDialog(getMainWindow(), {
+      title: 'Choose USB drive / folder for the patient record',
+      properties: ['openDirectory', 'createDirectory'],
+    });
+    if (res.canceled || !res.filePaths.length) return { saved: false };
+    const destDir = res.filePaths[0];
+    const base = `${patient.last_name}_${patient.first_name}_CaringHands`.replace(/[^a-z0-9_]/gi, '');
+    const folder = path.join(destDir, base);
+    fs.mkdirSync(folder, { recursive: true });
+    // Full clinical PDF + portable JSON (with x-ray images) for continuity of care.
+    const pdfBuf = await pdf.renderPdf(patient, 'full');
+    fs.writeFileSync(path.join(folder, `${base}.pdf`), pdfBuf);
+    const portable = { ...patient, xrays: db.listXrays(patientId), exported_at: new Date().toISOString() };
+    fs.writeFileSync(path.join(folder, `${base}.json`), JSON.stringify(portable, null, 2));
+    db.audit(currentUser, 'export_usb', 'patient', patientId, folder);
+    return { saved: true, path: folder };
+  });
+
+  /* ---- Version & offline updates (available from any view) ---- */
+  ipcMain.handle('app:version', async () => {
+    try {
+      return { ok: true, data: { version: updater.currentVersion(), platform: process.platform, name: 'Caring Hands' } };
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  });
+  ipcMain.handle('update:check', async (_e, payload) => {
+    try {
+      if (!currentUser) throw new Error('Please sign in first.');
+      let dir = payload && payload.dir;
+      if (payload && payload.choose) {
+        const res = await dialog.showOpenDialog(getMainWindow(), {
+          title: 'Select the USB drive / folder that has the update',
+          properties: ['openDirectory'],
+        });
+        if (!res.canceled && res.filePaths.length) dir = res.filePaths[0];
+      }
+      const result = updater.checkForUpdates(dir);
+      db.setSetting('update_last_checked', result.checkedAt);
+      return { ok: true, data: result };
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  });
+  ipcMain.handle('update:install', async (_e, { path: installerPath }) => {
+    try {
+      if (!currentUser || currentUser.role !== 'admin') throw new Error('Only an administrator can install updates.');
+      const r = await updater.openInstaller(installerPath);
+      db.audit(currentUser, 'update_install', 'app', null, installerPath);
+      return { ok: true, data: r };
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
   });
 
   /* ---- Misc ---- */

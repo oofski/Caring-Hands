@@ -2,22 +2,23 @@ import { el, clear, toast, modal } from '../dom.js';
 import { t } from '../i18n.js';
 import { api } from '../api.js';
 import { store } from '../store.js';
+import { icon } from '../icons.js';
 
 export function renderAdmin(ctx) {
   const root = el('div', { class: 'view' });
   let tab = 'staff';
 
   const tabs = [
-    ['staff', '👥 Staff'], ['events', '📅 Events'], ['data', '💾 Backup & Export'],
-    ['languages', '🌐 Languages'], ['audit', '📜 Audit log'],
+    ['staff', 'Staff', 'users'], ['events', 'Events', 'calendar'], ['data', 'Backup & Export', 'database'],
+    ['languages', 'Languages', 'globe'], ['audit', 'Audit log', 'clipboard'],
   ];
 
   function paint() {
     clear(root);
     root.append(
       el('div', { class: 'view-head' }, [el('div', {}, [el('h1', {}, [t('nav.admin')]), el('p', { class: 'view-sub' }, ['Staff, events, backups, and audit'])])]),
-      el('div', { class: 'tab-bar' }, tabs.map(([k, label]) =>
-        el('button', { class: 'tab' + (tab === k ? ' tab--on' : ''), onClick: () => { tab = k; paint(); } }, [label]))),
+      el('div', { class: 'tab-bar' }, tabs.map(([k, label, ic]) =>
+        el('button', { class: 'tab' + (tab === k ? ' tab--on' : ''), onClick: () => { tab = k; paint(); } }, [icon(ic, { size: 15 }), label]))),
       el('div', { class: 'tab-body', id: 'tab-body' }),
     );
     const body = root.querySelector('#tab-body');
@@ -138,10 +139,10 @@ export function renderAdmin(ctx) {
         el('div', { class: 'action-row' }, [
           el('button', { class: 'btn btn--primary', onClick: async () => {
             try { const r = await api.backup(); if (r.saved) toast(`Database backed up to ${r.path}`, 'success'); } catch (e) { toast(e.message, 'error'); }
-          } }, ['💾 Back up database (.db)']),
+          } }, [icon('database', { size: 16 }), 'Back up database (.db)']),
           el('button', { class: 'btn btn--ghost', onClick: async () => {
             try { const r = await api.exportEvent(); if (r.saved) toast(`Exported ${r.count} record(s) to ${r.path}`, 'success'); } catch (e) { toast(e.message, 'error'); }
-          } }, ['⬇ Export event records (.json)']),
+          } }, [icon('download', { size: 16 }), 'Export event records (.json)']),
         ]),
       ]),
       el('div', { class: 'card' }, [

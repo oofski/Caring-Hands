@@ -1,4 +1,5 @@
 import { el, clear, toast } from '../dom.js';
+import { icon } from '../icons.js';
 import { t, getLang, setLang, languageList, conditions, allergies, speak, stopSpeaking } from '../i18n.js';
 import { textField, textArea, selectField, yesNo, chipGrid } from '../forms.js';
 import { SignaturePad } from '../components/signature.js';
@@ -46,16 +47,16 @@ export function renderKiosk(ctx) {
     const header = el('div', { class: 'kiosk-header' }, [
       el('img', { class: 'kiosk-logo', src: '../../assets/logo.svg', alt: 'Caring Hands' }),
       el('div', { class: 'kiosk-step-label' }, [`${t('intake.step')} ${idx + 1} ${t('intake.of')} ${total} · ${step.title}`]),
-      el('button', { class: 'btn btn--ghost btn--sm kiosk-exit', onClick: () => ctx.navigate('login') }, ['✕']),
+      el('button', { class: 'btn btn--ghost btn--sm btn--icon kiosk-exit', onClick: () => ctx.navigate('login') }, [icon('x', { size: 16 })]),
     ]);
 
     const body = el('div', { class: 'kiosk-body' }, [step.node]);
 
     const nav = el('div', { class: 'kiosk-nav' }, [
-      idx > 0 ? el('button', { class: 'btn btn--ghost btn--lg', onClick: () => go(idx - 1) }, ['← ' + t('common.back')]) : el('span'),
+      idx > 0 ? el('button', { class: 'btn btn--ghost btn--lg', onClick: () => go(idx - 1) }, [icon('back', { size: 18 }), t('common.back')]) : el('span'),
       idx < total - 1
-        ? el('button', { class: 'btn btn--primary btn--lg', onClick: () => go(idx + 1) }, [t('common.next') + ' →'])
-        : el('button', { class: 'btn btn--success btn--lg', onClick: submit }, [t('common.submit')]),
+        ? el('button', { class: 'btn btn--primary btn--lg', onClick: () => go(idx + 1) }, [t('common.next'), icon('chevron', { size: 18 })])
+        : el('button', { class: 'btn btn--primary btn--lg', onClick: submit }, [icon('check', { size: 18 }), t('common.submit')]),
     ]);
 
     root.append(progress, header, body, nav);
@@ -154,7 +155,7 @@ export function renderKiosk(ctx) {
       const dose = el('input', { class: 'input', placeholder: t('intake.medDose'), value: med.dose || '' });
       const reason = el('input', { class: 'input', placeholder: t('intake.medReason'), value: med.reason || '' });
       const row = el('div', { class: 'med-row' }, [name, dose, reason,
-        el('button', { class: 'btn btn--ghost btn--sm', type: 'button', onClick: () => row.remove() }, ['✕'])]);
+        el('button', { class: 'btn btn--ghost btn--sm btn--icon', type: 'button', onClick: () => row.remove() }, [icon('x', { size: 15 })])]);
       row._get = () => ({ name: name.value.trim(), dose: dose.value.trim(), reason: reason.value.trim() });
       medRows.append(row);
     }
@@ -238,12 +239,14 @@ export function renderKiosk(ctx) {
   function consentSection({ title, intro, clauses, extra }) {
     const wrap = el('div', { class: 'consent-block' });
     const fullText = [title, intro, ...(clauses || []), ...(extra ? [extra] : [])].filter(Boolean).join('. ');
-    const readBtn = el('button', { class: 'btn btn--read', type: 'button' }, ['🔊 ' + t('common.readAloud')]);
+    const readLabel = el('span', {}, [t('common.readAloud')]);
+    const readBtn = el('button', { class: 'btn btn--read', type: 'button' }, [icon('speaker', { size: 16 }), readLabel]);
     let reading = false;
+    const setReading = (on) => { reading = on; readLabel.textContent = on ? t('common.stopReading') : t('common.readAloud'); };
     readBtn.addEventListener('click', () => {
-      if (reading) { stopSpeaking(); reading = false; readBtn.textContent = '🔊 ' + t('common.readAloud'); return; }
-      reading = true; readBtn.textContent = '⏹ ' + t('common.stopReading');
-      speak(fullText, () => { reading = false; readBtn.textContent = '🔊 ' + t('common.readAloud'); });
+      if (reading) { stopSpeaking(); setReading(false); return; }
+      setReading(true);
+      speak(fullText, () => setReading(false));
     });
     wrap.append(el('div', { class: 'consent-head' }, [el('h3', {}, [title]), readBtn]));
     if (intro) wrap.append(el('p', { class: 'consent-intro' }, [intro]));
@@ -272,7 +275,7 @@ export function renderKiosk(ctx) {
     }
 
     const node = el('div', { class: 'consent-screen' }, [
-      minor ? el('div', { class: 'minor-banner' }, ['⚠ ' + t('intake.minorNotice')]) : null,
+      minor ? el('div', { class: 'minor-banner' }, [icon('alert', { size: 16 }), ' ' + t('intake.minorNotice')]) : null,
       sections,
       el('label', { class: 'agree-row' }, [agree, el('span', {}, [t('consent.agree')])]),
       el('div', { class: 'form-grid' }, [signer.node, rel.node]),
@@ -346,7 +349,7 @@ export function renderKiosk(ctx) {
         row(t('intake.allergiesTitle'), allergyLabels.join(', ')),
         row(t('intake.conditionsTitle'), condLabels.join(', ')),
         row(t('intake.reason'), dh.reason),
-        row(t('intake.s_consent'), data.consents.map((c) => c.type === 'general' ? 'General ✔' : 'Oral Surgery ✔').join(' · ')),
+        row(t('intake.s_consent'), data.consents.map((c) => c.type === 'general' ? 'General — signed' : 'Oral Surgery — signed').join(' · ')),
       ]),
     ]);
     return { title: t('intake.s_review'), node, collect: () => true };
@@ -380,7 +383,7 @@ export function renderKiosk(ctx) {
     stopSpeaking();
     clear(root);
     root.append(el('div', { class: 'kiosk-thanks' }, [
-      el('div', { class: 'thanks-check' }, ['✓']),
+      el('div', { class: 'thanks-check' }, [icon('check', { size: 44, stroke: 2.2 })]),
       el('h1', {}, [t('intake.thanks')]),
       el('p', {}, [t('intake.thanksSub')]),
       el('div', { class: 'thanks-name' }, [`${patient.first_name} ${patient.last_name}`]),

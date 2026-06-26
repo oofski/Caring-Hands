@@ -147,7 +147,21 @@ function migrate() {
     CREATE INDEX IF NOT EXISTS idx_patients_event ON patients(event_id);
     CREATE INDEX IF NOT EXISTS idx_patients_name  ON patients(last_name, first_name);
     CREATE INDEX IF NOT EXISTS idx_consents_pt    ON consents(patient_id);
+    CREATE INDEX IF NOT EXISTS idx_xrays_pt       ON xrays(patient_id);
   `);
+
+  // Additive column migrations (safe to run on existing v1.0.0 databases).
+  addColumn('triage', 'triage_signature', 'TEXT');
+  addColumn('triage', 'triage_signer_name', 'TEXT');
+  addColumn('xrays', 'updated_at', 'TEXT');
+}
+
+// Add a column only if it does not already exist.
+function addColumn(table, column, type) {
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all();
+  if (!cols.some((c) => c.name === column)) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+  }
 }
 
 /* ------------------------------------------------------------------ */
@@ -528,7 +542,8 @@ function saveTriage(actor, patientId, data) {
   if (existing) {
     db.prepare(
       `UPDATE triage SET complaint=?, flags=?, checklist=?, teeth=?, notes=?,
-         xray_count=?, xray_station=?, assigned_to=?, status=?, triaged_by=?, triaged_at=?
+         xray_count=?, xray_station=?, assigned_to=?, status=?,
+         triage_signature=?, triage_signer_name=?, triaged_by=?, triaged_at=?
        WHERE patient_id=?`
     ).run(
       d.complaint || null,
@@ -540,6 +555,8 @@ function saveTriage(actor, patientId, data) {
       d.xray_station || null,
       d.assigned_to || null,
       d.status || 'ready',
+      d.triage_signature || null,
+      d.triage_signer_name || null,
       actor ? actor.id : null,
       now(),
       patientId
@@ -547,13 +564,14 @@ function saveTriage(actor, patientId, data) {
   } else {
     db.prepare(
       `INSERT INTO triage (patient_id, complaint, flags, checklist, teeth, notes,
-          xray_count, xray_station, assigned_to, status, triaged_by, triaged_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`
+          xray_count, xray_station, assigned_to, status, triage_signature, triage_signer_name, triaged_by, triaged_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
     ).run(
       patientId, d.complaint || null, JSON.stringify(d.flags || []),
       JSON.stringify(d.checklist || {}), JSON.stringify(d.teeth || []), d.notes || null,
       d.xray_count || 0, d.xray_station || null, d.assigned_to || null,
-      d.status || 'ready', actor ? actor.id : null, now()
+      d.status || 'ready', d.triage_signature || null, d.triage_signer_name || null,
+      actor ? actor.id : null, now()
     );
   }
   if (d.status === 'ready') {
@@ -619,18 +637,39 @@ function saveTreatment(actor, patientId, data, finalize) {
 /*  X-rays                                                             */
 /* ------------------------------------------------------------------ */
 
-function addXray(actor, patientId, { station, image_png, note }) {
-  const info = db.prepare(
-    `INSERT INTO xrays (patient_id, station, image_png, note, created_at) VALUES (?,?,?,?,?)`
-  ).run(patientId, station || null, image_png, note || null, now());
+function recountXrays(patientId) {
   const cnt = db.prepare('SELECT COUNT(*) AS n FROM xrays WHERE patient_id = ?').get(patientId).n;
   db.prepare('UPDATE triage SET xray_count = ? WHERE patient_id = ?').run(cnt, patientId);
-  audit(actor, 'xray', 'patient', patientId, station || '');
-  return info.lastInsertRowid;
+  return cnt;
+}
+
+function addXray(actor, patientId, { station, image_png, note }) {
+  const info = db.prepare(
+    `INSERT INTO xrays (patient_id, station, image_png, note, created_at, updated_at) VALUES (?,?,?,?,?,?)`
+  ).run(patientId, station || null, image_png, note || null, now(), now());
+  recountXrays(patientId);
+  audit(actor, 'xray', 'patient', patientId, station ? `station ${station}` : 'uploaded');
+  return { id: info.lastInsertRowid, count: recountXrays(patientId) };
 }
 
 function getXray(id) {
   return db.prepare('SELECT * FROM xrays WHERE id = ?').get(id);
+}
+
+// Full x-ray list WITH image data — used by the provider gallery.
+function listXrays(patientId) {
+  return db.prepare(
+    'SELECT id, patient_id, station, note, image_png, created_at FROM xrays WHERE patient_id = ? ORDER BY id'
+  ).all(patientId);
+}
+
+function deleteXray(actor, id) {
+  const row = db.prepare('SELECT patient_id FROM xrays WHERE id = ?').get(id);
+  if (!row) throw new Error('X-ray not found.');
+  db.prepare('DELETE FROM xrays WHERE id = ?').run(id);
+  const count = recountXrays(row.patient_id);
+  audit(actor, 'xray_delete', 'patient', row.patient_id, `#${id}`);
+  return { count };
 }
 
 /* ------------------------------------------------------------------ */
@@ -688,7 +727,7 @@ module.exports = {
   listEvents, createEvent, setActiveEvent, getActiveEvent,
   createPatient, updatePatient, getPatient, listPatients, searchAllPatients,
   saveTriage, saveTreatment,
-  addXray, getXray,
+  addXray, getXray, listXrays, deleteXray,
   dashboardStats, listAudit, audit,
   backupTo, exportEventJson,
   getSetting, setSetting,

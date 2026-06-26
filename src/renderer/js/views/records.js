@@ -1,6 +1,7 @@
 import { el, clear, toast, modal } from '../dom.js';
 import { t, conditions, allergies } from '../i18n.js';
 import { api } from '../api.js';
+import { icon } from '../icons.js';
 import { statusPill } from './dashboard.js';
 import { exportButtons } from './provider.js';
 
@@ -70,7 +71,7 @@ export function renderRecords(ctx, params = {}) {
     root.append(
       el('div', { class: 'view-head' }, [
         el('div', {}, [
-          el('button', { class: 'btn btn--ghost btn--sm', onClick: () => ctx.navigate('records') }, ['← ' + t('common.back')]),
+          el('button', { class: 'btn btn--ghost btn--sm', onClick: () => ctx.navigate('records') }, [icon('back', { size: 15 }), t('common.back')]),
           el('h1', {}, [`${p.first_name} ${p.last_name}`]),
           el('p', { class: 'view-sub' }, [`${p.event ? p.event.name : ''} · ${p.language === 'es' ? 'Español' : 'English'}`]),
         ]),
@@ -127,9 +128,9 @@ export function renderRecords(ctx, params = {}) {
           el('div', { class: 'card' }, [
             el('h3', { class: 'card-title' }, ['Export & deliver']),
             exportButtons(ctx, id),
-            el('button', { class: 'btn btn--ghost btn--block', style: 'margin-top:8px', onClick: () => preview(id) }, ['👁 Preview PDF']),
-            el('button', { class: 'btn btn--ghost btn--block', onClick: () => screenDisplay(p) }, ['📱 Screen display for photo']),
-            p.email ? el('button', { class: 'btn btn--ghost btn--block', onClick: () => emailRecord(p) }, ['✉ Email to patient']) : null,
+            el('button', { class: 'btn btn--ghost btn--block', style: 'margin-top:8px', onClick: () => preview(id) }, [icon('eye', { size: 16 }), 'Preview PDF']),
+            el('button', { class: 'btn btn--ghost btn--block', onClick: () => screenDisplay(p) }, [icon('phone', { size: 16 }), 'Screen display for photo']),
+            p.email ? el('button', { class: 'btn btn--ghost btn--block', onClick: () => emailRecord(p) }, [icon('mail', { size: 16 }), 'Email to patient']) : null,
           ]),
         ]),
       ]),
