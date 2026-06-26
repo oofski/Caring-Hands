@@ -107,8 +107,10 @@ function progressNoteBody(p) {
   }).join('') || '<span class="muted">None</span>';
   const anesEntries = Array.isArray(t.anesthetic)
     ? t.anesthetic.map((a) => `<span>${esc(a.agent)} × ${esc(a.carps)} carp(s)${a.location ? ' · ' + esc(a.location) : ''}</span>`)
-    : Object.entries(t.anesthetic || {}).map(([k, v]) =>
-        `<span>${esc(ANES_LABELS[k] || k)}${v.carps ? ' × ' + esc(v.carps) + ' carp(s)' : ''}${v.location ? ' · ' + esc(v.location) : ''}</span>`);
+    : Object.entries(t.anesthetic || {}).map(([k, v]) => {
+        const label = k === 'other' && v.name ? `Other (${v.name})` : (ANES_LABELS[k] || k);
+        return `<span>${esc(label)}${v.carps ? ' × ' + esc(v.carps) + ' carp(s)' : ''}${v.location ? ' · ' + esc(v.location) : ''}</span>`;
+      });
   const anesthetic = anesEntries.join('') || '<span class="muted">None</span>';
   const cleaning = Object.entries(t.cleaning || {})
     .filter(([k, v]) => v && k !== 'quad_detail')

@@ -63,11 +63,12 @@ function renderShell(active, contentNode) {
     }, [el('span', { class: 'nav-icon' }, [icon(v.icon, { size: 18 })]), el('span', {}, [v.label()])]));
 
   const verChip = el('button', {
+    id: 'ver-chip',
     class: 'ver-chip' + (appInfo.hasUpdate ? ' ver-chip--update' : ''),
     onClick: openUpdateModal,
     title: 'Version & updates',
   }, [
-    el('span', {}, [appInfo.hasUpdate ? 'Update available' : `Version ${appInfo.version || '…'}`]),
+    el('span', { class: 'ver-label' }, [appInfo.hasUpdate ? 'Update available' : `Version ${appInfo.version || '…'}`]),
     icon('update', { size: 14 }),
   ]);
 
@@ -91,10 +92,11 @@ function renderShell(active, contentNode) {
     el('div', { class: 'topbar-right' }, [
       // Always-available update control
       el('button', {
+        id: 'update-btn',
         class: 'btn btn--ghost btn--sm' + (appInfo.hasUpdate ? ' btn--soft' : ''),
         onClick: openUpdateModal,
         title: 'Check for updates',
-      }, [icon('update', { size: 15 }), appInfo.hasUpdate ? 'Update' : `v${appInfo.version || '1.0.1'}`]),
+      }, [icon('update', { size: 15 }), el('span', { class: 'upd-label' }, [appInfo.hasUpdate ? 'Update' : `v${appInfo.version || '1.0.1'}`])]),
       el('div', { class: 'topbar-divider' }),
       el('div', { class: 'topbar-user' }, [
         el('div', { class: 'user-meta' }, [
@@ -109,11 +111,34 @@ function renderShell(active, contentNode) {
 
   const main = el('main', { class: 'main' }, [topbar, el('div', { class: 'main-scroll' }, [contentNode])]);
   appRoot.append(sidebar, main);
+
+  // Silent offline update check once per session; patches the labels in place.
+  if (store.user && !appInfo.checked) refreshAppInfo(true).then(updateVersionUI);
+  else updateVersionUI();
+}
+
+// Patch the version/update labels in place without re-rendering the view.
+function updateVersionUI() {
+  const chip = document.getElementById('ver-chip');
+  if (chip) {
+    chip.classList.toggle('ver-chip--update', appInfo.hasUpdate);
+    const lbl = chip.querySelector('.ver-label');
+    if (lbl) lbl.textContent = appInfo.hasUpdate ? 'Update available' : `Version ${appInfo.version || '1.0.1'}`;
+  }
+  const btn = document.getElementById('update-btn');
+  if (btn) {
+    btn.classList.toggle('btn--soft', appInfo.hasUpdate);
+    const lbl = btn.querySelector('.upd-label');
+    if (lbl) lbl.textContent = appInfo.hasUpdate ? 'Update' : `v${appInfo.version || '1.0.1'}`;
+  }
 }
 
 /* ---------------- Offline updates (reachable from any view) ---------------- */
 
+let refreshing = false;
 async function refreshAppInfo(silent = true) {
+  if (refreshing) return;
+  refreshing = true;
   try {
     const info = await api.appVersion();
     appInfo.version = info.version;
@@ -123,7 +148,7 @@ async function refreshAppInfo(silent = true) {
       appInfo.latest = res.latest;
       appInfo.checked = true;
     }
-  } catch (e) { /* offline / not signed in — ignore */ }
+  } catch (e) { /* offline / not signed in — ignore */ } finally { refreshing = false; }
 }
 
 async function openUpdateModal() {
@@ -178,7 +203,7 @@ async function logout() {
 }
 
 // Expose for the login view to trigger an update-info refresh after sign-in.
-ctx.afterLogin = async () => { await refreshAppInfo(true); };
+ctx.afterLogin = async () => { await refreshAppInfo(true); updateVersionUI(); };
 
 // Boot.
 setLang('en');

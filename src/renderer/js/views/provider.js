@@ -86,7 +86,7 @@ export function renderProvider(ctx, params = {}) {
     /* ---------- Fillings ---------- */
     const fillingRows = el('div', { class: 'tx-rows' });
     function addFilling(f = {}) {
-      const tooth = el('input', { class: 'input input--sm num', placeholder: 'Tooth #', value: f.tooth || '' });
+      const tooth = el('input', { class: 'input input--sm num', placeholder: 'Tooth #', value: f.tooth || '', onInput: () => refreshMarks() });
       const surf = new Set((f.surfaces || []).map(String));
       const surfWrap = el('div', { class: 'surface-pills' }, ['1', '2', '3', '4'].map((n) =>
         el('button', { type: 'button', class: 'surf-chip' + (surf.has(n) ? ' surf-chip--on' : ''), onClick: (e) => { if (locked) return; if (surf.has(n)) surf.delete(n); else surf.add(n); e.currentTarget.classList.toggle('surf-chip--on'); } }, [n])));
@@ -108,7 +108,7 @@ export function renderProvider(ctx, params = {}) {
     /* ---------- Extractions ---------- */
     const extractRows = el('div', { class: 'tx-rows' });
     function addExtraction(x = {}) {
-      const tooth = el('input', { class: 'input input--sm num', placeholder: 'Tooth #', value: x.tooth || '' });
+      const tooth = el('input', { class: 'input input--sm num', placeholder: 'Tooth #', value: x.tooth || '', onInput: () => refreshMarks() });
       const types = new Set(x.types || []);
       const typeChips = EXTRACTION_TYPES.map(([k, label]) =>
         toggleChip(label, types.has(k), (on) => { if (on) types.add(k); else types.delete(k); }, locked));
@@ -150,9 +150,17 @@ export function renderProvider(ctx, params = {}) {
       const cur = an[a.key] || {};
       const carps = el('input', { class: 'input input--sm num', type: 'number', min: '0', step: '0.5', placeholder: 'Carps', value: cur.carps || '' });
       const loc = el('input', { class: 'input input--sm', placeholder: 'Location', value: cur.location || '' });
-      if (locked) { carps.disabled = true; loc.disabled = true; }
-      anesInputs[a.key] = { carps, loc };
-      return el('div', { class: 'anes-grid' }, [el('span', { class: 'anes-agent' }, [a.label]), carps, loc]);
+      let nameInput = null;
+      let agentCell;
+      if (a.key === 'other') {
+        nameInput = el('input', { class: 'input input--sm', placeholder: 'Name agent', value: cur.name || '' });
+        agentCell = el('div', { class: 'anes-agent', style: 'display:flex;gap:6px;align-items:center' }, ['Other:', nameInput]);
+      } else {
+        agentCell = el('span', { class: 'anes-agent' }, [a.label]);
+      }
+      if (locked) { carps.disabled = true; loc.disabled = true; if (nameInput) nameInput.disabled = true; }
+      anesInputs[a.key] = { carps, loc, nameInput };
+      return el('div', { class: 'anes-grid' }, [agentCell, carps, loc]);
     }));
 
     /* ---------- Notes ---------- */
@@ -228,7 +236,8 @@ export function renderProvider(ctx, params = {}) {
       const anesthetic = {};
       Object.entries(anesInputs).forEach(([k, v]) => {
         const carps = v.carps.value.trim(), location = v.loc.value.trim();
-        if (carps || location) anesthetic[k] = { carps, location };
+        const name = v.nameInput ? v.nameInput.value.trim() : '';
+        if (carps || location || name) anesthetic[k] = { carps, location, ...(name ? { name } : {}) };
       });
       return {
         fillings: Array.from(fillingRows.children).map((r) => r._get()).filter((x) => x.tooth),
