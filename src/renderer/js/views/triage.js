@@ -3,7 +3,8 @@ import { t, conditions, allergies } from '../i18n.js';
 import { api } from '../api.js';
 import { icon } from '../icons.js';
 import { Odontogram } from '../components/odontogram.js';
-import { patientHistoryCards } from '../components/patientHistory.js';
+import { patientHistoryCards, incompleteBanner } from '../components/patientHistory.js';
+import { store } from '../store.js';
 import { statusPill } from './dashboard.js';
 
 const CHECKLIST = [
@@ -128,6 +129,12 @@ export function renderTriage(ctx, params = {}) {
         ]),
         statusPill(p.status),
       ]),
+
+      incompleteBanner(p, {
+        isAdmin: store.is('admin'),
+        onDelete: async () => { try { await api.deletePatient(id); toast('Empty record deleted', 'success'); ctx.navigate('triage'); } catch (e) { toast(e.message, 'error'); } },
+        onNewCheckin: () => ctx.navigate('kiosk'),
+      }),
 
       el('details', { class: 'history-details', open: 'open' }, [
         el('summary', { class: 'history-summary' }, [icon('clipboard', { size: 16 }), 'Patient history', priorVisits.length ? el('span', { class: 'pill pill--info', style: 'margin-left:8px' }, [`${priorVisits.length} prior visit(s)`]) : null]),

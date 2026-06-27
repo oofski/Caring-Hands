@@ -187,8 +187,30 @@ export function renderAdmin(ctx) {
   }
 
   /* ---- Data / backup ---- */
-  function dataTab(body) {
+  async function dataTab(body) {
+    const incomplete = await api.listIncomplete().catch(() => []);
     clear(body);
+    if (incomplete.length) {
+      body.append(el('div', { class: 'card card--alert' }, [
+        el('div', { class: 'card-title' }, [icon('alert', { size: 15 }), 'Incomplete records']),
+        el('p', { class: 'muted' }, [`${incomplete.length} patient record(s) have no intake data — these were created on an older app version (before the intake fix) and are safe to remove.`]),
+        el('div', { class: 'data-table-wrap', style: 'margin-bottom:12px' }, [
+          el('table', { class: 'data-table data-table--mini' }, [
+            el('thead', {}, [el('tr', {}, ['Created', 'Event', 'Name'].map((h) => el('th', {}, [h])))]),
+            el('tbody', {}, incomplete.slice(0, 50).map((r) => el('tr', {}, [
+              el('td', {}, [new Date(r.created_at).toLocaleDateString()]),
+              el('td', {}, [r.event_name]),
+              el('td', { class: 'muted' }, [`${(r.first_name || '').trim()} ${(r.last_name || '').trim()}`.trim() || '(no name)']),
+            ]))),
+          ]),
+        ]),
+        el('button', { class: 'btn btn--danger', onClick: async () => {
+          const ok = await modal({ title: 'Delete incomplete records?', body: `Permanently delete all ${incomplete.length} empty record(s)? This cannot be undone.`, confirmText: 'Delete all', cancelText: 'Cancel', danger: true });
+          if (!ok) return;
+          try { const r = await api.cleanupIncomplete(); toast(`Deleted ${r.deleted} incomplete record(s)`, 'success'); paint(); } catch (e) { toast(e.message, 'error'); }
+        } }, [icon('trash', { size: 16 }), `Delete all ${incomplete.length} empty record(s)`]),
+      ]));
+    }
     body.append(
       el('div', { class: 'card' }, [
         el('h3', { class: 'card-title' }, ['Backup & export']),

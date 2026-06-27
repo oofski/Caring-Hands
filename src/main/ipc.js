@@ -36,6 +36,8 @@ const PERMS = {
   'patients:list': ['admin', 'doctor', 'triage'],
   'patients:searchAll': ['admin', 'doctor', 'triage'],
   'patients:history': ['admin', 'doctor', 'triage'],
+  'patients:incomplete': ['admin'],
+  'patients:cleanupIncomplete': ['admin'],
   'patients:records': ['admin', 'doctor'],
   'triage:save': ['admin', 'doctor', 'triage'],
   'treatment:save': ['admin', 'doctor'],
@@ -134,6 +136,8 @@ function register(getMainWindow) {
   handle('patients:records', (opts) => db.listPatients(opts || {}));
   handle('patients:searchAll', (term) => db.searchAllPatients(term));
   handle('patients:history', (id) => db.patientHistory(id));
+  handle('patients:incomplete', () => db.listIncompletePatients());
+  handle('patients:cleanupIncomplete', () => db.deleteIncompletePatients(currentUser));
 
   /* ---- Triage & treatment ---- */
   handle('triage:save', ({ patientId, data }) => db.saveTriage(currentUser, patientId, data));

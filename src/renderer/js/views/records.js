@@ -5,6 +5,7 @@ import { icon } from '../icons.js';
 import { store } from '../store.js';
 import { statusPill } from './dashboard.js';
 import { exportButtons } from './provider.js';
+import { incompleteBanner } from '../components/patientHistory.js';
 
 export function renderRecords(ctx, params = {}) {
   const root = el('div', { class: 'view' });
@@ -89,6 +90,11 @@ export function renderRecords(ctx, params = {}) {
         ]),
         statusPill(p.status),
       ]),
+      incompleteBanner(p, {
+        isAdmin: store.is('admin'),
+        onDelete: () => deletePatient(p),
+        onNewCheckin: () => ctx.navigate('kiosk'),
+      }),
       el('div', { class: 'split' }, [
         el('div', { class: 'col col--wide' }, [
           el('div', { class: 'card' }, [

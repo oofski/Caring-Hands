@@ -2,6 +2,29 @@ import { el } from '../dom.js';
 import { icon } from '../icons.js';
 import { conditions, allergies } from '../i18n.js';
 
+// A record created by the old (v1.0) intake bug has no name / empty histories.
+export function isIncompleteRecord(p) {
+  const noName = !(p.first_name || '').trim() || !(p.last_name || '').trim();
+  const d = p.demographics || {}, m = p.medical_history || {}, dh = p.dental_history || {};
+  const emptyData = !Object.keys(d).length && !Object.keys(m).length && !Object.keys(dh).length;
+  return noName || emptyData;
+}
+
+// A clear banner explaining an incomplete legacy record, with optional actions.
+export function incompleteBanner(p, { isAdmin, onDelete, onNewCheckin } = {}) {
+  if (!isIncompleteRecord(p)) return null;
+  const acts = el('div', { class: 'inline-row', style: 'margin-top:10px' });
+  if (onNewCheckin) acts.append(el('button', { class: 'btn btn--primary btn--sm', onClick: onNewCheckin }, [icon('clipboard', { size: 14 }), 'Start a new check-in']));
+  if (isAdmin && onDelete) acts.append(el('button', { class: 'btn btn--danger btn--sm', onClick: onDelete }, [icon('trash', { size: 14 }), 'Delete this empty record']));
+  return el('div', { class: 'banner banner--alert', style: 'flex-direction:column;align-items:flex-start' }, [
+    el('div', { style: 'display:flex;gap:9px;align-items:center' }, [
+      icon('alert', { size: 16 }),
+      el('span', {}, ['This record is missing its intake data. It was created on an older version of the app, before the intake fix. New check-ins capture everything correctly — this empty record can be removed.']),
+    ]),
+    acts,
+  ]);
+}
+
 // Full patient history (demographics + medical + dental + consents + prior
 // visits) rendered as a set of cards. Shared by Records, Provider, and Triage
 // so clinicians always see the complete intake history.

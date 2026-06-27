@@ -35,6 +35,8 @@ export const api = {
   records: (opts) => call('patientsRecords', opts),
   searchAll: (term) => call('patientsSearchAll', term),
   patientHistory: (id) => call('patientsHistory', id),
+  listIncomplete: () => call('patientsIncomplete'),
+  cleanupIncomplete: () => call('patientsCleanupIncomplete'),
 
   saveTriage: (patientId, data) => call('triageSave', { patientId, data }),
   saveTreatment: (patientId, data, finalize) => call('treatmentSave', { patientId, data, finalize }),

@@ -438,6 +438,11 @@ function createPatient(actor, data) {
   const eventId = Number(getSetting('active_event_id'));
   if (!eventId) throw new Error('No active clinic event. Ask an admin to create one.');
   const d = data || {};
+  // Hard guard: never persist a nameless patient (defense-in-depth against any
+  // intake bug — this is what produced the empty legacy records).
+  if (!(d.first_name || '').trim() || !(d.last_name || '').trim()) {
+    throw new Error('Patient first and last name are required.');
+  }
   const info = db.prepare(
     `INSERT INTO patients
        (event_id, language, first_name, last_name, dob, gender, phone, email,
@@ -551,6 +556,26 @@ function deletePatient(actor, id) {
   db.prepare('DELETE FROM patients WHERE id = ?').run(id);
   audit(actor, 'delete', 'patient', id, `${p.first_name} ${p.last_name}`.trim());
   return { deleted: true };
+}
+
+// Records left empty by the v1.0 intake bug (no name + empty histories).
+function listIncompletePatients() {
+  return db.prepare(
+    `SELECT p.id, p.first_name, p.last_name, p.created_at, e.name AS event_name
+     FROM patients p JOIN events e ON e.id = p.event_id
+     WHERE (trim(coalesce(p.first_name,'')) = '' OR trim(coalesce(p.last_name,'')) = '')
+        OR (p.demographics = '{}' AND p.medical_history = '{}' AND p.dental_history = '{}')
+     ORDER BY p.created_at`
+  ).all();
+}
+
+function deleteIncompletePatients(actor) {
+  const rows = listIncompletePatients();
+  const del = db.prepare('DELETE FROM patients WHERE id = ?');
+  const tx = db.transaction(() => { rows.forEach((r) => del.run(r.id)); });
+  tx();
+  audit(actor, 'cleanup', 'patient', null, `${rows.length} incomplete record(s)`);
+  return { deleted: rows.length };
 }
 
 function getPatient(id) {
@@ -828,6 +853,7 @@ module.exports = {
   login, listUsers, createUser, updateUser, deleteUser,
   listEvents, createEvent, updateEvent, setActiveEvent, setEventActive, deleteEvent, getActiveEvent,
   createPatient, updatePatient, deletePatient, getPatient, listPatients, searchAllPatients, patientHistory,
+  listIncompletePatients, deleteIncompletePatients,
   saveTriage, saveTreatment,
   addXray, getXray, listXrays, deleteXray,
   dashboardStats, listAudit, audit,

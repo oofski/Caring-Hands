@@ -10,6 +10,7 @@ const CHANNELS = [
   'events:setActive', 'events:setState', 'events:delete',
   'patients:create', 'patients:update', 'patients:delete', 'patients:get', 'patients:list',
   'patients:records', 'patients:searchAll', 'patients:history',
+  'patients:incomplete', 'patients:cleanupIncomplete',
   'triage:save', 'treatment:save',
   'xray:add', 'xray:get', 'xray:list', 'xray:delete',
   'stats:dashboard', 'audit:list',

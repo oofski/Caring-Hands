@@ -4,7 +4,8 @@ import { api } from '../api.js';
 import { icon } from '../icons.js';
 import { SignaturePad } from '../components/signature.js';
 import { Odontogram } from '../components/odontogram.js';
-import { patientHistoryCards } from '../components/patientHistory.js';
+import { patientHistoryCards, incompleteBanner } from '../components/patientHistory.js';
+import { store } from '../store.js';
 import { statusPill } from './dashboard.js';
 
 const EXTRACTION_TYPES = [
@@ -354,6 +355,11 @@ export function renderProvider(ctx, params = {}) {
         locked ? el('span', { class: 'pill pill--neutral' }, [icon('lock', { size: 12 }), 'Locked']) : statusPill(p.status),
       ]),
 
+      incompleteBanner(p, {
+        isAdmin: store.is('admin'),
+        onDelete: async () => { try { await api.deletePatient(id); toast('Empty record deleted', 'success'); ctx.navigate('provider'); } catch (e) { toast(e.message, 'error'); } },
+        onNewCheckin: () => ctx.navigate('kiosk'),
+      }),
       flags.length ? el('div', { class: 'banner banner--alert' }, [icon('flag', { size: 16 }), 'Medical flags: ' + flags.join(' · ')]) : null,
       locked ? el('div', { class: 'banner banner--locked' }, [icon('lock', { size: 16 }), 'This record is signed off and locked. View or export below.']) : null,
 
