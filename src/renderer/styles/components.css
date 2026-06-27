@@ -235,20 +235,21 @@
 /* ============================================================
    ODONTOGRAM — the "mouth"
    ============================================================ */
-.odo{ background:var(--surface-sunken); border:var(--border-line); border-radius:var(--radius-md); padding:var(--space-4); position:relative; }
-.odo-toolbar{ display:flex; align-items:flex-end; justify-content:space-between; gap:12px; margin-bottom:10px; flex-wrap:wrap; }
-.odo-mode{ display:flex; flex-direction:column; gap:4px; }
-.odo-mode-sel{ min-width:170px; }
-.odo-mixed-note{ margin-bottom:10px; }
-.odo-legend{ display:flex; gap:14px; flex-wrap:wrap; font-size:var(--fs-xs); color:var(--text-muted); }
-.odo-legend span{ display:inline-flex; align-items:center; gap:6px; }
-.odo-key{ width:11px; height:11px; border-radius:3px; border:1px solid var(--border-strong); background:var(--surface); }
+.odo{ background:var(--surface-sunken); border:var(--border-line); border-radius:var(--radius-md); padding:var(--space-5); position:relative; overflow-x:auto; }
+.odo-toolbar{ display:flex; align-items:flex-end; justify-content:space-between; gap:16px; margin-bottom:14px; flex-wrap:wrap; }
+.odo-mode{ display:flex; flex-direction:column; gap:5px; }
+.odo-mode .field-label{ font-size:var(--fs-xs); }
+.odo-mode-sel{ min-width:200px; height:var(--control-height); font-size:var(--fs-base); }
+.odo-mixed-note{ margin-bottom:12px; font-size:var(--fs-sm); }
+.odo-legend{ display:flex; gap:18px; flex-wrap:wrap; font-size:var(--fs-sm); color:var(--text-muted); }
+.odo-legend span{ display:inline-flex; align-items:center; gap:7px; }
+.odo-key{ width:13px; height:13px; border-radius:3px; border:1px solid var(--border-strong); background:var(--surface); }
 .odo-key--sel{ background:var(--accent); border-color:var(--accent); }
 .odo-key--filling{ background:var(--info); border-color:var(--info); }
 .odo-key--extraction{ background:var(--danger); border-color:var(--danger); }
 .odo-key--cleaning{ background:var(--success); border-color:var(--success); }
-.odo-arch{ display:block; width:100%; height:auto; }
-.odo-arch-label{ font-size:var(--fs-2xs); text-transform:uppercase; letter-spacing:var(--tracking-eyebrow); fill:var(--text-subtle); font-weight:600; }
+.odo-arch{ display:block; width:100%; min-width:680px; max-width:1060px; height:auto; margin:0 auto; }
+.odo-arch-label{ font-size:13px; text-transform:uppercase; letter-spacing:var(--tracking-eyebrow); fill:var(--text-subtle); font-weight:600; }
 .odo-tooth{ cursor:pointer; }
 .odo-tooth .crown{ fill:var(--surface); stroke:var(--border-strong); stroke-width:1.2; transition:fill var(--dur-fast) var(--ease), stroke var(--dur-fast) var(--ease); }
 .odo-tooth:hover .crown{ stroke:var(--accent); }
@@ -263,7 +264,7 @@
 /* tooth-number pills (upright, outside the arch) */
 .tnum-g{ pointer-events:none; }
 .tnum-bg{ fill:var(--surface); stroke:var(--border); stroke-width:1; }
-.tnum{ font-family:var(--font-mono); font-size:8.5px; font-weight:600; fill:var(--text-muted); text-anchor:middle; dominant-baseline:central; }
+.tnum{ font-family:var(--font-mono); font-size:11px; font-weight:600; fill:var(--text-muted); text-anchor:middle; dominant-baseline:central; }
 .tnum-g--on .tnum-bg{ fill:var(--accent-soft); stroke:var(--accent-border); }
 .tnum-g--on .tnum{ fill:var(--accent-text); font-weight:700; }
 .odo-selected-list{ margin-top:12px; font-size:var(--fs-sm); color:var(--text-muted); display:flex; gap:6px; flex-wrap:wrap; align-items:center; }
@@ -299,6 +300,16 @@
 .awareness{ font-size:var(--fs-base); }
 .awareness strong{ font-family:var(--font-mono); font-size:var(--fs-h2); color:var(--warning); }
 .num-col{ text-align:right; }
+
+/* collapsible patient-history section */
+.history-details{ border:var(--border-line); border-radius:var(--radius-md); background:var(--surface); margin-bottom:var(--space-4); overflow:hidden; }
+.history-summary{ list-style:none; cursor:pointer; display:flex; align-items:center; gap:9px; padding:12px 16px; font-weight:var(--fw-semibold); color:var(--text-strong); background:var(--surface-header); border-bottom:var(--divider); user-select:none; }
+.history-summary::-webkit-details-marker{ display:none; }
+.history-summary::after{ content:''; width:8px; height:8px; border-right:2px solid var(--text-subtle); border-bottom:2px solid var(--text-subtle); transform:rotate(-45deg); margin-left:auto; transition:transform var(--dur-fast) var(--ease); }
+.history-details[open] .history-summary::after{ transform:rotate(45deg); }
+.history-grid{ display:grid; grid-template-columns:1fr 1fr; gap:var(--space-4); padding:var(--space-4); }
+.history-grid .card{ margin:0; background:var(--surface-sunken); }
+@media (max-width:1100px){ .history-grid{ grid-template-columns:1fr; } }
 
 /* kiosk language gate */
 .kiosk-gate{ height:100vh; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:14px; background:var(--surface-canvas); position:relative; }

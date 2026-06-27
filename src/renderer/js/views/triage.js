@@ -3,6 +3,7 @@ import { t, conditions, allergies } from '../i18n.js';
 import { api } from '../api.js';
 import { icon } from '../icons.js';
 import { Odontogram } from '../components/odontogram.js';
+import { patientHistoryCards } from '../components/patientHistory.js';
 import { statusPill } from './dashboard.js';
 
 const CHECKLIST = [
@@ -50,6 +51,7 @@ export function renderTriage(ctx, params = {}) {
     const p = await api.getPatient(id);
     const tr = p.triage || {};
     let xrays = await api.listXrays(id);
+    const priorVisits = await api.patientHistory(id).catch(() => []);
 
     const flagConds = conditions().filter((c) => c.flag && (p.medical_history.conditions || []).includes(c.key)).map((c) => c.label);
     const flagAllergies = allergies().filter((a) => (p.medical_history.allergies || []).includes(a.key)).map((a) => `Allergy: ${a.label}`);
@@ -127,6 +129,11 @@ export function renderTriage(ctx, params = {}) {
         statusPill(p.status),
       ]),
 
+      el('details', { class: 'history-details', open: 'open' }, [
+        el('summary', { class: 'history-summary' }, [icon('clipboard', { size: 16 }), 'Patient history', priorVisits.length ? el('span', { class: 'pill pill--info', style: 'margin-left:8px' }, [`${priorVisits.length} prior visit(s)`]) : null]),
+        el('div', { class: 'history-grid' }, patientHistoryCards(p, priorVisits)),
+      ]),
+
       el('div', { class: 'split' }, [
         el('div', { class: 'col' }, [
           el('div', { class: `card ${flags.length ? 'card--alert' : ''}` }, [
@@ -161,15 +168,17 @@ export function renderTriage(ctx, params = {}) {
             el('label', { class: 'field' }, [el('span', { class: 'field-label' }, ['Triage notes']), notes]),
             el('label', { class: 'field' }, [el('span', { class: 'field-label' }, ['Route to provider / chair']), assigned]),
           ]),
-          el('div', { class: 'card' }, [
-            el('div', { class: 'card-title' }, [icon('tooth', { size: 15 }), 'Teeth of concern']),
-            odo.node,
-          ]),
-          el('div', { class: 'action-row' }, [
-            el('button', { class: 'btn btn--ghost', onClick: () => save(false) }, [icon('save', { size: 16 }), 'Save draft']),
-            el('button', { class: 'btn btn--primary', onClick: () => save(true) }, ['Complete triage', icon('chevron', { size: 16 })]),
-          ]),
         ]),
+      ]),
+
+      // Odontogram spans the full width so the teeth render large and legible.
+      el('div', { class: 'card' }, [
+        el('div', { class: 'card-title' }, [icon('tooth', { size: 15 }), 'Teeth of concern — tap a tooth to tag it']),
+        odo.node,
+      ]),
+      el('div', { class: 'action-row', style: 'justify-content:flex-end' }, [
+        el('button', { class: 'btn btn--ghost', onClick: () => save(false) }, [icon('save', { size: 16 }), 'Save draft']),
+        el('button', { class: 'btn btn--primary', onClick: () => save(true) }, ['Complete triage', icon('chevron', { size: 16 })]),
       ]),
     );
   }

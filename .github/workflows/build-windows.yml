@@ -47,28 +47,29 @@ jobs:
       - name: Publish downloadable release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.0.2-build.${{ github.run_number }}
-          name: Caring Hands v1.0.2 (build ${{ github.run_number }})
-          prerelease: true
+          tag_name: v1.0.3-build.${{ github.run_number }}
+          name: Caring Hands v1.0.3 (build ${{ github.run_number }})
+          prerelease: false
+          make_latest: true
           body: |
-            ## Caring Hands Worldwide — Practice Management Software (v1.0.2)
+            ## Caring Hands Worldwide — Practice Management Software (v1.0.3)
 
-            Offline-first dental clinic app for Windows. Download an installer below and run it.
+            Offline-first dental clinic app for Windows. **Download the installer once — it auto-updates from here on.**
 
-            **New in v1.0.2**
-            - **Click-to-tag odontogram** — tap a tooth to tag Filling / Extraction / Cleaning + a short note; auto-fills the treatment lists (minimal typing). Dentition **dropdown**: Adult / Primary / **Mixed**. Cleaner tooth-number pills.
-            - **Patient intake fixed** — a latent bug meant intake fields weren't captured; demographics, medical, dental, and consents now flow correctly into Triage / Provider / Records.
-            - **Records** now shows patients across **all events** with an event filter; admins can **delete** patients.
-            - **Admin** can **deactivate / reactivate / edit / delete** clinic events, and **delete** staff.
-            - **Reports** overhaul — daily breakdown + redesigned patients-by-status view.
-            - **Language** chosen on a pre-start gate; **Belizean Kriol** and **Nyanja** packs added (selectable per event).
-            - Home screen no longer shows demo credentials; only a bootstrap **admin** exists — the admin creates all staff.
+            **New in v1.0.3**
+            - **Automatic updates** — the installed app checks GitHub for new versions and installs them for you (no more re-downloading the .exe). USB/folder updating remains as an offline fallback.
+            - **Patient history made usable** — a full, collapsible Patient History panel (demographics, medical, dental, consents, **prior visits**) now appears in Provider and Triage, not just Records.
+            - **Bigger, clearer odontogram** — the tooth chart is now full-width with larger teeth and readable number pills (no longer tiny).
 
-            - **Caring-Hands-Setup-1.0.2.exe** — standard installer (creates Start-menu + desktop shortcuts).
-            - **Caring-Hands-Portable-1.0.2.exe** — portable, runs without installing (good for USB sticks).
+            Includes everything from v1.0.2 (click-to-tag odontogram, intake fix, event/staff management, reports overhaul, Kriol + Nyanja).
 
-            First sign-in: `admin / admin` — then create your staff accounts. All data stays on the device — no cloud, fully offline.
+            - **Caring-Hands-Setup-1.0.3.exe** — installer (recommended; required for auto-update).
+            - **Caring-Hands-Portable-1.0.3.exe** — portable (no auto-update).
+
+            First sign-in: `admin / admin` — then create your staff accounts. All clinical data stays on the device.
           files: |
             release/*.exe
+            release/latest.yml
+            release/*.blockmap
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

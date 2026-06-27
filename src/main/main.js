@@ -4,6 +4,7 @@ const { app, BrowserWindow, Menu, shell } = require('electron');
 const path = require('path');
 const db = require('./db');
 const ipc = require('./ipc');
+const autoupdate = require('./autoupdate');
 
 let mainWindow = null;
 
@@ -78,8 +79,12 @@ function buildMenu() {
 app.whenReady().then(() => {
   db.init(app.getPath('userData'));
   ipc.register(() => mainWindow);
+  autoupdate.init(() => mainWindow);
   buildMenu();
   createWindow();
+
+  // Silent online update check shortly after launch (installed app only).
+  setTimeout(() => autoupdate.checkSilently(), 4000);
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();

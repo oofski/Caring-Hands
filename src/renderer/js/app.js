@@ -152,47 +152,94 @@ async function refreshAppInfo(silent = true) {
 }
 
 async function openUpdateModal() {
+  const isAdmin = store.user && store.user.role === 'admin';
   const body = el('div', { class: 'update-card' });
-  const status = el('div', { class: 'update-status' }, [icon('info', { size: 16 }), el('span', {}, ['Checking…'])]);
-  const actions = el('div', { class: 'action-row' });
-  body.append(
-    el('p', {}, [el('strong', {}, [`Caring Hands v${appInfo.version || ''}`]), el('br'), el('span', { class: 'subtle small' }, ['Fully offline. Updates are read from a USB drive or folder the team provides — no internet required.'])]),
-    status, actions,
-  );
 
-  function paint(res) {
-    clear(status); clear(actions);
-    if (res && res.hasUpdate && res.latest) {
-      status.className = 'update-status update-found';
-      status.append(icon('checkCircle', { size: 16 }), el('span', {}, [`Update found: v${res.latest.version}`]));
-      if (store.user.role === 'admin') {
-        actions.append(el('button', { class: 'btn btn--primary', onClick: async () => {
-          try { await api.installUpdate(res.latest.path); toast('Launching installer — the app will close.', 'success'); }
-          catch (e) { toast(e.message, 'error'); }
-        } }, [icon('download', { size: 16 }), `Install v${res.latest.version}`]));
-      } else {
-        status.append(el('span', { class: 'subtle small' }, [' · ask an administrator to install']));
+  /* ---- Online auto-update section ---- */
+  const onlineStatus = el('div', { class: 'update-status' }, [icon('info', { size: 16 }), el('span', {}, ['Checking online…'])]);
+  const onlineActions = el('div', { class: 'action-row' });
+  const onlineSection = el('div', {}, [
+    el('div', { class: 'field-label' }, ['Online (recommended)']),
+    onlineStatus, onlineActions,
+  ]);
+
+  function setOnline(node, cls) { clear(onlineStatus); onlineStatus.className = 'update-status' + (cls ? ' ' + cls : ''); onlineStatus.append(node); }
+
+  async function checkOnline() {
+    setOnline(el('span', {}, [icon('info', { size: 16 }), ' Checking GitHub for updates…']));
+    clear(onlineActions);
+    try {
+      const res = await api.checkOnline();
+      if (res.supported === false) {
+        setOnline(el('span', {}, [icon('info', { size: 16 }), ' ' + (res.reason || 'Online updates unavailable here.')]));
+        onlineActions.append(el('span', { class: 'subtle small' }, ['Use the installed app (not portable) for auto-updates.']));
+        return;
       }
+      if (res.error) { setOnline(el('span', {}, [icon('alert', { size: 16 }), ' ' + res.error])); return; }
+      if (res.hasUpdate) {
+        appInfo.hasUpdate = true; appInfo.version = res.currentVersion; updateVersionUI();
+        setOnline(el('span', {}, [icon('checkCircle', { size: 16 }), ` Update available: v${res.latestVersion}`]), 'update-found');
+        onlineActions.append(el('button', { class: 'btn btn--primary', onClick: startDownload }, [icon('download', { size: 16 }), `Download v${res.latestVersion}`]));
+      } else {
+        setOnline(el('span', {}, [icon('checkCircle', { size: 16 }), " You're on the latest version."]));
+        onlineActions.append(el('button', { class: 'btn btn--ghost', onClick: checkOnline }, [icon('refresh', { size: 16 }), 'Check again']));
+      }
+    } catch (e) { setOnline(el('span', {}, [icon('alert', { size: 16 }), ' ' + e.message])); }
+  }
+
+  async function startDownload() {
+    clear(onlineActions);
+    setOnline(el('span', {}, [icon('download', { size: 16 }), ' Downloading update… 0%']));
+    try { await api.downloadOnline(); } catch (e) { setOnline(el('span', {}, [icon('alert', { size: 16 }), ' ' + e.message])); }
+  }
+
+  // Live progress / state from the main process.
+  const unsub = api.onUpdateEvent((s) => {
+    if (s.status === 'downloading') setOnline(el('span', {}, [icon('download', { size: 16 }), ` Downloading update… ${s.percent || 0}%`]));
+    else if (s.status === 'downloaded') {
+      setOnline(el('span', {}, [icon('checkCircle', { size: 16 }), ` Update v${s.version} ready to install`]), 'update-found');
+      clear(onlineActions);
+      if (isAdmin) onlineActions.append(el('button', { class: 'btn btn--success', onClick: async () => { try { await api.installOnline(); } catch (e) { toast(e.message, 'error'); } } }, [icon('refresh', { size: 16 }), 'Restart & install']));
+      else onlineActions.append(el('span', { class: 'subtle small' }, ['Ask an administrator to install.']));
+    } else if (s.status === 'available') {
+      appInfo.hasUpdate = true; updateVersionUI();
+    } else if (s.status === 'error' && s.error) setOnline(el('span', {}, [icon('alert', { size: 16 }), ' ' + s.error]));
+  });
+
+  /* ---- Offline USB fallback ---- */
+  const usbStatus = el('div', { class: 'update-status' });
+  const usbActions = el('div', { class: 'action-row' });
+  function paintUsb(res) {
+    clear(usbStatus); clear(usbActions);
+    if (res && res.hasUpdate && res.latest) {
+      usbStatus.className = 'update-status update-found';
+      usbStatus.append(icon('checkCircle', { size: 16 }), el('span', {}, [`Found v${res.latest.version} on drive`]));
+      if (isAdmin) usbActions.append(el('button', { class: 'btn btn--primary', onClick: async () => { try { await api.installUpdate(res.latest.path); toast('Launching installer…', 'success'); } catch (e) { toast(e.message, 'error'); } } }, [icon('download', { size: 16 }), `Install v${res.latest.version}`]));
     } else {
-      status.className = 'update-status';
-      status.append(icon('checkCircle', { size: 16 }), el('span', {}, [res ? "You're up to date." : 'No update found in the scanned locations.']));
+      usbStatus.className = 'update-status';
+      usbStatus.append(icon('info', { size: 16 }), el('span', {}, ['No installer found on USB / chosen folder.']));
     }
-    actions.append(
-      el('button', { class: 'btn btn--ghost', onClick: () => doCheck({}) }, [icon('refresh', { size: 16 }), 'Re-scan drives']),
-      el('button', { class: 'btn btn--ghost', onClick: () => doCheck({ choose: true }) }, [icon('upload', { size: 16 }), 'Choose folder…']),
+    usbActions.append(
+      el('button', { class: 'btn btn--ghost', onClick: () => checkUsb({}) }, [icon('refresh', { size: 16 }), 'Re-scan drives']),
+      el('button', { class: 'btn btn--ghost', onClick: () => checkUsb({ choose: true }) }, [icon('upload', { size: 16 }), 'Choose folder…']),
     );
   }
-  async function doCheck(opts) {
-    clear(status); status.className = 'update-status'; status.append(icon('info', { size: 16 }), el('span', {}, ['Scanning…']));
-    try {
-      const res = await api.checkUpdate(opts);
-      appInfo.hasUpdate = res.hasUpdate; appInfo.latest = res.latest; appInfo.version = res.current;
-      paint(res);
-    } catch (e) { clear(status); status.append(icon('alert', { size: 16 }), el('span', {}, [e.message])); }
+  async function checkUsb(opts) {
+    clear(usbStatus); usbStatus.className = 'update-status'; usbStatus.append(icon('info', { size: 16 }), el('span', {}, ['Scanning…']));
+    try { const res = await api.checkUpdate(opts); paintUsb(res); } catch (e) { clear(usbStatus); usbStatus.append(icon('alert', { size: 16 }), el('span', {}, [e.message])); }
   }
 
-  doCheck({});
+  body.append(
+    el('p', {}, [el('strong', {}, [`Caring Hands v${appInfo.version || ''}`]), el('br'), el('span', { class: 'subtle small' }, ['The app checks GitHub for new versions and installs them for you — no manual download. A USB/folder option is available when offline.'])]),
+    onlineSection,
+    el('div', { class: 'login-divider', style: 'margin:16px 0' }, [el('span', {}, ['offline option'])]),
+    el('div', {}, [el('div', { class: 'field-label' }, ['From USB / folder']), usbStatus, usbActions]),
+  );
+
+  checkOnline();
+  paintUsb(null);
   await modal({ title: 'Software updates', body, confirmText: t('common.close') });
+  if (unsub) unsub();
 }
 
 async function logout() {

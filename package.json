@@ -1,7 +1,7 @@
 {
   "name": "caring-hands",
   "productName": "Caring Hands",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "Caring Hands Worldwide — offline-first practice management software for free dental clinics.",
   "author": {
     "name": "Caring Hands Worldwide",
@@ -16,7 +16,8 @@
     "dist": "electron-builder --win --x64"
   },
   "dependencies": {
-    "better-sqlite3": "^11.8.1"
+    "better-sqlite3": "^11.8.1",
+    "electron-updater": "^6.3.9"
   },
   "devDependencies": {
     "electron": "^31.7.7",
@@ -27,6 +28,9 @@
     "productName": "Caring Hands",
     "copyright": "Copyright © 2026 Caring Hands Worldwide",
     "asar": true,
+    "publish": [
+      { "provider": "github", "owner": "oofski", "repo": "caring-hands" }
+    ],
     "files": [
       "src/**/*",
       "assets/**/*",

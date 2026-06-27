@@ -9,7 +9,7 @@ const CHANNELS = [
   'events:list', 'events:active', 'events:create', 'events:update',
   'events:setActive', 'events:setState', 'events:delete',
   'patients:create', 'patients:update', 'patients:delete', 'patients:get', 'patients:list',
-  'patients:records', 'patients:searchAll',
+  'patients:records', 'patients:searchAll', 'patients:history',
   'triage:save', 'treatment:save',
   'xray:add', 'xray:get', 'xray:list', 'xray:delete',
   'stats:dashboard', 'audit:list',
@@ -17,6 +17,7 @@ const CHANNELS = [
   'record:exportUsb',
   'backup:run', 'export:event',
   'app:version', 'update:check', 'update:install',
+  'update:onlineAvailable', 'update:checkOnline', 'update:downloadOnline', 'update:installOnline',
   'app:openExternal',
 ];
 
@@ -26,6 +27,12 @@ const api = {
       return Promise.resolve({ ok: false, error: `Blocked channel: ${channel}` });
     }
     return ipcRenderer.invoke(channel, payload);
+  },
+  // Subscribe to auto-update progress events from the main process.
+  onUpdateEvent(cb) {
+    const listener = (_e, data) => cb(data);
+    ipcRenderer.on('update:event', listener);
+    return () => ipcRenderer.removeListener('update:event', listener);
   },
 };
 

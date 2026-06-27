@@ -25,8 +25,9 @@ const PRIMARY_LOWER = 'TSRQPONMLK'.split('');                               // T
 const MIXED_UPPER = ['1', '2', '3', 'A', 'B', 'C', '7', '8', '9', '10', 'H', 'I', 'J', '14', '15', '16'];
 const MIXED_LOWER = ['32', '31', '30', 'K', 'L', 'M', '26', '25', '24', '23', 'P', 'Q', 'R', '19', '18', '17'];
 
-const VW = 820, VH = 360, CX = VW / 2, SPREAD = 300, AMP = 66, TOP_U = 74, BOT_L = 286;
+const VW = 880, VH = 400, CX = VW / 2, SPREAD = 360, AMP = 80, TOP_U = 84, BOT_L = 316;
 const A = 30 * (Math.PI / 180);
+const CROWN_W = 26, CROWN_H = 38, PILL_R = 11;
 
 function positions(count, arch) {
   const pts = [];
@@ -72,23 +73,23 @@ export function Odontogram({ mode = 'adult', teeth = {}, selected = [], onChange
     const g = s('g', { class: 'odo-tooth' + (isPrimaryId(id) ? ' odo-tooth--primary' : ''),
       transform: `translate(${p.x.toFixed(1)} ${p.y.toFixed(1)}) rotate(${p.rot.toFixed(1)})` });
     g.dataset.id = id;
-    const w = 20, h = 30;
+    const w = CROWN_W, h = CROWN_H;
     g.append(
-      s('rect', { class: 'crown', x: -w / 2, y: -h / 2, width: w, height: h, rx: 7 }),
-      s('line', { class: 'groove', x1: -w / 2 + 4, y1: -3, x2: w / 2 - 4, y2: -3, stroke: '#cfd5dc', 'stroke-width': 0.8 }),
-      s('line', { class: 'groove', x1: 0, y1: -h / 2 + 5, x2: 0, y2: h / 2 - 5, stroke: '#cfd5dc', 'stroke-width': 0.8 }),
-      s('line', { class: 'xmark', x1: -w / 2 + 3, y1: -h / 2 + 3, x2: w / 2 - 3, y2: h / 2 - 3, stroke: 'transparent' }),
-      s('line', { class: 'xmark', x1: w / 2 - 3, y1: -h / 2 + 3, x2: -w / 2 + 3, y2: h / 2 - 3, stroke: 'transparent' })
+      s('rect', { class: 'crown', x: -w / 2, y: -h / 2, width: w, height: h, rx: 8 }),
+      s('line', { class: 'groove', x1: -w / 2 + 5, y1: -4, x2: w / 2 - 5, y2: -4, stroke: '#cfd5dc', 'stroke-width': 1 }),
+      s('line', { class: 'groove', x1: 0, y1: -h / 2 + 6, x2: 0, y2: h / 2 - 6, stroke: '#cfd5dc', 'stroke-width': 1 }),
+      s('line', { class: 'xmark', x1: -w / 2 + 4, y1: -h / 2 + 4, x2: w / 2 - 4, y2: h / 2 - 4, stroke: 'transparent' }),
+      s('line', { class: 'xmark', x1: w / 2 - 4, y1: -h / 2 + 4, x2: -w / 2 + 4, y2: h / 2 - 4, stroke: 'transparent' })
     );
     g.addEventListener('click', (e) => { e.stopPropagation(); openPopover(id, g); });
     return g;
   }
 
   function labelDisc(id, p, arch) {
-    const ly = arch === 'upper' ? p.y - 25 : p.y + 29;
+    const ly = arch === 'upper' ? p.y - 31 : p.y + 35;
     const grp = s('g', { class: 'tnum-g', 'data-id': id });
     grp.append(
-      s('circle', { class: 'tnum-bg', cx: p.x.toFixed(1), cy: ly.toFixed(1), r: 8.5 }),
+      s('circle', { class: 'tnum-bg', cx: p.x.toFixed(1), cy: ly.toFixed(1), r: PILL_R }),
       s('text', { class: 'tnum', x: p.x.toFixed(1), y: ly.toFixed(1), dy: '0.32em' }, [document.createTextNode(id)])
     );
     return grp;

@@ -34,6 +34,7 @@ export const api = {
   listPatients: (opts) => call('patientsList', opts),
   records: (opts) => call('patientsRecords', opts),
   searchAll: (term) => call('patientsSearchAll', term),
+  patientHistory: (id) => call('patientsHistory', id),
 
   saveTriage: (patientId, data) => call('triageSave', { patientId, data }),
   saveTreatment: (patientId, data, finalize) => call('treatmentSave', { patientId, data, finalize }),
@@ -57,6 +58,13 @@ export const api = {
   appVersion: () => call('appVersion'),
   checkUpdate: (opts) => call('updateCheck', opts || {}),
   installUpdate: (path) => call('updateInstall', { path }),
+
+  // Online auto-update
+  onlineUpdateAvailable: () => call('updateOnlineAvailable'),
+  checkOnline: () => call('updateCheckOnline'),
+  downloadOnline: () => call('updateDownloadOnline'),
+  installOnline: () => call('updateInstallOnline'),
+  onUpdateEvent: (cb) => window.api.onUpdateEvent(cb),
 
   openExternal: (url) => window.api.appOpenExternal(url),
 };

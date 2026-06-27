@@ -4,6 +4,7 @@ import { api } from '../api.js';
 import { icon } from '../icons.js';
 import { SignaturePad } from '../components/signature.js';
 import { Odontogram } from '../components/odontogram.js';
+import { patientHistoryCards } from '../components/patientHistory.js';
 import { statusPill } from './dashboard.js';
 
 const EXTRACTION_TYPES = [
@@ -59,6 +60,7 @@ export function renderProvider(ctx, params = {}) {
     const tx = p.treatment || {};
     const locked = tx.locked;
     let xrays = await api.listXrays(id);
+    const priorVisits = await api.patientHistory(id).catch(() => []);
 
     // medical flags
     const flagConds = conditions().filter((c) => c.flag && (p.medical_history.conditions || []).includes(c.key)).map((c) => c.label);
@@ -354,6 +356,12 @@ export function renderProvider(ctx, params = {}) {
 
       flags.length ? el('div', { class: 'banner banner--alert' }, [icon('flag', { size: 16 }), 'Medical flags: ' + flags.join(' · ')]) : null,
       locked ? el('div', { class: 'banner banner--locked' }, [icon('lock', { size: 16 }), 'This record is signed off and locked. View or export below.']) : null,
+
+      // Full patient history — collapsible, open by default.
+      el('details', { class: 'history-details', open: 'open' }, [
+        el('summary', { class: 'history-summary' }, [icon('clipboard', { size: 16 }), 'Patient history', priorVisits.length ? el('span', { class: 'pill pill--info', style: 'margin-left:8px' }, [`${priorVisits.length} prior visit(s)`]) : null]),
+        el('div', { class: 'history-grid' }, patientHistoryCards(p, priorVisits)),
+      ]),
 
       // Triage / visit bar (paper top row)
       panel('clipboard', 'Triage & Visit',

@@ -14,6 +14,7 @@ const path = require('path');
 const db = require('./db');
 const pdf = require('./pdf');
 const updater = require('./updater');
+const autoupdate = require('./autoupdate');
 
 let currentUser = null;
 
@@ -34,6 +35,7 @@ const PERMS = {
   'patients:get': ['admin', 'doctor', 'triage'],
   'patients:list': ['admin', 'doctor', 'triage'],
   'patients:searchAll': ['admin', 'doctor', 'triage'],
+  'patients:history': ['admin', 'doctor', 'triage'],
   'patients:records': ['admin', 'doctor'],
   'triage:save': ['admin', 'doctor', 'triage'],
   'treatment:save': ['admin', 'doctor'],
@@ -131,6 +133,7 @@ function register(getMainWindow) {
   handle('patients:list', (opts) => db.listPatients(opts || {}));
   handle('patients:records', (opts) => db.listPatients(opts || {}));
   handle('patients:searchAll', (term) => db.searchAllPatients(term));
+  handle('patients:history', (id) => db.patientHistory(id));
 
   /* ---- Triage & treatment ---- */
   handle('triage:save', ({ patientId, data }) => db.saveTriage(currentUser, patientId, data));
@@ -275,6 +278,23 @@ function register(getMainWindow) {
       return { ok: false, error: err.message };
     }
   });
+  // Online auto-update (electron-updater / GitHub releases).
+  ipcMain.handle('update:onlineAvailable', async () => {
+    try { return { ok: true, data: { available: autoupdate.available() } }; } catch (err) { return { ok: false, error: err.message }; }
+  });
+  ipcMain.handle('update:checkOnline', async () => {
+    try { if (!currentUser) throw new Error('Please sign in first.'); return { ok: true, data: await autoupdate.check() }; } catch (err) { return { ok: false, error: err.message }; }
+  });
+  ipcMain.handle('update:downloadOnline', async () => {
+    try { if (!currentUser) throw new Error('Please sign in first.'); return { ok: true, data: await autoupdate.download() }; } catch (err) { return { ok: false, error: err.message }; }
+  });
+  ipcMain.handle('update:installOnline', async () => {
+    try {
+      if (!currentUser || currentUser.role !== 'admin') throw new Error('Only an administrator can install updates.');
+      return { ok: true, data: autoupdate.quitAndInstall() };
+    } catch (err) { return { ok: false, error: err.message }; }
+  });
+
   ipcMain.handle('update:install', async (_e, { path: installerPath }) => {
     try {
       if (!currentUser || currentUser.role !== 'admin') throw new Error('Only an administrator can install updates.');

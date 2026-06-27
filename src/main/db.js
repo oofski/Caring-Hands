@@ -517,6 +517,33 @@ function addConsent(patientId, c) {
   );
 }
 
+// Prior visits for the same person (matched by name + DOB) across all events —
+// the returning-patient / continuity-of-care history.
+function patientHistory(patientId) {
+  const p = db.prepare('SELECT * FROM patients WHERE id = ?').get(patientId);
+  if (!p) return [];
+  const rows = db.prepare(
+    `SELECT pt.id, pt.created_at, pt.status, e.name AS event_name
+     FROM patients pt JOIN events e ON e.id = pt.event_id
+     WHERE pt.id != ? AND lower(pt.first_name) = lower(?) AND lower(pt.last_name) = lower(?)
+       AND (pt.dob = ? OR (? IS NULL))
+     ORDER BY pt.created_at DESC`
+  ).all(patientId, p.first_name, p.last_name, p.dob, p.dob);
+  return rows.map((r) => {
+    const tr = db.prepare("SELECT checklist FROM triage WHERE patient_id = ?").get(r.id);
+    const tx = db.prepare('SELECT fillings, extractions, cleaning FROM treatments WHERE patient_id = ?').get(r.id);
+    let summary = [];
+    if (tx) {
+      const f = JSON.parse(tx.fillings || '[]').length, x = JSON.parse(tx.extractions || '[]').length;
+      const c = Object.values(JSON.parse(tx.cleaning || '{}')).some(Boolean);
+      if (f) summary.push(`${f} filling(s)`);
+      if (x) summary.push(`${x} extraction(s)`);
+      if (c) summary.push('cleaning');
+    }
+    return { id: r.id, event_name: r.event_name, created_at: r.created_at, status: r.status, summary: summary.join(', ') || '—' };
+  });
+}
+
 function deletePatient(actor, id) {
   const p = db.prepare('SELECT * FROM patients WHERE id = ?').get(id);
   if (!p) throw new Error('Patient not found.');
@@ -800,7 +827,7 @@ module.exports = {
   init, close,
   login, listUsers, createUser, updateUser, deleteUser,
   listEvents, createEvent, updateEvent, setActiveEvent, setEventActive, deleteEvent, getActiveEvent,
-  createPatient, updatePatient, deletePatient, getPatient, listPatients, searchAllPatients,
+  createPatient, updatePatient, deletePatient, getPatient, listPatients, searchAllPatients, patientHistory,
   saveTriage, saveTreatment,
   addXray, getXray, listXrays, deleteXray,
   dashboardStats, listAudit, audit,
