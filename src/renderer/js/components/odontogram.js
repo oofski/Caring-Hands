@@ -238,7 +238,10 @@ export function Odontogram({ mode = 'adult', teeth = {}, selected = [], onChange
     selectedList.innerHTML = '';
     mixedNote.style.display = curMode === 'mixed' ? '' : 'none';
     const lbl = document.createElement('span'); lbl.textContent = 'Tagged teeth:'; selectedList.append(lbl);
-    const ids = Object.keys(toothData);
+    // Only show tags for teeth that exist in the current dentition view.
+    const [u, l] = idsFor();
+    const valid = new Set([...u, ...l]);
+    const ids = Object.keys(toothData).filter((id) => valid.has(id));
     if (!ids.length) { const n = document.createElement('span'); n.className = 'subtle'; n.textContent = 'none — tap a tooth to tag it'; selectedList.append(n); return; }
     ids.forEach((id) => {
       const d = toothData[id];

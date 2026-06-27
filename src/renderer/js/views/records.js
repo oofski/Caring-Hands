@@ -150,11 +150,46 @@ export function renderRecords(ctx, params = {}) {
           ]),
           store.is('admin') ? el('div', { class: 'card' }, [
             el('h3', { class: 'card-title' }, ['Admin']),
-            el('button', { class: 'btn btn--danger btn--block', onClick: () => deletePatient(p) }, [icon('trash', { size: 16 }), 'Delete patient record']),
+            el('button', { class: 'btn btn--ghost btn--block', onClick: () => editPatient(p) }, [icon('pen', { size: 16 }), 'Edit patient details']),
+            el('button', { class: 'btn btn--danger btn--block', style: 'margin-top:8px', onClick: () => deletePatient(p) }, [icon('trash', { size: 16 }), 'Delete patient record']),
           ]) : null,
         ]),
       ]),
     );
+  }
+
+  async function editPatient(p) {
+    const d = p.demographics || {};
+    const f = {
+      first_name: el('input', { class: 'input', value: p.first_name || '' }),
+      last_name: el('input', { class: 'input', value: p.last_name || '' }),
+      dob: el('input', { class: 'input', type: 'date', value: p.dob || '' }),
+      phone: el('input', { class: 'input', value: p.phone || '' }),
+      email: el('input', { class: 'input', value: p.email || '' }),
+      address: el('input', { class: 'input', value: d.address || '' }),
+      emergency_name: el('input', { class: 'input', value: d.emergency_name || '' }),
+      emergency_phone: el('input', { class: 'input', value: d.emergency_phone || '' }),
+    };
+    const fld = (label, node, span) => el('label', { class: 'field' + (span ? ' span-2' : '') }, [el('span', { class: 'field-label' }, [label]), node]);
+    const form = el('div', { class: 'form-grid' }, [
+      fld('First name', f.first_name), fld('Last name', f.last_name),
+      fld('Date of birth', f.dob), fld('Phone', f.phone),
+      fld('Email', f.email, true),
+      fld('Address', f.address, true),
+      fld('Emergency contact', f.emergency_name), fld('Emergency phone', f.emergency_phone),
+    ]);
+    const ok = await modal({ title: 'Edit patient details', body: form, confirmText: 'Save', cancelText: 'Cancel' });
+    if (!ok) return;
+    try {
+      await api.updatePatient({
+        id: p.id,
+        first_name: f.first_name.value.trim(), last_name: f.last_name.value.trim(),
+        dob: f.dob.value, phone: f.phone.value.trim(), email: f.email.value.trim(),
+        demographics: { ...d, address: f.address.value.trim(), emergency_name: f.emergency_name.value.trim(), emergency_phone: f.emergency_phone.value.trim() },
+      });
+      toast('Patient details updated', 'success');
+      detail(p.id);
+    } catch (e) { toast(e.message, 'error'); }
   }
 
   async function deletePatient(p) {
