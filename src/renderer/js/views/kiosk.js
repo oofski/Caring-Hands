@@ -7,27 +7,61 @@ import { api } from '../api.js';
 
 export function renderKiosk(ctx) {
   const data = {
-    language: getLang(),
+    language: 'en',
     demographics: {}, medical_history: {}, dental_history: {}, consents: [],
   };
   const root = el('div', { class: 'kiosk' });
+  let started = false;
+  let eventLangs = null; // CSV of language codes enabled for the active event
 
   // Step builders return { title, node, collect } — collect() validates and
   // writes into `data`, returning false to block navigation.
   let steps = [];
   let idx = 0;
+  let current = null; // the step object built for the CURRENTLY displayed inputs
 
   function computeSteps() {
-    const list = [stepLanguage, stepDemographics, stepMedical, stepDental, stepGeneralConsent];
+    const list = [stepDemographics, stepMedical, stepDental, stepGeneralConsent];
     if (data.dental_history.may_need_extraction === 'yes') list.push(stepSurgeryConsent);
     list.push(stepReview);
     return list;
   }
 
+  // Pre-start language gate: the patient picks a language BEFORE any form chrome
+  // renders, so the whole wizard appears in their language (no English flash).
+  function renderGate() {
+    stopSpeaking();
+    clear(root);
+    root.append(
+      el('div', { class: 'kiosk-gate' }, [
+        el('img', { class: 'kiosk-gate-logo', src: '../../assets/logo.svg', alt: 'Caring Hands' }),
+        el('div', { class: 'kiosk-welcome' }, [t('intake.welcome')]),
+        el('div', { class: 'kiosk-choose' }, [t('intake.chooseLanguage')]),
+        el('div', { class: 'lang-grid' }, languageList(eventLangs).map((l) =>
+          el('button', { class: 'lang-card', onClick: () => chooseLanguage(l.code) }, [
+            el('span', { class: 'lang-native' }, [l.native]),
+            el('span', { class: 'lang-en' }, [l.label]),
+          ])
+        )),
+        el('button', { class: 'btn btn--ghost btn--sm kiosk-gate-exit', onClick: () => { setLang('en'); ctx.navigate('login'); } }, [icon('x', { size: 16 }), t('common.cancel')]),
+      ])
+    );
+  }
+
+  function chooseLanguage(code) {
+    data.language = code;
+    setLang(code);
+    started = true;
+    steps = computeSteps();
+    idx = 0;
+    paint();
+  }
+
   function go(n) {
     stopSpeaking();
     if (n > idx) {
-      const ok = steps[idx].collect ? steps[idx].collect() : true;
+      // Collect from the inputs currently on screen (not a fresh rebuild).
+      const ok = current && current.collect ? current.collect() : true;
       if (ok === false) return;
       steps = computeSteps(); // surgery step may appear/disappear
     }
@@ -37,6 +71,7 @@ export function renderKiosk(ctx) {
 
   function paint() {
     const step = steps[idx]();
+    current = step;
     const total = steps.length;
     clear(root);
 
@@ -63,23 +98,6 @@ export function renderKiosk(ctx) {
   }
 
   /* ---------------- Steps ---------------- */
-
-  function stepLanguage() {
-    const node = el('div', { class: 'kiosk-center' }, [
-      el('div', { class: 'kiosk-welcome' }, [t('intake.welcome')]),
-      el('div', { class: 'kiosk-choose' }, [t('intake.chooseLanguage')]),
-      el('div', { class: 'lang-grid' }, languageList().map((l) =>
-        el('button', {
-          class: 'lang-card' + (data.language === l.code ? ' lang-card--on' : ''),
-          onClick: () => { data.language = l.code; setLang(l.code); steps = computeSteps(); paint(); },
-        }, [
-          el('span', { class: 'lang-native' }, [l.native]),
-          el('span', { class: 'lang-en' }, [l.label]),
-        ])
-      )),
-    ]);
-    return { title: t('intake.s_language'), node, collect: () => { setLang(data.language); return true; } };
-  }
 
   function stepDemographics() {
     const d = data.demographics;
@@ -370,7 +388,10 @@ export function renderKiosk(ctx) {
   }
 
   async function submit() {
-    // Ensure the review step's predecessor data is captured.
+    // Capture the step the patient is sitting on before submitting (the final
+    // "Submit" tap bypasses forward-nav collect()).
+    const ok = current && current.collect ? current.collect() : true;
+    if (ok === false) return;
     try {
       const patient = await api.createPatient(data);
       showThankYou(patient);
@@ -391,7 +412,12 @@ export function renderKiosk(ctx) {
     ]));
   }
 
-  steps = computeSteps();
-  paint();
+  // Boot: show the language gate, then refine it with the active event's
+  // enabled language packs once they load.
+  setLang('en');
+  renderGate();
+  api.activeEvent().then((ev) => {
+    if (ev && ev.languages) { eventLangs = ev.languages; if (!started) renderGate(); }
+  }).catch(() => {});
   return root;
 }

@@ -153,6 +153,7 @@ function migrate() {
   // Additive column migrations (safe to run on existing v1.0.0 databases).
   addColumn('triage', 'triage_signature', 'TEXT');
   addColumn('triage', 'triage_signer_name', 'TEXT');
+  addColumn('triage', 'teeth_notes', "TEXT NOT NULL DEFAULT '{}'");
   addColumn('xrays', 'updated_at', 'TEXT');
 }
 
@@ -188,24 +189,22 @@ function verifyPassword(password, salt, expectedHash) {
 function seed() {
   const userCount = db.prepare('SELECT COUNT(*) AS n FROM users').get().n;
   if (userCount === 0) {
+    // Only a bootstrap administrator is created. The admin creates all other
+    // staff accounts from Admin > Staff. (No demo doctor/triage accounts.)
     const { salt, hash } = hashPassword('admin');
     db.prepare(
       `INSERT INTO users (username, full_name, role, salt, hash, active, created_at)
        VALUES (?,?,?,?,?,1,?)`
     ).run('admin', 'Clinic Administrator', 'admin', salt, hash, now());
-
-    // Helpful starter accounts so the clinic can log in to every role on day one.
-    const doc = hashPassword('doctor');
-    db.prepare(
-      `INSERT INTO users (username, full_name, role, salt, hash, active, created_at)
-       VALUES (?,?,?,?,?,1,?)`
-    ).run('doctor', 'Dr. Demo Provider', 'doctor', doc.salt, doc.hash, now());
-
-    const tri = hashPassword('triage');
-    db.prepare(
-      `INSERT INTO users (username, full_name, role, salt, hash, active, created_at)
-       VALUES (?,?,?,?,?,1,?)`
-    ).run('triage', 'Front Desk', 'triage', tri.salt, tri.hash, now());
+  } else {
+    // One-time cleanup for databases seeded by an earlier version: disable the
+    // old demo doctor/triage accounts if they still use the default password.
+    for (const [u, pw] of [['doctor', 'doctor'], ['triage', 'triage']]) {
+      const row = db.prepare("SELECT * FROM users WHERE username = ?").get(u);
+      if (row && row.active && verifyPassword(pw, row.salt, row.hash)) {
+        db.prepare('UPDATE users SET active = 0 WHERE id = ?').run(row.id);
+      }
+    }
   }
 
   const eventCount = db.prepare('SELECT COUNT(*) AS n FROM events').get().n;
@@ -316,6 +315,19 @@ function updateUser(actor, id, { full_name, role, active, password }) {
   return publicUser(db.prepare('SELECT * FROM users WHERE id = ?').get(id));
 }
 
+function deleteUser(actor, id) {
+  const row = db.prepare('SELECT * FROM users WHERE id = ?').get(id);
+  if (!row) throw new Error('User not found.');
+  if (actor && actor.id === id) throw new Error('You cannot delete your own account.');
+  if (row.role === 'admin') {
+    const admins = db.prepare("SELECT COUNT(*) AS n FROM users WHERE role = 'admin' AND active = 1").get().n;
+    if (admins <= 1) throw new Error('Cannot delete the last administrator.');
+  }
+  db.prepare('DELETE FROM users WHERE id = ?').run(id);
+  audit(actor, 'delete', 'user', id, row.username);
+  return { deleted: true };
+}
+
 /* ------------------------------------------------------------------ */
 /*  Events                                                             */
 /* ------------------------------------------------------------------ */
@@ -342,9 +354,55 @@ function createEvent(actor, { name, location, start_date, end_date, languages })
 function setActiveEvent(actor, id) {
   const e = db.prepare('SELECT * FROM events WHERE id = ?').get(id);
   if (!e) throw new Error('Event not found.');
+  if (!e.active) throw new Error('That event is turned off. Reactivate it first.');
   setSetting('active_event_id', String(id));
   audit(actor, 'select', 'event', id, e.name);
   return e;
+}
+
+function updateEvent(actor, id, { name, location, start_date, end_date, languages }) {
+  const e = db.prepare('SELECT * FROM events WHERE id = ?').get(id);
+  if (!e) throw new Error('Event not found.');
+  db.prepare(
+    `UPDATE events SET name=?, location=?, start_date=?, end_date=?, languages=? WHERE id=?`
+  ).run(name ?? e.name, location ?? e.location, start_date ?? e.start_date, end_date ?? e.end_date, languages ?? e.languages, id);
+  audit(actor, 'update', 'event', id, name || e.name);
+  return db.prepare('SELECT * FROM events WHERE id = ?').get(id);
+}
+
+// Turn an event on/off. Turning off the active event clears the active setting
+// and falls back to the most recent still-active event.
+function setEventActive(actor, id, active) {
+  const e = db.prepare('SELECT * FROM events WHERE id = ?').get(id);
+  if (!e) throw new Error('Event not found.');
+  db.prepare('UPDATE events SET active = ? WHERE id = ?').run(active ? 1 : 0, id);
+  if (!active && Number(getSetting('active_event_id')) === id) {
+    const next = db.prepare('SELECT id FROM events WHERE active = 1 ORDER BY created_at DESC').get();
+    setSetting('active_event_id', next ? String(next.id) : '');
+  }
+  audit(actor, active ? 'activate' : 'deactivate', 'event', id, e.name);
+  return db.prepare('SELECT * FROM events WHERE id = ?').get(id);
+}
+
+function deleteEvent(actor, id, { force } = {}) {
+  const e = db.prepare('SELECT * FROM events WHERE id = ?').get(id);
+  if (!e) throw new Error('Event not found.');
+  const count = db.prepare('SELECT COUNT(*) AS n FROM patients WHERE event_id = ?').get(id).n;
+  if (count > 0 && !force) {
+    throw new Error(`This event has ${count} patient record(s). Turn it off instead, or confirm permanent deletion.`);
+  }
+  // Cascade: patients -> (triage/treatments/consents/xrays cascade via FK ON DELETE CASCADE)
+  const tx = db.transaction(() => {
+    db.prepare('DELETE FROM patients WHERE event_id = ?').run(id);
+    db.prepare('DELETE FROM events WHERE id = ?').run(id);
+  });
+  tx();
+  if (Number(getSetting('active_event_id')) === id) {
+    const next = db.prepare('SELECT id FROM events WHERE active = 1 ORDER BY created_at DESC').get();
+    setSetting('active_event_id', next ? String(next.id) : '');
+  }
+  audit(actor, 'delete', 'event', id, `${e.name} (+${count} patients)`);
+  return { deleted: true, patients: count };
 }
 
 function getActiveEvent() {
@@ -459,12 +517,21 @@ function addConsent(patientId, c) {
   );
 }
 
+function deletePatient(actor, id) {
+  const p = db.prepare('SELECT * FROM patients WHERE id = ?').get(id);
+  if (!p) throw new Error('Patient not found.');
+  // triage/treatments/consents/xrays cascade via FK ON DELETE CASCADE.
+  db.prepare('DELETE FROM patients WHERE id = ?').run(id);
+  audit(actor, 'delete', 'patient', id, `${p.first_name} ${p.last_name}`.trim());
+  return { deleted: true };
+}
+
 function getPatient(id) {
   const p = rowToPatient(db.prepare('SELECT * FROM patients WHERE id = ?').get(id));
   if (!p) return null;
   p.consents = db.prepare('SELECT * FROM consents WHERE patient_id = ? ORDER BY signed_at').all(id);
   const tr = db.prepare('SELECT * FROM triage WHERE patient_id = ?').get(id);
-  p.triage = tr ? { ...tr, flags: JSON.parse(tr.flags), checklist: JSON.parse(tr.checklist), teeth: JSON.parse(tr.teeth) } : null;
+  p.triage = tr ? { ...tr, flags: JSON.parse(tr.flags), checklist: JSON.parse(tr.checklist), teeth: JSON.parse(tr.teeth), teeth_notes: JSON.parse(tr.teeth_notes || '{}') } : null;
   const t = db.prepare('SELECT * FROM treatments WHERE patient_id = ?').get(id);
   p.treatment = t
     ? {
@@ -481,16 +548,21 @@ function getPatient(id) {
   return p;
 }
 
+// eventId: a numeric id, or 'all' to span every event, or omitted = active event.
 function listPatients({ eventId, search } = {}) {
-  const evId = eventId || Number(getSetting('active_event_id'));
-  let sql = 'SELECT * FROM patients WHERE event_id = ?';
-  const args = [evId];
+  const allEvents = eventId === 'all';
+  const evId = allEvents ? null : (eventId || Number(getSetting('active_event_id')));
+  let sql = 'SELECT p.*, e.name AS event_name FROM patients p JOIN events e ON e.id = p.event_id';
+  const args = [];
+  const where = [];
+  if (!allEvents) { where.push('p.event_id = ?'); args.push(evId); }
   if (search) {
-    sql += ' AND (lower(first_name) LIKE ? OR lower(last_name) LIKE ? OR phone LIKE ? OR dob LIKE ?)';
+    where.push('(lower(p.first_name) LIKE ? OR lower(p.last_name) LIKE ? OR p.phone LIKE ? OR p.dob LIKE ?)');
     const s = `%${String(search).toLowerCase()}%`;
     args.push(s, s, `%${search}%`, `%${search}%`);
   }
-  sql += ' ORDER BY created_at DESC';
+  if (where.length) sql += ' WHERE ' + where.join(' AND ');
+  sql += ' ORDER BY p.created_at DESC';
   return db.prepare(sql).all(...args).map((p) => {
     const pt = rowToPatient(p);
     const tr = db.prepare('SELECT status, complaint, flags, assigned_to FROM triage WHERE patient_id = ?').get(p.id);
@@ -504,6 +576,8 @@ function listPatients({ eventId, search } = {}) {
       language: pt.language,
       status: pt.status,
       created_at: pt.created_at,
+      event_id: p.event_id,
+      event_name: p.event_name,
       triage_status: tr ? tr.status : null,
       complaint: tr ? tr.complaint : null,
       flags: tr ? JSON.parse(tr.flags) : [],
@@ -541,7 +615,7 @@ function saveTriage(actor, patientId, data) {
   const d = data || {};
   if (existing) {
     db.prepare(
-      `UPDATE triage SET complaint=?, flags=?, checklist=?, teeth=?, notes=?,
+      `UPDATE triage SET complaint=?, flags=?, checklist=?, teeth=?, teeth_notes=?, notes=?,
          xray_count=?, xray_station=?, assigned_to=?, status=?,
          triage_signature=?, triage_signer_name=?, triaged_by=?, triaged_at=?
        WHERE patient_id=?`
@@ -550,6 +624,7 @@ function saveTriage(actor, patientId, data) {
       JSON.stringify(d.flags || []),
       JSON.stringify(d.checklist || {}),
       JSON.stringify(d.teeth || []),
+      JSON.stringify(d.teeth_notes || {}),
       d.notes || null,
       d.xray_count || 0,
       d.xray_station || null,
@@ -563,12 +638,12 @@ function saveTriage(actor, patientId, data) {
     );
   } else {
     db.prepare(
-      `INSERT INTO triage (patient_id, complaint, flags, checklist, teeth, notes,
+      `INSERT INTO triage (patient_id, complaint, flags, checklist, teeth, teeth_notes, notes,
           xray_count, xray_station, assigned_to, status, triage_signature, triage_signer_name, triaged_by, triaged_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
     ).run(
       patientId, d.complaint || null, JSON.stringify(d.flags || []),
-      JSON.stringify(d.checklist || {}), JSON.stringify(d.teeth || []), d.notes || null,
+      JSON.stringify(d.checklist || {}), JSON.stringify(d.teeth || []), JSON.stringify(d.teeth_notes || {}), d.notes || null,
       d.xray_count || 0, d.xray_station || null, d.assigned_to || null,
       d.status || 'ready', d.triage_signature || null, d.triage_signer_name || null,
       actor ? actor.id : null, now()
@@ -723,9 +798,9 @@ function close() {
 
 module.exports = {
   init, close,
-  login, listUsers, createUser, updateUser,
-  listEvents, createEvent, setActiveEvent, getActiveEvent,
-  createPatient, updatePatient, getPatient, listPatients, searchAllPatients,
+  login, listUsers, createUser, updateUser, deleteUser,
+  listEvents, createEvent, updateEvent, setActiveEvent, setEventActive, deleteEvent, getActiveEvent,
+  createPatient, updatePatient, deletePatient, getPatient, listPatients, searchAllPatients,
   saveTriage, saveTreatment,
   addXray, getXray, listXrays, deleteXray,
   dashboardStats, listAudit, audit,

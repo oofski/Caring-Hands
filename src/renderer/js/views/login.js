@@ -47,7 +47,6 @@ export function renderLogin(ctx) {
         el('small', {}, [t('login.kioskHint')]),
       ]),
     ]),
-    el('p', { class: 'login-hint' }, [t('login.hint')]),
   ]);
 
   return el('div', { class: 'login-screen' }, [

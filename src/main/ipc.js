@@ -22,8 +22,13 @@ const PERMS = {
   'users:list': ['admin'],
   'users:create': ['admin'],
   'users:update': ['admin'],
+  'users:delete': ['admin'],
   'events:create': ['admin'],
+  'events:update': ['admin'],
   'events:setActive': ['admin'],
+  'events:setState': ['admin'],
+  'events:delete': ['admin'],
+  'patients:delete': ['admin'],
   'patients:create': ['admin', 'triage'],
   'patients:update': ['admin', 'triage', 'doctor'],
   'patients:get': ['admin', 'doctor', 'triage'],
@@ -94,12 +99,19 @@ function register(getMainWindow) {
   handle('users:list', () => db.listUsers());
   handle('users:create', (payload) => db.createUser(currentUser, payload));
   handle('users:update', ({ id, ...rest }) => db.updateUser(currentUser, id, rest));
+  handle('users:delete', (id) => db.deleteUser(currentUser, id));
 
   /* ---- Events ---- */
   handle('events:list', () => db.listEvents(), { });
   ipcMain.handle('events:active', async () => ({ ok: true, data: db.getActiveEvent() }));
   handle('events:create', (payload) => db.createEvent(currentUser, payload));
+  handle('events:update', ({ id, ...rest }) => db.updateEvent(currentUser, id, rest));
   handle('events:setActive', (id) => db.setActiveEvent(currentUser, id));
+  handle('events:setState', ({ id, active }) => db.setEventActive(currentUser, id, active));
+  handle('events:delete', ({ id, force }) => db.deleteEvent(currentUser, id, { force }));
+
+  /* ---- Patient delete (admin) ---- */
+  handle('patients:delete', (id) => db.deletePatient(currentUser, id));
 
   /* ---- Patients ---- */
   // Check-in is special: a dedicated kiosk (no signed-in user) may create

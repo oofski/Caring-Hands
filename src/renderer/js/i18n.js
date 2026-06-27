@@ -27,8 +27,12 @@ export function conditions() {
 export function allergies() {
   return ALLERGIES.map((a) => ({ key: a.key, label: a[lang] || a.en }));
 }
-export function languageList() {
-  return LANGUAGES;
+// All known languages, or only those enabled for an event (CSV string of codes).
+export function languageList(enabledCsv) {
+  if (!enabledCsv) return LANGUAGES;
+  const codes = String(enabledCsv).split(',').map((s) => s.trim()).filter(Boolean);
+  const filtered = LANGUAGES.filter((l) => codes.includes(l.code));
+  return filtered.length ? filtered : LANGUAGES.filter((l) => l.code === 'en');
 }
 
 // Read-aloud using the browser speech engine (offline, built into Chromium).
@@ -37,7 +41,9 @@ export function speak(text, onEnd) {
   if (!('speechSynthesis' in window)) return false;
   window.speechSynthesis.cancel();
   const u = new SpeechSynthesisUtterance(text);
-  u.lang = lang === 'es' ? 'es-ES' : 'en-US';
+  // Map each pack to the closest available TTS voice (Kriol/Nyanja fall back to English).
+  const ttsLang = { en: 'en-US', es: 'es-ES', bzj: 'en-US', nya: 'en-US' };
+  u.lang = ttsLang[lang] || 'en-US';
   u.rate = 0.95;
   u.onend = () => { speaking = false; if (onEnd) onEnd(); };
   speaking = true;

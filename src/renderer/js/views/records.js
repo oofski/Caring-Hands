@@ -2,6 +2,7 @@ import { el, clear, toast, modal } from '../dom.js';
 import { t, conditions, allergies } from '../i18n.js';
 import { api } from '../api.js';
 import { icon } from '../icons.js';
+import { store } from '../store.js';
 import { statusPill } from './dashboard.js';
 import { exportButtons } from './provider.js';
 
@@ -11,24 +12,32 @@ export function renderRecords(ctx, params = {}) {
   return root;
 
   async function list() {
-    const searchInput = el('input', { class: 'input search-input', placeholder: 'Search current event by name, DOB, phone…' });
+    const events = await api.listEvents();
+    const searchInput = el('input', { class: 'input search-input', placeholder: 'Search by name, DOB, phone…' });
     const allInput = el('input', { class: 'input search-input', placeholder: 'Returning patient lookup (all events)…' });
+    // Default to ALL events so records are always visible regardless of which
+    // event is currently active.
+    const eventSel = el('select', { class: 'input select' });
+    eventSel.append(el('option', { value: 'all' }, ['All events']));
+    events.forEach((e) => eventSel.append(el('option', { value: String(e.id) }, [`${e.name} (${e.patient_count})`])));
     const tbody = el('tbody', {});
 
     async function refresh() {
-      const patients = await api.listPatients({ search: searchInput.value.trim() });
+      const eventId = eventSel.value === 'all' ? 'all' : Number(eventSel.value);
+      const patients = await api.listPatients({ eventId, search: searchInput.value.trim() });
       clear(tbody);
       if (!patients.length) tbody.append(el('tr', {}, [el('td', { colspan: 6, class: 'empty' }, ['No matching records.'])]));
       patients.forEach((p) => tbody.append(el('tr', {}, [
         el('td', {}, [el('strong', {}, [`${p.last_name}, ${p.first_name}`])]),
         el('td', {}, [p.dob || '—']),
-        el('td', {}, [p.age != null ? String(p.age) : '—']),
-        el('td', {}, [p.complaint || '—']),
+        el('td', { class: 'num' }, [p.age != null ? String(p.age) : '—']),
+        el('td', { class: 'subtle small' }, [p.event_name || '—']),
         el('td', {}, [statusPill(p.status)]),
         el('td', {}, [el('button', { class: 'btn btn--ghost btn--sm', onClick: () => detail(p.id) }, ['Open'])]),
       ])));
     }
     searchInput.addEventListener('input', debounce(refresh, 200));
+    eventSel.addEventListener('change', refresh);
 
     const allResults = el('div', { class: 'lookup-results' });
     allInput.addEventListener('input', debounce(async () => {
@@ -45,15 +54,18 @@ export function renderRecords(ctx, params = {}) {
 
     clear(root);
     root.append(
-      el('div', { class: 'view-head' }, [el('div', {}, [el('h1', {}, [t('nav.records')]), el('p', { class: 'view-sub' }, ['Patient records for the active event'])])]),
+      el('div', { class: 'view-head' }, [el('div', {}, [el('h1', {}, [t('nav.records')]), el('p', { class: 'view-sub' }, ['All patient records across events'])])]),
       el('div', { class: 'card' }, [
         el('div', { class: 'lookup-row' }, [
-          el('div', {}, [el('span', { class: 'field-label' }, ['Search this event']), searchInput]),
-          el('div', {}, [el('span', { class: 'field-label' }, ['Returning patient (all events)']), allInput, allResults]),
+          el('div', {}, [el('span', { class: 'field-label' }, ['Event']), eventSel]),
+          el('div', {}, [el('span', { class: 'field-label' }, ['Search']), searchInput]),
         ]),
-        el('table', { class: 'data-table' }, [
-          el('thead', {}, [el('tr', {}, ['Patient', 'DOB', 'Age', 'Complaint', 'Status', ''].map((h) => el('th', {}, [h])))]),
-          tbody,
+        el('div', { style: 'margin-bottom:12px' }, [el('span', { class: 'field-label' }, ['Returning patient lookup (all events)']), allInput, allResults]),
+        el('div', { class: 'data-table-wrap' }, [
+          el('table', { class: 'data-table' }, [
+            el('thead', {}, [el('tr', {}, ['Patient', 'DOB', 'Age', 'Event', 'Status', ''].map((h) => el('th', {}, [h])))]),
+            tbody,
+          ]),
         ]),
       ]),
     );
@@ -83,9 +95,11 @@ export function renderRecords(ctx, params = {}) {
             el('h3', { class: 'card-title' }, ['Patient information']),
             el('div', { class: 'kv-grid' }, [
               kv('Date of birth', p.dob), kv('Age', p.age != null ? String(p.age) : '—'),
-              kv('Gender', p.gender), kv('Phone', p.phone), kv('Email', p.email),
-              kv('Address', p.demographics.address), kv('Emergency', p.demographics.emergency_name),
-              kv('Emergency phone', p.demographics.emergency_phone), kv('Referral', p.demographics.referral),
+              kv('Gender', p.gender), kv('Marital status', p.demographics.marital_status),
+              kv('Phone', p.phone), kv('Email', p.email),
+              kv('Address', p.demographics.address), kv('Mailing address', p.demographics.mailing_address),
+              kv('Children', (p.demographics.children || []).join(', ')), kv('Referral', p.demographics.referral),
+              kv('Emergency contact', p.demographics.emergency_name), kv('Emergency phone', p.demographics.emergency_phone),
             ]),
           ]),
           el('div', { class: 'card' }, [
@@ -111,7 +125,9 @@ export function renderRecords(ctx, params = {}) {
             el('div', { class: 'kv-grid' }, [
               kv('Reason', p.dental_history.reason), kv('Goals', p.dental_history.goals),
               kv('Prior dentist', p.dental_history.prior_dentist), kv('Gums bleed', p.dental_history.gum_bleeding),
-              kv('Grinding', p.dental_history.grinding), kv('Ortho', p.dental_history.ortho),
+              kv('Sores / lumps', p.dental_history.sores), kv('Head/neck/jaw injury', p.dental_history.jaw_injury),
+              kv('Grinding / clenching', p.dental_history.grinding), kv('Bleeding after extraction', p.dental_history.post_extraction_bleeding),
+              kv('Orthodontic history', p.dental_history.ortho), kv('Cosmetic interest', p.dental_history.cosmetic),
             ]),
           ]),
           el('div', { class: 'card' }, [
@@ -132,9 +148,24 @@ export function renderRecords(ctx, params = {}) {
             el('button', { class: 'btn btn--ghost btn--block', onClick: () => screenDisplay(p) }, [icon('phone', { size: 16 }), 'Screen display for photo']),
             p.email ? el('button', { class: 'btn btn--ghost btn--block', onClick: () => emailRecord(p) }, [icon('mail', { size: 16 }), 'Email to patient']) : null,
           ]),
+          store.is('admin') ? el('div', { class: 'card' }, [
+            el('h3', { class: 'card-title' }, ['Admin']),
+            el('button', { class: 'btn btn--danger btn--block', onClick: () => deletePatient(p) }, [icon('trash', { size: 16 }), 'Delete patient record']),
+          ]) : null,
         ]),
       ]),
     );
+  }
+
+  async function deletePatient(p) {
+    const ok = await modal({
+      title: 'Delete patient record?',
+      body: `This permanently deletes <b>${p.first_name} ${p.last_name}</b> and all of their intake, triage, treatment, x-rays, and consents. This cannot be undone.`,
+      confirmText: 'Delete permanently', cancelText: 'Cancel', danger: true,
+    });
+    if (!ok) return;
+    try { await api.deletePatient(p.id); toast('Patient record deleted', 'success'); ctx.navigate('records'); }
+    catch (e) { toast(e.message, 'error'); }
   }
 
   async function preview(id) {

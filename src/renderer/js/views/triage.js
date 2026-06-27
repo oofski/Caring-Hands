@@ -66,7 +66,9 @@ export function renderTriage(ctx, params = {}) {
     const notes = el('textarea', { class: 'input textarea', rows: 3, placeholder: 'Triage notes' }, [tr.notes || '']);
     const station = el('input', { class: 'input', value: tr.xray_station || '', placeholder: 'X-ray station #' });
     const assigned = el('input', { class: 'input', value: tr.assigned_to || '', placeholder: 'Assign to provider / chair' });
-    const odo = Odontogram({ selected: tr.teeth || [] });
+    const odoTeeth = {};
+    (tr.teeth || []).forEach((id) => { odoTeeth[id] = { tx: null, note: (tr.teeth_notes && tr.teeth_notes[id]) || '' }; });
+    const odo = Odontogram({ teeth: odoTeeth });
 
     // X-ray gallery
     const gallery = el('div', { class: 'xray-gallery' });
@@ -103,7 +105,8 @@ export function renderTriage(ctx, params = {}) {
     async function save(markReady) {
       try {
         await api.saveTriage(id, {
-          complaint: complaint.value.trim(), flags, checklist: checkState, teeth: odo.getSelected(),
+          complaint: complaint.value.trim(), flags, checklist: checkState,
+          teeth: odo.getSelected(), teeth_notes: odo.getNotes(),
           notes: notes.value.trim(), xray_count: xrays.length, xray_station: station.value.trim(),
           assigned_to: assigned.value.trim(), status: markReady ? 'ready' : 'in_progress',
           triage_signature: tr.triage_signature || null, triage_signer_name: tr.triage_signer_name || null,

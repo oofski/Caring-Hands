@@ -75,17 +75,47 @@ export function renderProvider(ctx, params = {}) {
     const station = input(tr.xray_station || '', 'Station #', locked, 'input--sm');
     const xrayCountEl = el('span', { class: 'xray-count-badge' }, [icon('xray', { size: 16 }), el('span', {}, [String(xrays.length)])]);
 
-    /* ---------- Odontogram (the mouth) ---------- */
+    /* ---------- Odontogram (the mouth) — click a tooth to tag + note ---------- */
     const odo = Odontogram({
       mode: 'adult',
-      selected: tr.teeth || [],
-      marks: computeMarks(tx),
-      onChange: () => {},
+      teeth: initialTeeth(tx, tr),
+      onTag: (id, d) => { if (!locked) syncToothToRows(id, d); },
+      onUntag: (id) => { if (!locked) removeAutoRows(id); },
     });
+
+    // When a tooth is tagged in the odontogram, fill the matching list row.
+    function syncToothToRows(id, d) {
+      removeAutoRows(id, d.tx);
+      if (d.tx === 'filling') {
+        const existing = findRow(fillingRows, id);
+        if (existing) { setRowNote(existing, d.note); } else { addFilling({ tooth: id, note: d.note }, true); }
+      } else if (d.tx === 'extraction') {
+        const existing = findRow(extractRows, id);
+        if (existing) { setRowNote(existing, d.note); } else { addExtraction({ tooth: id, note: d.note }, true); }
+      } else if (d.tx === 'cleaning') {
+        if (!cleanState.teeth) cleanState.teeth = [];
+        if (!cleanState.teeth.includes(id)) { cleanState.teeth.push(id); renderCleanTeeth(); }
+      }
+    }
+    function removeAutoRows(id, keepTx) {
+      [['filling', fillingRows], ['extraction', extractRows]].forEach(([tx, rows]) => {
+        if (keepTx === tx) return;
+        const r = findRow(rows, id);
+        if (r && r.dataset.auto === '1') r.remove();
+      });
+      if (keepTx !== 'cleaning' && cleanState.teeth) {
+        const i = cleanState.teeth.indexOf(id);
+        if (i >= 0) { cleanState.teeth.splice(i, 1); renderCleanTeeth(); }
+      }
+    }
+    function findRow(rowsEl, tooth) {
+      return Array.from(rowsEl.children).find((r) => r._get && r._get().tooth === tooth);
+    }
+    function setRowNote(row, note) { if (row._setNote) row._setNote(note); }
 
     /* ---------- Fillings ---------- */
     const fillingRows = el('div', { class: 'tx-rows' });
-    function addFilling(f = {}) {
+    function addFilling(f = {}, auto = false) {
       const tooth = el('input', { class: 'input input--sm num', placeholder: 'Tooth #', value: f.tooth || '', onInput: () => refreshMarks() });
       const surf = new Set((f.surfaces || []).map(String));
       const surfWrap = el('div', { class: 'surface-pills' }, ['1', '2', '3', '4'].map((n) =>
@@ -93,41 +123,60 @@ export function renderProvider(ctx, params = {}) {
       let ant = !!f.ant, post = !!f.post;
       const antBtn = toggleChip('Ant', ant, (on) => { ant = on; }, locked);
       const postBtn = toggleChip('Post', post, (on) => { post = on; }, locked);
+      const noteChip = el('span', { class: 'tx-note' + (f.note ? '' : ' hidden') }, [f.note || '']);
       const row = el('div', { class: 'filling-row' }, [
         el('label', { class: 'field' }, [el('span', { class: 'field-label' }, ['Tooth #']), tooth]),
         el('label', { class: 'field' }, [el('span', { class: 'field-label' }, ['Surfaces']), surfWrap]),
         el('div', { class: 'antpost' }, [antBtn, postBtn]),
-        locked ? el('span') : iconBtn('x', () => row.remove()),
+        noteChip,
+        locked ? el('span') : iconBtn('x', () => { row.remove(); refreshMarks(); }),
       ]);
-      row._get = () => ({ tooth: tooth.value.trim(), surfaces: Array.from(surf), ant, post });
+      row.dataset.tooth = f.tooth || '';
+      if (auto) row.dataset.auto = '1';
+      row._get = () => ({ tooth: tooth.value.trim(), surfaces: Array.from(surf), ant, post, note: noteChip.textContent.trim() });
+      row._setNote = (n) => { noteChip.textContent = n || ''; noteChip.classList.toggle('hidden', !n); };
       fillingRows.append(row);
     }
-    (tx.fillings || []).forEach(addFilling);
+    (tx.fillings || []).forEach((f) => addFilling(f));
     if (!(tx.fillings || []).length && !locked) addFilling();
 
     /* ---------- Extractions ---------- */
     const extractRows = el('div', { class: 'tx-rows' });
-    function addExtraction(x = {}) {
+    function addExtraction(x = {}, auto = false) {
       const tooth = el('input', { class: 'input input--sm num', placeholder: 'Tooth #', value: x.tooth || '', onInput: () => refreshMarks() });
       const types = new Set(x.types || []);
       const typeChips = EXTRACTION_TYPES.map(([k, label]) =>
         toggleChip(label, types.has(k), (on) => { if (on) types.add(k); else types.delete(k); }, locked));
+      const noteChip = el('span', { class: 'tx-note' + (x.note ? '' : ' hidden') }, [x.note || '']);
       const row = el('div', { class: 'ext-row' }, [
         el('label', { class: 'field', style: 'margin:0' }, [el('span', { class: 'field-label' }, ['Tooth #']), tooth]),
         ...typeChips,
-        locked ? el('span') : iconBtn('x', () => row.remove()),
+        noteChip,
+        locked ? el('span') : iconBtn('x', () => { row.remove(); refreshMarks(); }),
       ]);
-      row._get = () => ({ tooth: tooth.value.trim(), types: Array.from(types) });
+      row.dataset.tooth = x.tooth || '';
+      if (auto) row.dataset.auto = '1';
+      row._get = () => ({ tooth: tooth.value.trim(), types: Array.from(types), note: noteChip.textContent.trim() });
+      row._setNote = (n) => { noteChip.textContent = n || ''; noteChip.classList.toggle('hidden', !n); };
       extractRows.append(row);
     }
-    (tx.extractions || []).filter((x) => !x.other).forEach(addExtraction);
+    (tx.extractions || []).filter((x) => !x.other).forEach((x) => addExtraction(x));
     const otherExisting = (tx.extractions || []).find((x) => x.other) || {};
     const extOther = el('input', { class: 'input', placeholder: 'Other extraction (describe)', value: otherExisting.other || '' });
     const extOtherTooth = el('input', { class: 'input input--sm num', placeholder: 'Tooth #', value: otherExisting.tooth || '' });
 
     /* ---------- Cleaning ---------- */
     const cleanState = { ...(tx.cleaning || {}) };
+    if (!cleanState.teeth) cleanState.teeth = [];
     const quadDetail = el('input', { class: 'input input--sm', placeholder: 'Quadrant(s) e.g. UR, LL', value: cleanState.quad_detail || '', style: cleanState.quad_deep_scaling ? '' : 'display:none' });
+    const cleanTeeth = el('div', { class: 'odo-selected-list', style: 'margin-top:8px' });
+    function renderCleanTeeth() {
+      clear(cleanTeeth);
+      if (!cleanState.teeth.length) { cleanTeeth.style.display = 'none'; return; }
+      cleanTeeth.style.display = '';
+      cleanTeeth.append(el('span', {}, ['Teeth cleaned:']));
+      cleanState.teeth.forEach((id) => cleanTeeth.append(el('span', { class: 'tooth-tag' }, [id])));
+    }
     const cleaning = el('div', {}, [
       el('div', { class: 'chip-row' }, CLEANING_OPTS.map(([k, label]) =>
         toggleChip(label, !!cleanState[k], (on) => {
@@ -135,7 +184,9 @@ export function renderProvider(ctx, params = {}) {
           if (k === 'quad_deep_scaling') quadDetail.style.display = on ? '' : 'none';
         }, locked))),
       el('div', { style: 'margin-top:8px;max-width:260px' }, [quadDetail]),
+      cleanTeeth,
     ]);
+    renderCleanTeeth();
 
     /* ---------- Anesthetic ---------- */
     const an = tx.anesthetic && !Array.isArray(tx.anesthetic) ? tx.anesthetic : legacyAnesthetic(tx.anesthetic);
@@ -226,8 +277,10 @@ export function renderProvider(ctx, params = {}) {
       const m = {};
       Array.from(fillingRows.children).forEach((r) => { const f = r._get(); if (f.tooth) m[f.tooth] = 'filling'; });
       Array.from(extractRows.children).forEach((r) => { const x = r._get(); if (x.tooth) m[x.tooth] = 'extraction'; });
+      (cleanState.teeth || []).forEach((id) => { if (!m[id]) m[id] = 'cleaning'; });
       return m;
     }
+    // Manual row edits reflect back onto the mouth (silent — no onTag loop).
     function refreshMarks() { odo.setMarks(computeMarksLive()); }
 
     function collectTreatment() {
@@ -256,6 +309,7 @@ export function renderProvider(ctx, params = {}) {
         flags,
         checklist: checkState,
         teeth: odo.getSelected(),
+        teeth_notes: odo.getNotes(),
         notes: triageNotes.get(),
         xray_count: xrays.length,
         xray_station: station.get(),
@@ -401,11 +455,16 @@ function legacyAnesthetic(arr) {
   return out;
 }
 
-function computeMarks(tx) {
-  const m = {};
-  (tx.fillings || []).forEach((f) => { if (f.tooth) m[f.tooth] = 'filling'; });
-  (tx.extractions || []).forEach((x) => { if (x.tooth) m[x.tooth] = 'extraction'; });
-  return m;
+// Seed the odontogram from existing treatment + triage so the mouth reflects
+// prior work and per-tooth notes round-trip.
+function initialTeeth(tx, tr) {
+  const data = {};
+  (tx.fillings || []).forEach((f) => { if (f.tooth) data[f.tooth] = { tx: 'filling', note: f.note || '' }; });
+  (tx.extractions || []).forEach((x) => { if (x.tooth && !x.other) data[x.tooth] = { tx: 'extraction', note: x.note || '' }; });
+  ((tx.cleaning && tx.cleaning.teeth) || []).forEach((id) => { if (!data[id]) data[id] = { tx: 'cleaning', note: '' }; });
+  (tr.teeth || []).forEach((id) => { if (!data[id]) data[id] = { tx: null, note: (tr.teeth_notes && tr.teeth_notes[id]) || '' }; });
+  Object.entries(tr.teeth_notes || {}).forEach(([id, note]) => { if (data[id] && !data[id].note) data[id].note = note; });
+  return data;
 }
 
 export function exportButtons(ctx, id) {

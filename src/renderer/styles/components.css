@@ -235,8 +235,11 @@
 /* ============================================================
    ODONTOGRAM — the "mouth"
    ============================================================ */
-.odo{ background:var(--surface-sunken); border:var(--border-line); border-radius:var(--radius-md); padding:var(--space-4); }
-.odo-toolbar{ display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:14px; flex-wrap:wrap; }
+.odo{ background:var(--surface-sunken); border:var(--border-line); border-radius:var(--radius-md); padding:var(--space-4); position:relative; }
+.odo-toolbar{ display:flex; align-items:flex-end; justify-content:space-between; gap:12px; margin-bottom:10px; flex-wrap:wrap; }
+.odo-mode{ display:flex; flex-direction:column; gap:4px; }
+.odo-mode-sel{ min-width:170px; }
+.odo-mixed-note{ margin-bottom:10px; }
 .odo-legend{ display:flex; gap:14px; flex-wrap:wrap; font-size:var(--fs-xs); color:var(--text-muted); }
 .odo-legend span{ display:inline-flex; align-items:center; gap:6px; }
 .odo-key{ width:11px; height:11px; border-radius:3px; border:1px solid var(--border-strong); background:var(--surface); }
@@ -249,17 +252,58 @@
 .odo-tooth{ cursor:pointer; }
 .odo-tooth .crown{ fill:var(--surface); stroke:var(--border-strong); stroke-width:1.2; transition:fill var(--dur-fast) var(--ease), stroke var(--dur-fast) var(--ease); }
 .odo-tooth:hover .crown{ stroke:var(--accent); }
-.odo-tooth .tnum{ fill:var(--text-subtle); font-size:9px; font-family:var(--font-mono); text-anchor:middle; }
-.odo-tooth.sel .groove,.odo-tooth.mark-filling .groove,.odo-tooth.mark-extraction .groove,.odo-tooth.mark-cleaning .groove{ opacity:.5; }
-.odo-tooth.sel .crown{ fill:var(--accent-soft); stroke:var(--accent); stroke-width:1.8; }
-.odo-tooth.sel .tnum{ fill:var(--accent-text); font-weight:700; }
-.odo-tooth.mark-filling .crown{ fill:var(--info-soft); stroke:var(--info); }
-.odo-tooth.mark-extraction .crown{ fill:var(--danger-soft); stroke:var(--danger); }
+.odo-tooth--primary .crown{ fill:#fbfcfd; stroke-dasharray:2.5 2; }
+.odo-tooth.sel .crown{ fill:var(--accent-soft); stroke:var(--accent); stroke-width:1.8; stroke-dasharray:none; }
+.odo-tooth.mark-filling .crown{ fill:var(--info-soft); stroke:var(--info); stroke-dasharray:none; }
+.odo-tooth.mark-extraction .crown{ fill:var(--danger-soft); stroke:var(--danger); stroke-dasharray:none; }
 .odo-tooth.mark-extraction .xmark{ stroke:var(--danger); stroke-width:1.6; }
-.odo-tooth.mark-cleaning .crown{ fill:var(--success-soft); stroke:var(--success); }
+.odo-tooth.mark-cleaning .crown{ fill:var(--success-soft); stroke:var(--success); stroke-dasharray:none; }
+.odo-tooth.has-note .crown{ stroke-width:2; }
 .odo-midline{ stroke:var(--border-strong); stroke-width:1; stroke-dasharray:3 3; }
+/* tooth-number pills (upright, outside the arch) */
+.tnum-g{ pointer-events:none; }
+.tnum-bg{ fill:var(--surface); stroke:var(--border); stroke-width:1; }
+.tnum{ font-family:var(--font-mono); font-size:8.5px; font-weight:600; fill:var(--text-muted); text-anchor:middle; dominant-baseline:central; }
+.tnum-g--on .tnum-bg{ fill:var(--accent-soft); stroke:var(--accent-border); }
+.tnum-g--on .tnum{ fill:var(--accent-text); font-weight:700; }
 .odo-selected-list{ margin-top:12px; font-size:var(--fs-sm); color:var(--text-muted); display:flex; gap:6px; flex-wrap:wrap; align-items:center; }
 .tooth-tag{ font-family:var(--font-mono); background:var(--accent-soft); color:var(--accent-text); border:1px solid var(--accent-border); border-radius:var(--radius-xs); padding:1px 7px; font-size:var(--fs-xs); font-weight:var(--fw-semibold); }
+.tooth-tag--filling{ background:var(--info-soft); color:var(--accent-text); border-color:var(--info-border); }
+.tooth-tag--extraction{ background:var(--danger-soft); color:var(--danger); border-color:var(--danger-border); }
+.tooth-tag--cleaning{ background:var(--success-soft); color:var(--success); border-color:var(--success-border); }
+
+/* click-to-tag popover */
+.odo-pop{ position:absolute; z-index:50; width:220px; background:var(--surface-raised); border:var(--border-line-strong); border-radius:var(--radius-md); box-shadow:var(--shadow-lg); padding:10px; display:flex; flex-direction:column; gap:8px; }
+.odo-pop-head{ display:flex; align-items:center; gap:8px; }
+.odo-pop-title{ font-weight:var(--fw-semibold); font-size:var(--fs-sm); color:var(--text-strong); }
+.odo-pop-x{ margin-left:auto; border:none; background:transparent; cursor:pointer; color:var(--text-subtle); display:flex; padding:2px; border-radius:var(--radius-xs); }
+.odo-pop-x:hover{ background:var(--surface-hover); color:var(--text); }
+.odo-pop-seg{ display:grid; grid-template-columns:1fr 1fr 1fr; gap:6px; }
+.odo-pop-opt{ border:1px solid var(--border-strong); background:var(--surface); border-radius:var(--radius-sm); padding:8px 4px; font-size:var(--fs-xs); font-weight:var(--fw-semibold); cursor:pointer; color:var(--text-muted); }
+.odo-pop-opt.on{ color:#fff; }
+.odo-pop-opt--filling.on{ background:var(--info); border-color:var(--info); }
+.odo-pop-opt--extraction.on{ background:var(--danger); border-color:var(--danger); }
+.odo-pop-opt--cleaning.on{ background:var(--success); border-color:var(--success); }
+.odo-pop-foot{ display:flex; justify-content:space-between; gap:6px; }
+.tx-note{ font-size:var(--fs-xs); color:var(--text-muted); background:var(--surface-sunken); border:1px solid var(--border-subtle); border-radius:var(--radius-xs); padding:2px 8px; font-style:italic; }
+.tx-note.hidden{ display:none; }
+
+/* status bar (reports) */
+.status-bar{ display:flex; height:18px; border-radius:var(--radius-xs); overflow:hidden; border:1px solid var(--border-subtle); margin-bottom:14px; }
+.status-seg{ height:100%; }
+.status-legend{ display:flex; flex-direction:column; gap:6px; }
+.status-leg{ display:flex; align-items:center; gap:8px; font-size:var(--fs-sm); }
+.status-dot{ width:9px; height:9px; border-radius:var(--radius-xs); flex:none; }
+.status-leg-label{ color:var(--text-muted); }
+.status-leg-val{ margin-left:auto; font-weight:var(--fw-semibold); color:var(--text-strong); }
+.awareness{ font-size:var(--fs-base); }
+.awareness strong{ font-family:var(--font-mono); font-size:var(--fs-h2); color:var(--warning); }
+.num-col{ text-align:right; }
+
+/* kiosk language gate */
+.kiosk-gate{ height:100vh; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:14px; background:var(--surface-canvas); position:relative; }
+.kiosk-gate-logo{ height:64px; margin-bottom:8px; }
+.kiosk-gate-exit{ position:absolute; top:18px; right:18px; }
 
 /* ===== X-ray gallery ===== */
 .xray-gallery{ display:grid; grid-template-columns:repeat(auto-fill,minmax(120px,1fr)); gap:10px; }

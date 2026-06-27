@@ -5,9 +5,10 @@ const { contextBridge, ipcRenderer } = require('electron');
 // Whitelisted channels the renderer may invoke. Keeps the surface explicit.
 const CHANNELS = [
   'auth:login', 'auth:logout', 'auth:current',
-  'users:list', 'users:create', 'users:update',
-  'events:list', 'events:active', 'events:create', 'events:setActive',
-  'patients:create', 'patients:update', 'patients:get', 'patients:list',
+  'users:list', 'users:create', 'users:update', 'users:delete',
+  'events:list', 'events:active', 'events:create', 'events:update',
+  'events:setActive', 'events:setState', 'events:delete',
+  'patients:create', 'patients:update', 'patients:delete', 'patients:get', 'patients:list',
   'patients:records', 'patients:searchAll',
   'triage:save', 'treatment:save',
   'xray:add', 'xray:get', 'xray:list', 'xray:delete',

@@ -5,6 +5,8 @@
 export const LANGUAGES = [
   { code: 'en', label: 'English', native: 'English' },
   { code: 'es', label: 'Spanish', native: 'Español' },
+  { code: 'bzj', label: 'Belizean Creole', native: 'Kriol' },
+  { code: 'nya', label: 'Nyanja', native: 'Chinyanja' },
 ];
 
 // Medical-history checklist (the 28 conditions). `flag:true` items raise a
@@ -62,7 +64,6 @@ const en = {
   login: {
     title: 'Sign in', subtitle: 'Clinic staff access',
     username: 'Username', password: 'Password', button: 'Sign in',
-    hint: 'Default accounts — admin / admin · doctor / doctor · triage / triage',
     error: 'Invalid username or password.',
     kiosk: 'Start patient check-in', kioskHint: 'Hand the device to a patient to begin intake',
   },
@@ -156,7 +157,6 @@ const es = {
   login: {
     title: 'Iniciar sesión', subtitle: 'Acceso para el personal',
     username: 'Usuario', password: 'Contraseña', button: 'Entrar',
-    hint: 'Cuentas predeterminadas — admin / admin · doctor / doctor · triage / triage',
     error: 'Usuario o contraseña inválidos.',
     kiosk: 'Iniciar registro de paciente', kioskHint: 'Entregue el dispositivo al paciente para comenzar',
   },
@@ -225,4 +225,79 @@ const es = {
   },
 };
 
-export const CATALOG = { en, es };
+// Belizean Kriol — patient-facing pack (staff strings fall back to English).
+// Community-reviewable; refine per deployment.
+const bzj = {
+  common: {
+    next: 'Neks', back: 'Bak', save: 'Sayv', cancel: 'Kansl', submit: 'Send',
+    yes: 'Yes', no: 'No', other: 'Ada', none: 'Non', add: 'Ad', remove: 'Tek weh',
+    clear: 'Kliar', close: 'Kloaz', search: 'Serch', loading: 'Di lode…',
+    required: 'Fi need', optional: 'Opshanal', confirm: 'Kanfaam', continue: 'Gwaan',
+    readAloud: 'Reed loud', stopReading: 'Stap', signHere: 'Sain ya',
+    clearSignature: 'Kliar sain', print: 'Print', export: 'Eksport', saved: 'Sayv.',
+  },
+  app: { name: 'Caring Hands', sub: 'Worldwide', tagline: 'Helpin hand fi helti livin' },
+  login: { kiosk: 'Staat payshent chek-in', kioskHint: 'Gi di payshent di divais fi staat' },
+  intake: {
+    welcome: 'Welkom to Caring Hands', chooseLanguage: 'Pleez pick di langwij yu waahn',
+    start: 'Staat', step: 'Step', of: 'a',
+    s_language: 'Langwij', s_demographics: 'Bowt Yu', s_medical: 'Medikal Histri',
+    s_dental: 'Dental Histri', s_consent: 'Kansent', s_surgery: 'Serjari Kansent', s_review: 'Sain & Send',
+    firstName: 'Fos naym', lastName: 'Laas naym', dob: 'Baatdeh', gender: 'Jenda',
+    genderM: 'Man', genderF: 'Uman', genderO: 'Ada',
+    phone: 'Fone numba', email: 'Email', address: 'Hoam adres', mailing: 'Mailin adres (if difrent)',
+    reason: 'Wai yu kom tudeh', goals: 'Yu lang-taim dental goal',
+    allergiesTitle: 'Medisin alaji', allergiesHint: 'Pick aala weh aplai',
+    conditionsTitle: 'Yu hav eni a dehnya kandishan?', conditionsHint: 'Pick aala weh aplai',
+    reviewTitle: 'Chek & sain', reviewHint: 'Pleez chek yu inafamayshan, den sain dong dehndeh.',
+    signerName: 'Print naym a di persn weh di sain',
+    thanks: 'Taanks! Yu chek-in don kompleet.', thanksSub: 'Pleez gi bak di divais to di frant desk.',
+    done: 'Don', minorNotice: 'Dis payshent andah 18 — wahn payrent or gyaadyan haftu sain.',
+  },
+  consent: {
+    generalTitle: 'Jeneral Kansent fi Dental Tritment',
+    generalIntro: "Pleez reed evri paat. Yu ku tap 'Reed loud' fi yeer it eena yu langwij.",
+    agree: 'Ah reed ahn andastan di tap, ahn ah gri.',
+    surgeryTitle: 'Oral Serjari / Ekstrakshan Kansent',
+    emergency: 'Fi emerjensi afta owaz kaal 541-556-5902.',
+  },
+};
+
+// Nyanja / Chichewa — patient-facing pack (staff strings fall back to English).
+const nya = {
+  common: {
+    next: 'Patsogolo', back: 'Bwerera', save: 'Sungani', cancel: 'Lekani', submit: 'Tumizani',
+    yes: 'Inde', no: 'Ayi', other: 'Zina', none: 'Palibe', add: 'Onjezani', remove: 'Chotsani',
+    clear: 'Chotsani', close: 'Tsekani', search: 'Sakani', loading: 'Ikukweza…',
+    required: 'Zofunika', optional: 'Zosafunika', confirm: 'Tsimikizani', continue: 'Pitirizani',
+    readAloud: 'Werengani mokweza', stopReading: 'Imani', signHere: 'Sayinani apa',
+    clearSignature: 'Chotsani sayini', print: 'Sindikizani', export: 'Tumizani', saved: 'Zasungidwa.',
+  },
+  app: { name: 'Caring Hands', sub: 'Worldwide', tagline: 'Manja othandiza pa moyo wabwino' },
+  login: { kiosk: 'Yambani kulembetsa wodwala', kioskHint: 'Perekani chipangizo kwa wodwala kuti ayambe' },
+  intake: {
+    welcome: 'Takulandirani ku Caring Hands', chooseLanguage: 'Chonde sankhani chilankhulo chanu',
+    start: 'Yambani', step: 'Sitepe', of: 'mwa',
+    s_language: 'Chilankhulo', s_demographics: 'Za Inu', s_medical: 'Mbiri ya Thanzi',
+    s_dental: 'Mbiri ya Mano', s_consent: 'Chilolezo', s_surgery: 'Chilolezo cha Opaleshoni', s_review: 'Sayinani & Tumizani',
+    firstName: 'Dzina loyamba', lastName: 'Dzina lomaliza', dob: 'Tsiku lobadwa', gender: 'Amuna kapena akazi',
+    genderM: 'Mwamuna', genderF: 'Mkazi', genderO: 'Zina',
+    phone: 'Foni', email: 'Imelo', address: 'Adiresi ya kunyumba', mailing: 'Adiresi yotumizira (ngati ndi yosiyana)',
+    reason: 'Chifukwa cha ulendo wa lero', goals: 'Zolinga zanu za mano zanthawi yayitali',
+    allergiesTitle: 'Maantibayotiki / mankhwala oyambitsa allergy', allergiesHint: 'Sankhani zonse zogwirizana',
+    conditionsTitle: 'Kodi muli ndi imodzi mwa matenda awa?', conditionsHint: 'Sankhani zonse zogwirizana',
+    reviewTitle: 'Wunikani & sayinani', reviewHint: 'Chonde wunikani zambiri zanu, kenako sayinani pansipa.',
+    signerName: 'Dzina losindikiza la amene akusayina',
+    thanks: 'Zikomo! Kulembetsa kwanu kwatha.', thanksSub: 'Chonde bwezerani chipangizo ku desiki yakutsogolo.',
+    done: 'Zatha', minorNotice: 'Wodwalayu ali ndi zaka zosakwana 18 — kholo kapena msamali ayenera kusayina.',
+  },
+  consent: {
+    generalTitle: 'Chilolezo Chonse cha Chithandizo cha Mano',
+    generalIntro: "Chonde werengani gawo lililonse. Mukhoza kukanikiza 'Werengani mokweza' kuti mumve mu chilankhulo chanu.",
+    agree: 'Ndawerenga ndipo ndamvetsa zomwe zili pamwamba, ndipo ndavomera.',
+    surgeryTitle: 'Chilolezo cha Opaleshoni ya Mkamwa / Kuchotsa Dzino',
+    emergency: 'Pa zadzidzidzi kunja kwa nthawi imbani 541-556-5902.',
+  },
+};
+
+export const CATALOG = { en, es, bzj, nya };

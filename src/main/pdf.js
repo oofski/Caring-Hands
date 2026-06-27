@@ -98,12 +98,12 @@ function progressNoteBody(p) {
   const fillings = (t.fillings || []).map((f) => {
     const surf = Array.isArray(f.surfaces) ? f.surfaces.join(',') : (f.surfaces || '');
     const ap = [f.ant ? 'Ant' : '', f.post ? 'Post' : ''].filter(Boolean).join('/') || esc(f.position || '');
-    return `<span>#${esc(f.tooth)}${surf ? ' · surf ' + esc(surf) : ''}${ap ? ' · ' + esc(ap) : ''}</span>`;
+    return `<span>#${esc(f.tooth)}${surf ? ' · surf ' + esc(surf) : ''}${ap ? ' · ' + esc(ap) : ''}${f.note ? ' — ' + esc(f.note) : ''}</span>`;
   }).join('') || '<span class="muted">None</span>';
   const extractions = (t.extractions || []).map((e) => {
     if (e.other) return `<span>Other: ${esc(e.other)}${e.tooth ? ' · #' + esc(e.tooth) : ''}</span>`;
     const types = Array.isArray(e.types) ? e.types.map((k) => EXT_LABELS[k] || k).join(', ') : (e.type || '');
-    return `<span>#${esc(e.tooth)} · ${esc(types)}</span>`;
+    return `<span>#${esc(e.tooth)} · ${esc(types)}${e.note ? ' — ' + esc(e.note) : ''}</span>`;
   }).join('') || '<span class="muted">None</span>';
   const anesEntries = Array.isArray(t.anesthetic)
     ? t.anesthetic.map((a) => `<span>${esc(a.agent)} × ${esc(a.carps)} carp(s)${a.location ? ' · ' + esc(a.location) : ''}</span>`)
