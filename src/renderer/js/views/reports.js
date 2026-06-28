@@ -2,6 +2,7 @@ import { el, clear, toast } from '../dom.js';
 import { conditions } from '../i18n.js';
 import { api } from '../api.js';
 import { icon } from '../icons.js';
+import { store } from '../store.js';
 
 const STATUS_META = {
   checked_in: ['Checked in', 'var(--info)'],
@@ -60,9 +61,10 @@ export function renderReports(ctx) {
         el('div', { class: 'view-head-actions' }, [
           scopeSel,
           el('button', { class: 'btn btn--ghost btn--sm', onClick: load }, [icon('refresh', { size: 15 }), 'Refresh']),
-          el('button', { class: 'btn btn--primary btn--sm', onClick: async () => {
+          // Event JSON export is admin-only (matches the IPC permission).
+          store.is('admin') ? el('button', { class: 'btn btn--primary btn--sm', onClick: async () => {
             try { const r = await api.exportEvent(); if (r.saved) toast(`Exported ${r.count} record(s)`, 'success'); } catch (e) { toast(e.message, 'error'); }
-          } }, [icon('download', { size: 15 }), 'Export JSON']),
+          } }, [icon('download', { size: 15 }), 'Export JSON']) : null,
         ]),
       ]),
 

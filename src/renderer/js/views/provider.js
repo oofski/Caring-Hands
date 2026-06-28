@@ -482,6 +482,9 @@ function initialTeeth(tx, tr) {
 }
 
 export function exportButtons(ctx, id) {
+  // Export/print/PDF are admin+doctor only — keep the shared component safe to
+  // reuse in any view (defensive; matches the IPC permission).
+  if (!store.can('admin', 'doctor')) return el('span', { class: 'subtle small' }, ['Export requires a doctor or admin account.']);
   const run = async (fn) => {
     try { const r = await fn(); if (r && r.saved) ctx.toast(`Saved: ${r.path}`, 'success'); else if (r && r.printed) ctx.toast('Sent to printer', 'success'); }
     catch (e) { ctx.toast(e.message, 'error'); }
