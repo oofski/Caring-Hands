@@ -38,43 +38,63 @@ window.HTMLElement.prototype.setPointerCapture = function () {};
 window.HTMLElement.prototype.releasePointerCapture = function () {};
 window.HTMLElement.prototype.scrollIntoView = function () {};
 
-// ---- mock window.api delegating to the real db ----
+// ---- mock window.api delegating to the real db, ENFORCING the IPC permission
+// matrix (mirrors src/main/ipc.js) so permission regressions are caught here. ----
 let currentUser = null;
-const okWrap = (fn) => async (payload) => { try { return { ok: true, data: await fn(payload) }; } catch (e) { return { ok: false, error: e.message }; } };
+const PERMS = {
+  'usersList': ['admin'], 'usersCreate': ['admin'], 'usersUpdate': ['admin'], 'usersDelete': ['admin'],
+  'eventsCreate': ['admin'], 'eventsUpdate': ['admin'], 'eventsSetActive': ['admin'], 'eventsSetState': ['admin'], 'eventsDelete': ['admin'],
+  'patientsUpdate': ['admin', 'triage', 'doctor'], 'patientsGet': ['admin', 'doctor', 'triage'],
+  'patientsList': ['admin', 'doctor', 'triage'], 'patientsRecords': ['admin', 'doctor'],
+  'patientsSearchAll': ['admin', 'doctor', 'triage'], 'patientsHistory': ['admin', 'doctor', 'triage'],
+  'patientsIncomplete': ['admin'], 'patientsCleanupIncomplete': ['admin'], 'patientsDelete': ['admin'],
+  'triageSave': ['admin', 'doctor', 'triage'], 'treatmentSave': ['admin', 'doctor'],
+  'xrayAdd': ['admin', 'doctor', 'triage'], 'xrayGet': ['admin', 'doctor', 'triage'], 'xrayList': ['admin', 'doctor', 'triage'], 'xrayDelete': ['admin', 'doctor', 'triage'],
+  'pdfPreview': ['admin', 'doctor'], 'pdfGenerate': ['admin', 'doctor'], 'pdfPrint': ['admin', 'doctor'],
+  'recordExportUsb': ['admin', 'doctor'], 'backupRun': ['admin'], 'exportEvent': ['admin'], 'auditList': ['admin'],
+};
+// patientsCreate is intentionally UNGATED (kiosk + any role); statsDashboard needs a user.
+function guard(name) {
+  const allowed = PERMS[name];
+  if (!allowed) return;
+  if (!currentUser) throw new Error('Please sign in first.');
+  if (!allowed.includes(currentUser.role)) throw new Error('Your role does not have permission for this action.');
+}
+const okWrap = (fn, name) => async (payload) => { try { if (name) guard(name); return { ok: true, data: await fn(payload) }; } catch (e) { return { ok: false, error: e.message }; } };
 window.api = {
   invoke: async () => ({ ok: true }),
   authLogin: okWrap(({ username, password }) => { const u = db.login(username, password); if (!u) throw new Error('Invalid username or password.'); currentUser = u; return u; }),
   authLogout: async () => { currentUser = null; return { ok: true }; },
   authCurrent: okWrap(() => currentUser),
-  usersList: okWrap(() => db.listUsers()),
-  usersCreate: okWrap((p) => db.createUser(currentUser, p)),
-  usersUpdate: okWrap(({ id, ...r }) => db.updateUser(currentUser, id, r)),
-  usersDelete: okWrap((id) => db.deleteUser(currentUser, id)),
+  usersList: okWrap(() => db.listUsers(), 'usersList'),
+  usersCreate: okWrap((p) => db.createUser(currentUser, p), 'usersCreate'),
+  usersUpdate: okWrap(({ id, ...r }) => db.updateUser(currentUser, id, r), 'usersUpdate'),
+  usersDelete: okWrap((id) => db.deleteUser(currentUser, id), 'usersDelete'),
   eventsList: okWrap(() => db.listEvents()),
   eventsActive: okWrap(() => db.getActiveEvent()),
-  eventsCreate: okWrap((p) => db.createEvent(currentUser, p)),
-  eventsUpdate: okWrap(({ id, ...r }) => db.updateEvent(currentUser, id, r)),
-  eventsSetActive: okWrap((id) => db.setActiveEvent(currentUser, id)),
-  eventsSetState: okWrap(({ id, active }) => db.setEventActive(currentUser, id, active)),
-  eventsDelete: okWrap(({ id, force }) => db.deleteEvent(currentUser, id, { force })),
-  patientsCreate: okWrap((p) => db.createPatient(currentUser, p)),
-  patientsUpdate: okWrap(({ id, ...d }) => db.updatePatient(currentUser, id, d)),
-  patientsDelete: okWrap((id) => db.deletePatient(currentUser, id)),
-  patientsGet: okWrap((id) => db.getPatient(id)),
-  patientsList: okWrap((o) => db.listPatients(o || {})),
-  patientsRecords: okWrap((o) => db.listPatients(o || {})),
-  patientsSearchAll: okWrap((t) => db.searchAllPatients(t)),
-  patientsHistory: okWrap((id) => db.patientHistory(id)),
-  patientsIncomplete: okWrap(() => db.listIncompletePatients()),
-  patientsCleanupIncomplete: okWrap(() => db.deleteIncompletePatients(currentUser)),
-  triageSave: okWrap(({ patientId, data }) => db.saveTriage(currentUser, patientId, data)),
-  treatmentSave: okWrap(({ patientId, data, finalize }) => db.saveTreatment(currentUser, patientId, data, finalize)),
-  xrayAdd: okWrap((p) => db.addXray(currentUser, p.patientId, p)),
-  xrayGet: okWrap((id) => db.getXray(id)),
-  xrayList: okWrap((id) => db.listXrays(id)),
-  xrayDelete: okWrap((id) => db.deleteXray(currentUser, id)),
-  statsDashboard: okWrap(() => db.dashboardStats()),
-  auditList: okWrap((l) => db.listAudit(l)),
+  eventsCreate: okWrap((p) => db.createEvent(currentUser, p), 'eventsCreate'),
+  eventsUpdate: okWrap(({ id, ...r }) => db.updateEvent(currentUser, id, r), 'eventsUpdate'),
+  eventsSetActive: okWrap((id) => db.setActiveEvent(currentUser, id), 'eventsSetActive'),
+  eventsSetState: okWrap(({ id, active }) => db.setEventActive(currentUser, id, active), 'eventsSetState'),
+  eventsDelete: okWrap(({ id, force }) => db.deleteEvent(currentUser, id, { force }), 'eventsDelete'),
+  patientsCreate: okWrap((p) => db.createPatient(currentUser, p)), // ungated (kiosk + any role)
+  patientsUpdate: okWrap(({ id, ...d }) => db.updatePatient(currentUser, id, d), 'patientsUpdate'),
+  patientsDelete: okWrap((id) => db.deletePatient(currentUser, id), 'patientsDelete'),
+  patientsGet: okWrap((id) => db.getPatient(id), 'patientsGet'),
+  patientsList: okWrap((o) => db.listPatients(o || {}), 'patientsList'),
+  patientsRecords: okWrap((o) => db.listPatients(o || {}), 'patientsRecords'),
+  patientsSearchAll: okWrap((t) => db.searchAllPatients(t), 'patientsSearchAll'),
+  patientsHistory: okWrap((id) => db.patientHistory(id), 'patientsHistory'),
+  patientsIncomplete: okWrap(() => db.listIncompletePatients(), 'patientsIncomplete'),
+  patientsCleanupIncomplete: okWrap(() => db.deleteIncompletePatients(currentUser), 'patientsCleanupIncomplete'),
+  triageSave: okWrap(({ patientId, data }) => db.saveTriage(currentUser, patientId, data), 'triageSave'),
+  treatmentSave: okWrap(({ patientId, data, finalize }) => db.saveTreatment(currentUser, patientId, data, finalize), 'treatmentSave'),
+  xrayAdd: okWrap((p) => db.addXray(currentUser, p.patientId, p), 'xrayAdd'),
+  xrayGet: okWrap((id) => db.getXray(id), 'xrayGet'),
+  xrayList: okWrap((id) => db.listXrays(id), 'xrayList'),
+  xrayDelete: okWrap((id) => db.deleteXray(currentUser, id), 'xrayDelete'),
+  statsDashboard: okWrap(() => { if (!currentUser) throw new Error('Please sign in first.'); return db.dashboardStats(); }),
+  auditList: okWrap((l) => db.listAudit(l), 'auditList'),
   pdfPreview: async () => ({ ok: true, data: 'data:application/pdf;base64,' }),
   pdfGenerate: async () => ({ ok: true, data: { saved: false } }),
   pdfPrint: async () => ({ ok: true, data: { printed: true } }),
@@ -226,6 +246,21 @@ async function main() {
       log(false, 'view THREW: ' + v + ' -> ' + e.message);
     }
   }
+
+  // ---- Permission tests (the role-gate that broke check-in) ----
+  currentUser = db.login('admin', 'admin');
+  db.createUser(currentUser, { username: 'docx', full_name: 'Dr X', role: 'doctor', password: 'x' });
+  let pr = await window.api.authLogin({ username: 'docx', password: 'x' });
+  log(pr.ok && pr.data.role === 'doctor', 'can sign in as a doctor');
+  pr = await window.api.patientsCreate({ first_name: 'Walkin', last_name: 'Patient', demographics: {}, medical_history: {}, dental_history: { reason: 'pain' }, consents: [] });
+  log(pr.ok, 'DOCTOR can complete a check-in (the reported bug): ' + (pr.ok ? 'allowed' : pr.error));
+  pr = await window.api.usersList();
+  log(!pr.ok && /permission/i.test(pr.error || ''), 'permission guard works: doctor blocked from staff list');
+  // triage role can also check in
+  currentUser = db.login('admin', 'admin'); db.createUser(currentUser, { username: 'trix', full_name: 'Front', role: 'triage', password: 'x' });
+  await window.api.authLogin({ username: 'trix', password: 'x' });
+  pr = await window.api.patientsCreate({ first_name: 'Tri', last_name: 'Age', demographics: {}, medical_history: {}, dental_history: {}, consents: [] });
+  log(pr.ok, 'TRIAGE can complete a check-in: ' + (pr.ok ? 'allowed' : pr.error));
 
   await tick();
   if (errors.length) errors.forEach((e) => log(false, 'RUNTIME: ' + e));

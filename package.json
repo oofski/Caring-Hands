@@ -1,7 +1,7 @@
 {
   "name": "caring-hands",
   "productName": "Caring Hands",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "description": "Caring Hands Worldwide — offline-first practice management software for free dental clinics.",
   "author": {
     "name": "Caring Hands Worldwide",
@@ -29,7 +29,11 @@
     "copyright": "Copyright © 2026 Caring Hands Worldwide",
     "asar": true,
     "publish": [
-      { "provider": "github", "owner": "oofski", "repo": "caring-hands" }
+      {
+        "provider": "github",
+        "owner": "oofski",
+        "repo": "caring-hands"
+      }
     ],
     "files": [
       "src/**/*",
@@ -43,8 +47,18 @@
     "win": {
       "icon": "assets/icon.ico",
       "target": [
-        { "target": "nsis", "arch": ["x64"] },
-        { "target": "portable", "arch": ["x64"] }
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
       ]
     },
     "nsis": {

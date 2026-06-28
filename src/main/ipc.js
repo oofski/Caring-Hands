@@ -30,7 +30,7 @@ const PERMS = {
   'events:setState': ['admin'],
   'events:delete': ['admin'],
   'patients:delete': ['admin'],
-  'patients:create': ['admin', 'triage'],
+  'patients:create': ['admin', 'doctor', 'triage'],
   'patients:update': ['admin', 'triage', 'doctor'],
   'patients:get': ['admin', 'doctor', 'triage'],
   'patients:list': ['admin', 'doctor', 'triage'],
@@ -118,13 +118,11 @@ function register(getMainWindow) {
   handle('patients:delete', (id) => db.deletePatient(currentUser, id));
 
   /* ---- Patients ---- */
-  // Check-in is special: a dedicated kiosk (no signed-in user) may create
-  // patients, and so may Admin / Triage staff. Doctors cannot.
+  // Check-in is the patient-facing intake: a dedicated kiosk (no signed-in
+  // user) may create patients, and so may ANY signed-in staff member
+  // (admin / doctor / triage). It is intentionally not role-gated.
   ipcMain.handle('patients:create', async (_e, payload) => {
     try {
-      if (currentUser && !['admin', 'triage'].includes(currentUser.role)) {
-        throw new Error('Your role does not have permission to complete check-in.');
-      }
       return { ok: true, data: db.createPatient(currentUser, payload) };
     } catch (err) {
       return { ok: false, error: err.message };

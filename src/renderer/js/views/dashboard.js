@@ -26,7 +26,7 @@ export function renderDashboard(ctx) {
       el('span', {}, [el('strong', {}, [title]), el('small', {}, [sub])]),
     ]);
     const quick = el('div', { class: 'quick-actions' }, [
-      store.can('admin', 'triage') ? qa(' qa-card--primary', 'clipboard', t('dash.startCheckin'), 'Hand the device to a patient', () => ctx.navigate('kiosk')) : null,
+      qa(' qa-card--primary', 'clipboard', t('dash.startCheckin'), 'Hand the device to a patient', () => ctx.navigate('kiosk')),
       store.can('admin', 'doctor', 'triage') ? qa('', 'triage', t('dash.viewQueue'), `${stats.waiting_triage} waiting`, () => ctx.navigate('triage')) : null,
       store.can('admin', 'doctor') ? qa('', 'tooth', 'Provider queue', `${stats.triaged} ready`, () => ctx.navigate('provider')) : null,
       store.can('admin') ? qa('', 'database', 'Back up to USB', 'Save a full database copy', async () => {

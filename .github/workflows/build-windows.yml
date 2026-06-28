@@ -47,16 +47,17 @@ jobs:
       - name: Publish downloadable release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.0.4-build.${{ github.run_number }}
-          name: Caring Hands v1.0.4 (build ${{ github.run_number }})
+          tag_name: v1.0.5-build.${{ github.run_number }}
+          name: Caring Hands v1.0.5 (build ${{ github.run_number }})
           prerelease: false
           make_latest: true
           body: |
-            ## Caring Hands Worldwide — Practice Management Software (v1.0.4)
+            ## Caring Hands Worldwide — Practice Management Software (v1.0.5)
 
             Offline-first dental clinic app for Windows. **Download the installer once — it auto-updates from here on.**
 
-            **New in v1.0.4**
+            **New in v1.0.5**
+            - **Check-in permission fix** — any signed-in staff member (including doctors) can now complete a patient check-in. Previously doctors got a "your role does not have permission" error on Submit.
             - **Empty/legacy record cleanup** — old blank patient records (created by the v1.0 intake bug) are now clearly flagged with a banner, and Admin → Backup & Export has a one-click "Delete all empty records" tool.
             - **Hard guard** — a patient can no longer be saved without a name, so empty records can never happen again.
             - **In-app automatic updates** — checks GitHub and installs new versions for you (USB/folder fallback when offline).
@@ -65,8 +66,8 @@ jobs:
 
             Includes everything from v1.0.2–1.0.3 (click-to-tag odontogram, intake fix, event/staff management, reports overhaul, Kriol + Nyanja).
 
-            - **Caring-Hands-Setup-1.0.4.exe** — installer (recommended; required for auto-update).
-            - **Caring-Hands-Portable-1.0.4.exe** — portable (no auto-update).
+            - **Caring-Hands-Setup-1.0.5.exe** — installer (recommended; required for auto-update).
+            - **Caring-Hands-Portable-1.0.5.exe** — portable (no auto-update).
 
             First sign-in: `admin / admin` — then create your staff accounts. All clinical data stays on the device.
           files: |
