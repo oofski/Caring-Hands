@@ -301,6 +301,17 @@
 .awareness strong{ font-family:var(--font-mono); font-size:var(--fs-h2); color:var(--warning); }
 .num-col{ text-align:right; }
 
+/* v1.0.6: vitals grid, generic box, quadrant control */
+.vitals-grid{ display:grid; grid-template-columns:repeat(3,1fr); gap:12px; }
+@media (max-width:640px){ .vitals-grid{ grid-template-columns:1fr; } }
+.box{ border:var(--border-line); border-radius:var(--radius-sm); padding:10px 12px; background:var(--surface-sunken); }
+.box .field-label{ display:block; margin-bottom:4px; }
+.odo-quad{ display:flex; flex-direction:column; gap:5px; }
+.banner--alert .icon{ color:var(--danger); }
+.thinner-banner{ background:var(--danger-soft); border:1px solid var(--danger-border); color:var(--danger); padding:11px 14px; border-radius:var(--radius-md); margin-bottom:var(--space-4); font-weight:var(--fw-semibold); display:flex; gap:9px; align-items:center; }
+.audit-line{ font-size:var(--fs-xs); color:var(--text-subtle); }
+.audit-line b{ color:var(--text-muted); font-weight:var(--fw-semibold); }
+
 /* collapsible patient-history section */
 .history-details{ border:var(--border-line); border-radius:var(--radius-md); background:var(--surface); margin-bottom:var(--space-4); overflow:hidden; }
 .history-summary{ list-style:none; cursor:pointer; display:flex; align-items:center; gap:9px; padding:12px 16px; font-weight:var(--fw-semibold); color:var(--text-strong); background:var(--surface-header); border-bottom:var(--divider); user-select:none; }

@@ -40,6 +40,16 @@ export const api = {
 
   saveTriage: (patientId, data) => call('triageSave', { patientId, data }),
   saveTreatment: (patientId, data, finalize) => call('treatmentSave', { patientId, data, finalize }),
+  saveVitals: (patientId, data) => call('vitalsSave', { patientId, data }),
+  setConsentTeeth: (consentId, tooth_numbers) => call('consentSetTeeth', { consentId, tooth_numbers }),
+  dismissPatient: (id) => call('patientsDismiss', id),
+  patientAudit: (id) => call('patientsAudit', id),
+
+  usbList: () => call('usbList'),
+  usbWriteCheckin: (patientId) => call('usbWriteCheckin', { patientId }),
+  usbLoad: () => call('usbLoad'),
+  usbUploadCheckout: () => call('usbUploadCheckout'),
+  usbClear: (dir) => call('usbClear', { dir, choose: !dir }),
 
   addXray: (p) => call('xrayAdd', p),
   getXray: (id) => call('xrayGet', id),

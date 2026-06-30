@@ -39,7 +39,7 @@ function migrate() {
       id           INTEGER PRIMARY KEY AUTOINCREMENT,
       username     TEXT UNIQUE NOT NULL,
       full_name    TEXT NOT NULL,
-      role         TEXT NOT NULL CHECK (role IN ('admin','doctor','triage')),
+      role         TEXT NOT NULL CHECK (role IN ('admin','doctor','triage','emt','checkout')),
       salt         TEXT NOT NULL,
       hash         TEXT NOT NULL,
       active       INTEGER NOT NULL DEFAULT 1,
@@ -150,11 +150,57 @@ function migrate() {
     CREATE INDEX IF NOT EXISTS idx_xrays_pt       ON xrays(patient_id);
   `);
 
-  // Additive column migrations (safe to run on existing v1.0.0 databases).
+  // Widen the users.role CHECK to include the new roles (must run before seed).
+  recreateUsersRoleCheck();
+
+  // Additive column migrations (safe to run on existing databases).
   addColumn('triage', 'triage_signature', 'TEXT');
   addColumn('triage', 'triage_signer_name', 'TEXT');
   addColumn('triage', 'teeth_notes', "TEXT NOT NULL DEFAULT '{}'");
+  // v1.0.6: staff-measured vitals (with accountability) on the triage row.
+  addColumn('triage', 'bp_systolic', 'INTEGER');
+  addColumn('triage', 'bp_diastolic', 'INTEGER');
+  addColumn('triage', 'heart_rate', 'INTEGER');
+  addColumn('triage', 'vitals_by', 'INTEGER');
+  addColumn('triage', 'vitals_at', 'TEXT');
+  // v1.0.6: oral-surgery consent tooth numbers the doctor fills in later.
+  addColumn('consents', 'tooth_numbers', 'TEXT');
+  addColumn('consents', 'amended_by', 'TEXT');
+  addColumn('consents', 'amended_at', 'TEXT');
+  // v1.0.6: checkout dismissal.
+  addColumn('patients', 'dismissed_by', 'INTEGER');
+  addColumn('patients', 'dismissed_at', 'TEXT');
   addColumn('xrays', 'updated_at', 'TEXT');
+}
+
+const ROLES = ['admin', 'doctor', 'triage', 'emt', 'checkout'];
+
+// SQLite can't ALTER a CHECK constraint, so recreate the users table with the
+// widened role set. Idempotent: no-op once the stored SQL already allows 'emt'.
+function recreateUsersRoleCheck() {
+  const row = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='users'").get();
+  if (!row || /'emt'/.test(row.sql)) return;
+  db.pragma('foreign_keys = OFF');
+  const tx = db.transaction(() => {
+    db.exec(`
+      CREATE TABLE users_new (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        username     TEXT UNIQUE NOT NULL,
+        full_name    TEXT NOT NULL,
+        role         TEXT NOT NULL CHECK (role IN ('admin','doctor','triage','emt','checkout')),
+        salt         TEXT NOT NULL,
+        hash         TEXT NOT NULL,
+        active       INTEGER NOT NULL DEFAULT 1,
+        created_at   TEXT NOT NULL
+      );
+      INSERT INTO users_new (id, username, full_name, role, salt, hash, active, created_at)
+        SELECT id, username, full_name, role, salt, hash, active, created_at FROM users;
+      DROP TABLE users;
+      ALTER TABLE users_new RENAME TO users;
+    `);
+  });
+  tx();
+  db.pragma('foreign_keys = ON');
 }
 
 // Add a column only if it does not already exist.
@@ -283,7 +329,7 @@ function listUsers() {
 function createUser(actor, { username, full_name, role, password }) {
   const u = String(username || '').trim().toLowerCase();
   if (!u || !full_name || !role || !password) throw new Error('Missing required fields.');
-  if (!['admin', 'doctor', 'triage'].includes(role)) throw new Error('Invalid role.');
+  if (!ROLES.includes(role)) throw new Error('Invalid role.');
   const exists = db.prepare('SELECT id FROM users WHERE username = ?').get(u);
   if (exists) throw new Error('That username already exists.');
   const { salt, hash } = hashPassword(password);
@@ -597,7 +643,95 @@ function getPatient(id) {
     : null;
   p.xrays = db.prepare('SELECT id, station, note, created_at FROM xrays WHERE patient_id = ?').all(id);
   p.event = db.prepare('SELECT * FROM events WHERE id = ?').get(p.event_id);
+  // v1.0.6 accountability: resolve the staff name for each recorded action.
+  const nameOf = (uid) => { if (!uid) return null; const u = db.prepare('SELECT full_name FROM users WHERE id = ?').get(uid); return u ? u.full_name : null; };
+  p.triaged_by_name = tr ? nameOf(tr.triaged_by) : null;
+  p.vitals_by_name = tr ? nameOf(tr.vitals_by) : null;
+  p.completed_by_name = t ? nameOf(t.completed_by) : null;
+  p.dismissed_by_name = nameOf(p.dismissed_by);
   return p;
+}
+
+/* ------------------------------------------------------------------ */
+/*  v1.0.6: vitals, consent teeth, dismissal, audit, USB import        */
+/* ------------------------------------------------------------------ */
+
+const toIntOrNull = (v) => { const n = parseInt(v, 10); return Number.isFinite(n) ? n : null; };
+
+// EMT / staff-measured vitals stored (with accountability) on the triage row.
+function saveVitals(actor, patientId, data) {
+  const tr = db.prepare('SELECT id FROM triage WHERE patient_id = ?').get(patientId);
+  const d = data || {};
+  const sys = toIntOrNull(d.bp_systolic), dia = toIntOrNull(d.bp_diastolic), hr = toIntOrNull(d.heart_rate);
+  if (!tr) {
+    db.prepare(`INSERT INTO triage (patient_id, status, bp_systolic, bp_diastolic, heart_rate, vitals_by, vitals_at)
+                VALUES (?, 'waiting', ?, ?, ?, ?, ?)`).run(patientId, sys, dia, hr, actor ? actor.id : null, now());
+  } else {
+    db.prepare('UPDATE triage SET bp_systolic=?, bp_diastolic=?, heart_rate=?, vitals_by=?, vitals_at=? WHERE patient_id=?')
+      .run(sys, dia, hr, actor ? actor.id : null, now(), patientId);
+  }
+  audit(actor, 'vitals', 'patient', patientId, `${sys == null ? '—' : sys}/${dia == null ? '—' : dia} HR ${hr == null ? '—' : hr}`);
+  return getPatient(patientId);
+}
+
+// Doctor adds tooth number(s) to an oral-surgery consent AFTER the patient signed.
+function updateConsentTeeth(actor, consentId, toothNumbers) {
+  const c = db.prepare("SELECT * FROM consents WHERE id = ? AND type = 'oral_surgery'").get(consentId);
+  if (!c) throw new Error('Oral surgery consent not found.');
+  db.prepare('UPDATE consents SET tooth_numbers=?, amended_by=?, amended_at=? WHERE id=?')
+    .run(String(toothNumbers || '').trim(), actor ? actor.full_name : null, now(), consentId);
+  audit(actor, 'consent_teeth', 'patient', c.patient_id, String(toothNumbers || ''));
+  return getPatient(c.patient_id);
+}
+
+// Checkout staff dismiss a patient — only after the provider has signed off.
+function dismissPatient(actor, id) {
+  const p = db.prepare('SELECT * FROM patients WHERE id = ?').get(id);
+  if (!p) throw new Error('Patient not found.');
+  const t = db.prepare('SELECT locked FROM treatments WHERE patient_id = ?').get(id);
+  if (!t || !t.locked) throw new Error('Patient has not been signed off by the provider yet.');
+  db.prepare("UPDATE patients SET status='dismissed', dismissed_by=?, dismissed_at=?, updated_at=? WHERE id=?")
+    .run(actor ? actor.id : null, now(), now(), id);
+  audit(actor, 'dismiss', 'patient', id, `${p.first_name} ${p.last_name}`.trim());
+  return getPatient(id);
+}
+
+// Per-patient action log (who did what, when) — for the accountability views.
+function patientAudit(id) {
+  return db.prepare(
+    "SELECT user_name, action, entity, detail, created_at FROM audit_log WHERE entity = 'patient' AND entity_id = ? ORDER BY id DESC LIMIT 100"
+  ).all(id);
+}
+
+// USB import: upsert a portable patient record (match by id, else name+dob+event).
+function importPatientFromPortable(actor, portable) {
+  if (!portable || !portable.first_name) throw new Error('Invalid patient file.');
+  const evId = Number(getSetting('active_event_id'));
+  let existing = portable.id ? db.prepare('SELECT * FROM patients WHERE id = ?').get(portable.id) : null;
+  if (!existing) {
+    existing = db.prepare('SELECT * FROM patients WHERE lower(first_name)=lower(?) AND lower(last_name)=lower(?) AND (dob = ? OR ? IS NULL) ORDER BY created_at DESC')
+      .get(portable.first_name, portable.last_name, portable.dob, portable.dob);
+  }
+  let pid;
+  if (existing) {
+    pid = existing.id;
+    updatePatient(actor, pid, {
+      language: portable.language, first_name: portable.first_name, last_name: portable.last_name,
+      dob: portable.dob, gender: portable.gender, phone: portable.phone, email: portable.email,
+      demographics: portable.demographics, medical_history: portable.medical_history, dental_history: portable.dental_history,
+    });
+  } else {
+    const created = createPatient(actor, portable);
+    pid = created.id;
+    (portable.consents || []).forEach((c) => addConsent(pid, c));
+  }
+  // Triage, treatment, vitals, x-rays from the portable file.
+  if (portable.triage) saveTriage(actor, pid, portable.triage);
+  if (portable.treatment) saveTreatment(actor, pid, portable.treatment, !!portable.treatment.locked);
+  (portable.xrays || []).forEach((x) => { if (x.image_png) db.prepare('INSERT INTO xrays (patient_id, station, image_png, note, created_at, updated_at) VALUES (?,?,?,?,?,?)').run(pid, x.station || null, x.image_png, x.note || null, x.created_at || now(), now()); });
+  recountXrays(pid);
+  audit(actor, 'usb_import', 'patient', pid, `${portable.first_name} ${portable.last_name}`.trim());
+  return getPatient(pid);
 }
 
 // eventId: a numeric id, or 'all' to span every event, or omitted = active event.
@@ -854,6 +988,7 @@ module.exports = {
   listEvents, createEvent, updateEvent, setActiveEvent, setEventActive, deleteEvent, getActiveEvent,
   createPatient, updatePatient, deletePatient, getPatient, listPatients, searchAllPatients, patientHistory,
   listIncompletePatients, deleteIncompletePatients,
+  saveVitals, updateConsentTeeth, dismissPatient, patientAudit, importPatientFromPortable,
   saveTriage, saveTreatment,
   addXray, getXray, listXrays, deleteXray,
   dashboardStats, listAudit, audit,

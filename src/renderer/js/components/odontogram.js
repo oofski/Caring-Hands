@@ -48,6 +48,7 @@ const isPrimaryId = (id) => /^[A-T]$/.test(id);
 
 export function Odontogram({ mode = 'adult', teeth = {}, selected = [], onChange, onTag, onUntag } = {}) {
   let curMode = mode;
+  let curQuad = 'all';
   // Normalize incoming teeth (accepts {id:'filling'} or {id:{tx,note}}) + selected ids.
   const toothData = {};
   function seed(obj, sel) {
@@ -67,6 +68,24 @@ export function Odontogram({ mode = 'adult', teeth = {}, selected = [], onChange
     if (curMode === 'primary') return [PRIMARY_UPPER, PRIMARY_LOWER];
     if (curMode === 'mixed') return [MIXED_UPPER, MIXED_LOWER];
     return [ADULT_UPPER, ADULT_LOWER];
+  }
+
+  // Quadrant id lists for the current dentition (upper/lower split in half:
+  // upper = [UR, UL] left→right; lower (printed right→left) = [LR, LL]).
+  function quadrants() {
+    const [U, L] = idsFor();
+    const uh = Math.ceil(U.length / 2), lh = Math.ceil(L.length / 2);
+    return { UR: U.slice(0, uh), UL: U.slice(uh), LR: L.slice(0, lh), LL: L.slice(lh) };
+  }
+  function quadrantIds(q) { const qq = quadrants(); return qq[q] ? qq[q].slice() : []; }
+  // Teeth to draw given the active quadrant zoom.
+  function visibleIds() {
+    if (curQuad === 'all') return idsFor();
+    const qq = quadrants();
+    const ids = qq[curQuad] || [];
+    const [U] = idsFor();
+    const isUpper = U.includes(ids[0]);
+    return isUpper ? [ids, []] : [[], ids];
   }
 
   function toothGlyph(id, p) {
@@ -112,7 +131,7 @@ export function Odontogram({ mode = 'adult', teeth = {}, selected = [], onChange
 
   function render() {
     while (svg.firstChild) svg.removeChild(svg.firstChild);
-    const [upper, lower] = idsFor();
+    const [upper, lower] = visibleIds();
     const up = positions(upper.length, 'upper');
     const lo = positions(lower.length, 'lower');
     svg.append(
@@ -225,9 +244,23 @@ export function Odontogram({ mode = 'adult', teeth = {}, selected = [], onChange
     '<span><i class="odo-key odo-key--extraction"></i>Extraction</span>' +
     '<span><i class="odo-key odo-key--cleaning"></i>Cleaning</span>';
 
+  // Quadrant zoom segmented control (UR / UL / LR / LL / All).
+  const quadWrap = document.createElement('div');
+  quadWrap.className = 'odo-quad';
+  quadWrap.append(Object.assign(document.createElement('span'), { className: 'field-label', textContent: 'Quadrant' }));
+  const quadSeg = document.createElement('div');
+  quadSeg.className = 'seg-toggle';
+  [['all', 'All'], ['UR', 'UR'], ['UL', 'UL'], ['LR', 'LR'], ['LL', 'LL']].forEach(([q, lab]) => {
+    const b = document.createElement('button');
+    b.type = 'button'; b.className = 'seg-btn' + (curQuad === q ? ' seg-btn--on' : ''); b.textContent = lab;
+    b.onclick = () => { curQuad = q; quadSeg.querySelectorAll('.seg-btn').forEach((x) => x.classList.remove('seg-btn--on')); b.classList.add('seg-btn--on'); render(); };
+    quadSeg.append(b);
+  });
+  quadWrap.append(quadSeg);
+
   const toolbar = document.createElement('div');
   toolbar.className = 'odo-toolbar';
-  toolbar.append(modeWrap, legend);
+  toolbar.append(modeWrap, quadWrap, legend);
 
   const mixedNote = document.createElement('div');
   mixedNote.className = 'odo-mixed-note subtle small';
@@ -273,6 +306,18 @@ export function Odontogram({ mode = 'adult', teeth = {}, selected = [], onChange
       render(); renderSelectedList();
     },
     setMode: (m) => { curMode = ['adult', 'primary', 'mixed'].includes(m) ? m : 'adult'; modeSel.value = curMode; render(); renderSelectedList(); },
+    // F13: zoom into a quadrant ('UR'|'UL'|'LR'|'LL'|'all').
+    setQuadrant: (q) => { curQuad = ['UR', 'UL', 'LR', 'LL', 'all'].includes(q) ? q : 'all'; quadSeg.querySelectorAll('.seg-btn').forEach((x, i) => x.classList.toggle('seg-btn--on', ['all', 'UR', 'UL', 'LR', 'LL'][i] === curQuad)); render(); },
+    quadrantIds,
+    // F14: tag many teeth at once (e.g. mark a quadrant cleaned); fires onTag per tooth so consumers can sync.
+    bulkTag: (ids, tx, note) => {
+      (ids || []).forEach((id) => { toothData[id] = { tx: tx || null, note: note || (toothData[id] && toothData[id].note) || '' }; applyTooth(id); if (onTag) onTag(id, toothData[id]); });
+      renderSelectedList(); if (onChange) onChange(get());
+    },
+    bulkClear: (ids) => {
+      (ids || []).forEach((id) => { if (toothData[id]) { delete toothData[id]; applyTooth(id); if (onUntag) onUntag(id); } });
+      renderSelectedList(); if (onChange) onChange(get());
+    },
   };
 }
 

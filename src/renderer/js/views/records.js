@@ -1,5 +1,5 @@
 import { el, clear, toast, modal } from '../dom.js';
-import { t, conditions, allergies } from '../i18n.js';
+import { t, conditions, allergies, referralLabel, languageList } from '../i18n.js';
 import { api } from '../api.js';
 import { icon } from '../icons.js';
 import { store } from '../store.js';
@@ -80,13 +80,49 @@ export function renderRecords(ctx, params = {}) {
 
     const kv = (label, val) => el('div', { class: 'kv' }, [el('span', { class: 'kv-label' }, [label]), el('span', { class: 'kv-val' }, [val || '—'])]);
 
+    // F20 — History / accountability. By-name fields come from getPatient; the
+    // detailed audit log is fetched lazily into the table below.
+    const accountabilityRows = [
+      ['Triaged by', p.triaged_by_name],
+      ['Vitals by', p.vitals_by_name],
+      ['Completed by', p.completed_by_name],
+      ['Dismissed by', p.dismissed_by_name ? `${p.dismissed_by_name}${p.dismissed_at ? ' · ' + new Date(p.dismissed_at).toLocaleString() : ''}` : null],
+    ].filter(([, v]) => v);
+    const auditBody = el('tbody', {}, [el('tr', {}, [el('td', { colspan: 4, class: 'subtle small' }, ['Loading history…'])])]);
+    const auditCard = el('div', { class: 'card' }, [
+      el('h3', { class: 'card-title' }, [icon('clipboard', { size: 16 }), 'History / accountability']),
+      accountabilityRows.length ? el('div', { class: 'kv-grid' }, accountabilityRows.map(([l, v]) => kv(l, v))) : null,
+      el('div', { class: 'data-table-wrap', style: 'margin-top:10px' }, [
+        el('table', { class: 'data-table data-table--mini' }, [
+          el('thead', {}, [el('tr', {}, ['Who', 'Action', 'Detail', 'When'].map((h) => el('th', {}, [h])))]),
+          auditBody,
+        ]),
+      ]),
+    ]);
+    api.patientAudit(id).then((rows) => {
+      clear(auditBody);
+      if (!rows || !rows.length) {
+        auditBody.append(el('tr', {}, [el('td', { colspan: 4, class: 'subtle small' }, ['No history recorded.'])]));
+        return;
+      }
+      rows.forEach((r) => auditBody.append(el('tr', {}, [
+        el('td', {}, [r.user_name || '—']),
+        el('td', {}, [el('span', { class: 'pill pill--info' }, [`${r.action || '—'}${r.entity ? ' · ' + r.entity : ''}`])]),
+        el('td', { class: 'subtle small' }, [r.detail || '—']),
+        el('td', { class: 'subtle small' }, [r.created_at ? new Date(r.created_at).toLocaleString() : '—']),
+      ])));
+    }).catch((e) => {
+      clear(auditBody);
+      auditBody.append(el('tr', {}, [el('td', { colspan: 4, class: 'subtle small' }, [e.message || 'Could not load history.'])]));
+    });
+
     clear(root);
     root.append(
       el('div', { class: 'view-head' }, [
         el('div', {}, [
           el('button', { class: 'btn btn--ghost btn--sm', onClick: () => ctx.navigate('records') }, [icon('back', { size: 15 }), t('common.back')]),
           el('h1', {}, [`${p.first_name} ${p.last_name}`]),
-          el('p', { class: 'view-sub' }, [`${p.event ? p.event.name : ''} · ${p.language === 'es' ? 'Español' : 'English'}`]),
+          el('p', { class: 'view-sub' }, [`${p.event ? p.event.name : ''} · ${languageLabel(p.language)}`]),
         ]),
         statusPill(p.status),
       ]),
@@ -104,7 +140,7 @@ export function renderRecords(ctx, params = {}) {
               kv('Gender', p.gender), kv('Marital status', p.demographics.marital_status),
               kv('Phone', p.phone), kv('Email', p.email),
               kv('Address', p.demographics.address), kv('Mailing address', p.demographics.mailing_address),
-              kv('Children', (p.demographics.children || []).join(', ')), kv('Referral', p.demographics.referral),
+              kv('Children', (p.demographics.children || []).join(', ')), kv('Referral', referralDisplay(p.demographics)),
               kv('Emergency contact', p.demographics.emergency_name), kv('Emergency phone', p.demographics.emergency_phone),
             ]),
           ]),
@@ -142,9 +178,15 @@ export function renderRecords(ctx, params = {}) {
               el('div', { class: 'consent-card-title' }, [c.type === 'oral_surgery' ? 'Oral Surgery Consent' : 'General Consent']),
               el('div', { class: 'muted' }, [`${c.signer_name}${c.relationship ? ' (' + c.relationship + ')' : ''}`]),
               el('div', { class: 'muted small' }, [`${c.version} · ${new Date(c.signed_at).toLocaleString()}`]),
+              c.tooth_numbers ? el('div', { class: 'field', style: 'margin-top:6px' }, [
+                el('span', { class: 'field-label' }, ['Teeth']),
+                el('div', { class: 'chip-row' }, [el('span', { class: 'pill pill--info' }, [c.tooth_numbers])]),
+                c.amended_by ? el('div', { class: 'muted small' }, [`(added by ${c.amended_by}${c.amended_at ? ' on ' + new Date(c.amended_at).toLocaleString() : ''})`]) : null,
+              ]) : null,
               c.signature_png ? el('img', { class: 'sig-thumb', src: c.signature_png }) : null,
             ]))) : el('span', { class: 'muted' }, ['No consents on file']),
           ]),
+          auditCard,
         ]),
         el('div', { class: 'col' }, [
           el('div', { class: 'card' }, [
@@ -243,6 +285,22 @@ export function renderRecords(ctx, params = {}) {
       }
     } catch (e) { toast(e.message, 'error'); }
   }
+}
+
+// F18 — resolve a stored language code to its native name (en/es/ru/bzj/nya).
+function languageLabel(code) {
+  const l = languageList().find((x) => x.code === code);
+  return l ? l.native : (code || 'English');
+}
+
+// F4 — render the "how did you hear" referral via its localized label, appending
+// the free-text detail when the stored key is 'other'.
+function referralDisplay(demographics = {}) {
+  const key = demographics.referral;
+  if (!key) return '';
+  const label = referralLabel(key);
+  if (key === 'other' && demographics.referral_other) return `${label}: ${demographics.referral_other}`;
+  return label;
 }
 
 function treatmentSummary(p) {

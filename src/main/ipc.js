@@ -15,6 +15,7 @@ const db = require('./db');
 const pdf = require('./pdf');
 const updater = require('./updater');
 const autoupdate = require('./autoupdate');
+const usb = require('./usb');
 
 let currentUser = null;
 
@@ -30,25 +31,33 @@ const PERMS = {
   'events:setState': ['admin'],
   'events:delete': ['admin'],
   'patients:delete': ['admin'],
-  'patients:create': ['admin', 'doctor', 'triage'],
+  'patients:create': ['admin', 'doctor', 'triage', 'emt'],
   'patients:update': ['admin', 'triage', 'doctor'],
-  'patients:get': ['admin', 'doctor', 'triage'],
-  'patients:list': ['admin', 'doctor', 'triage'],
-  'patients:searchAll': ['admin', 'doctor', 'triage'],
-  'patients:history': ['admin', 'doctor', 'triage'],
+  'patients:get': ['admin', 'doctor', 'triage', 'emt', 'checkout'],
+  'patients:list': ['admin', 'doctor', 'triage', 'emt', 'checkout'],
+  'patients:searchAll': ['admin', 'doctor', 'triage', 'emt', 'checkout'],
+  'patients:history': ['admin', 'doctor', 'triage', 'emt', 'checkout'],
   'patients:incomplete': ['admin'],
   'patients:cleanupIncomplete': ['admin'],
+  'patients:dismiss': ['admin', 'checkout'],
+  'patients:audit': ['admin', 'doctor', 'checkout'],
   'patients:records': ['admin', 'doctor'],
   'triage:save': ['admin', 'doctor', 'triage'],
+  'vitals:save': ['admin', 'doctor', 'triage', 'emt'],
   'treatment:save': ['admin', 'doctor'],
-  'xray:add': ['admin', 'doctor', 'triage'],
-  'xray:get': ['admin', 'doctor', 'triage'],
-  'xray:list': ['admin', 'doctor', 'triage'],
-  'xray:delete': ['admin', 'doctor', 'triage'],
-  'pdf:generate': ['admin', 'doctor'],
-  'pdf:preview': ['admin', 'doctor'],
-  'pdf:print': ['admin', 'doctor'],
+  'consent:setTeeth': ['admin', 'doctor'],
+  'xray:add': ['admin', 'doctor', 'triage', 'emt'],
+  'xray:get': ['admin', 'doctor', 'triage', 'emt'],
+  'xray:list': ['admin', 'doctor', 'triage', 'emt', 'checkout'],
+  'xray:delete': ['admin', 'doctor', 'triage', 'emt'],
+  'pdf:generate': ['admin', 'doctor', 'checkout'],
+  'pdf:preview': ['admin', 'doctor', 'checkout'],
+  'pdf:print': ['admin', 'doctor', 'checkout'],
   'record:exportUsb': ['admin', 'doctor'],
+  'usb:list': ['admin', 'doctor', 'triage', 'emt', 'checkout'],
+  'usb:load': ['admin', 'doctor', 'triage', 'checkout'],
+  'usb:uploadCheckout': ['admin', 'doctor', 'triage', 'checkout'],
+  'usb:clear': ['admin', 'doctor', 'triage', 'checkout'],
   'backup:run': ['admin'],
   'export:event': ['admin'],
   'audit:list': ['admin'],
@@ -142,6 +151,12 @@ function register(getMainWindow) {
   handle('treatment:save', ({ patientId, data, finalize }) =>
     db.saveTreatment(currentUser, patientId, data, !!finalize));
 
+  /* ---- v1.0.6: vitals, consent teeth, dismissal, per-patient audit ---- */
+  handle('vitals:save', ({ patientId, data }) => db.saveVitals(currentUser, patientId, data));
+  handle('consent:setTeeth', ({ consentId, tooth_numbers }) => db.updateConsentTeeth(currentUser, consentId, tooth_numbers));
+  handle('patients:dismiss', (id) => db.dismissPatient(currentUser, id));
+  handle('patients:audit', (id) => db.patientAudit(id));
+
   /* ---- X-rays ---- */
   handle('xray:add', ({ patientId, station, image_png, note }) =>
     db.addXray(currentUser, patientId, { station, image_png, note }));
@@ -161,8 +176,11 @@ function register(getMainWindow) {
   handle('audit:list', (limit) => db.listAudit(limit));
 
   /* ---- PDF: preview, save, print ---- */
+  // Attach x-ray images so the summary/full PDF can embed them.
+  const patientForPdf = (id) => { const p = db.getPatient(id); if (p) p._xrays = db.listXrays(id); return p; };
+
   handle('pdf:preview', async ({ patientId, format }) => {
-    const patient = db.getPatient(patientId);
+    const patient = patientForPdf(patientId);
     if (!patient) throw new Error('Patient not found.');
     const buf = await pdf.renderPdf(patient, format);
     db.audit(currentUser, 'export_preview', 'patient', patientId, format);
@@ -170,7 +188,7 @@ function register(getMainWindow) {
   });
 
   handle('pdf:generate', async ({ patientId, format }) => {
-    const patient = db.getPatient(patientId);
+    const patient = patientForPdf(patientId);
     if (!patient) throw new Error('Patient not found.');
     const buf = await pdf.renderPdf(patient, format);
     const suggested = `${patient.last_name}_${patient.first_name}_${format === 'full' ? 'FullRecord' : 'ProgressNote'}.pdf`
@@ -187,7 +205,7 @@ function register(getMainWindow) {
   });
 
   handle('pdf:print', async ({ patientId, format }) => {
-    const patient = db.getPatient(patientId);
+    const patient = patientForPdf(patientId);
     if (!patient) throw new Error('Patient not found.');
     const html = pdf.buildHtml(patient, format || 'progress');
     const win = new BrowserWindow({ show: false, webPreferences: { sandbox: true } });
@@ -252,6 +270,56 @@ function register(getMainWindow) {
     fs.writeFileSync(path.join(folder, `${base}.json`), JSON.stringify(portable, null, 2));
     db.audit(currentUser, 'export_usb', 'patient', patientId, folder);
     return { saved: true, path: folder };
+  });
+
+  /* ---- v1.0.6: USB per-patient transfer workflow ---- */
+  async function pickDir(title) {
+    const res = await dialog.showOpenDialog(getMainWindow(), { title, properties: ['openDirectory'] });
+    return res.canceled || !res.filePaths.length ? null : res.filePaths[0];
+  }
+  handle('usb:list', () => usb.listDrives());
+
+  // Write the patient's file to the drive at check-in. OPEN (kiosk may be
+  // unauthenticated) — registered raw, like patients:create.
+  ipcMain.handle('usb:writeCheckin', async (_e, { patientId, choose } = {}) => {
+    try {
+      const patient = db.getPatient(patientId);
+      if (!patient) throw new Error('Patient not found.');
+      const dir = await pickDir('Insert/choose the USB drive for this patient');
+      if (!dir) return { ok: true, data: { saved: false } };
+      const portable = { ...patient, xrays: db.listXrays(patientId), exported_at: new Date().toISOString() };
+      let pdfBuf = null;
+      try { pdfBuf = await pdf.renderPdf({ ...patient, _xrays: portable.xrays }, 'full'); } catch (e) { /* pdf optional */ }
+      const r = usb.writePatientFile(dir, patient, JSON.stringify(portable, null, 2), pdfBuf);
+      db.audit(currentUser, 'usb_write', 'patient', patientId, r.path);
+      return { ok: true, data: r };
+    } catch (err) { return { ok: false, error: err.message }; }
+  });
+
+  handle('usb:load', async () => {
+    const dir = await pickDir('Choose the USB drive to load the patient from');
+    if (!dir) return { loaded: [] };
+    const files = usb.loadPatientFiles(dir);
+    return { dir, loaded: files.map((f) => ({ name: f.name, first_name: f.patient.first_name, last_name: f.patient.last_name, dob: f.patient.dob })) };
+  });
+
+  // Upload every patient file on the drive into the local DB (checkout).
+  handle('usb:uploadCheckout', async () => {
+    const dir = await pickDir('Choose the USB drive to upload to the local database');
+    if (!dir) return { uploaded: 0 };
+    const files = usb.loadPatientFiles(dir);
+    let uploaded = 0;
+    for (const f of files) { try { db.importPatientFromPortable(currentUser, f.patient); uploaded++; } catch (e) { /* skip bad file */ } }
+    return { dir, uploaded };
+  });
+
+  handle('usb:clear', async ({ dir, choose } = {}) => {
+    let d = dir;
+    if (!d || choose) d = await pickDir('Choose the USB drive to clear');
+    if (!d) return { cleared: 0 };
+    const r = usb.clearDrive(d);
+    db.audit(currentUser, 'usb_clear', 'patient', null, `${r.cleared} folder(s)`);
+    return r;
   });
 
   /* ---- Version & offline updates (available from any view) ---- */

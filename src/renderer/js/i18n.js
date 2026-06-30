@@ -1,4 +1,4 @@
-import { CATALOG, LANGUAGES, CONDITIONS, ALLERGIES } from '../i18n/strings.js';
+import { CATALOG, LANGUAGES, CONDITIONS, ALLERGIES, REFERRALS } from '../i18n/strings.js';
 
 let lang = 'en';
 
@@ -27,6 +27,14 @@ export function conditions() {
 export function allergies() {
   return ALLERGIES.map((a) => ({ key: a.key, label: a[lang] || a.en }));
 }
+export function referrals() {
+  return REFERRALS.map((r) => ({ key: r.key, label: r[lang] || r.en }));
+}
+// Resolve a stored referral key to a localized label (passes through legacy free text).
+export function referralLabel(key) {
+  const r = REFERRALS.find((x) => x.key === key);
+  return r ? (r[lang] || r.en) : (key || '');
+}
 // All known languages, or only those enabled for an event (CSV string of codes).
 export function languageList(enabledCsv) {
   if (!enabledCsv) return LANGUAGES;
@@ -42,7 +50,7 @@ export function speak(text, onEnd) {
   window.speechSynthesis.cancel();
   const u = new SpeechSynthesisUtterance(text);
   // Map each pack to the closest available TTS voice (Kriol/Nyanja fall back to English).
-  const ttsLang = { en: 'en-US', es: 'es-ES', bzj: 'en-US', nya: 'en-US' };
+  const ttsLang = { en: 'en-US', es: 'es-ES', ru: 'ru-RU', bzj: 'en-US', nya: 'en-US' };
   u.lang = ttsLang[lang] || 'en-US';
   u.rate = 0.95;
   u.onend = () => { speaking = false; if (onEnd) onEnd(); };

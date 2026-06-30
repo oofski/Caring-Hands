@@ -7,6 +7,10 @@ import { Odontogram } from '../components/odontogram.js';
 import { patientHistoryCards, incompleteBanner } from '../components/patientHistory.js';
 import { store } from '../store.js';
 import { statusPill } from './dashboard.js';
+import { bloodThinnerFlags } from '../medFlags.js';
+
+const QUADRANTS = [['UR', 'UR'], ['UL', 'UL'], ['LR', 'LR'], ['LL', 'LL']];
+const fmtWhen = (ts) => { if (!ts) return ''; const d = new Date(ts); return isNaN(d) ? String(ts) : d.toLocaleString(); };
 
 const EXTRACTION_TYPES = [
   ['simple', 'Simple'], ['impact_soft', 'Impact soft tissue'], ['impact_bony', 'Impact part bony'],
@@ -68,6 +72,8 @@ export function renderProvider(ctx, params = {}) {
     const flagAllergies = allergies().filter((a) => (p.medical_history.allergies || []).includes(a.key)).map((a) => `Allergy: ${a.label}`);
     if (p.medical_history.pregnancy === 'yes') flagConds.push('Pregnant');
     const flags = [...flagConds, ...flagAllergies];
+    // F12: blood-thinner / anticoagulant detection — surfaced as a prominent danger banner.
+    const thinnerFlags = bloodThinnerFlags(p.medical_history);
 
     /* ---------- Triage row (paper: top of sheet) ---------- */
     const checkState = { ...(tr.checklist || {}) };
@@ -275,6 +281,93 @@ export function renderProvider(ctx, params = {}) {
     if (locked) providerName.disabled = true;
     const sigPad = SignaturePad();
 
+    /* ---------- F10: oral-surgery consent tooth numbers ---------- */
+    const surgeryConsent = (p.consents || []).find((c) => c.type === 'oral_surgery');
+    function consentTeethPanel() {
+      if (!surgeryConsent) return null;
+      const teethInput = el('input', { class: 'input', placeholder: 'e.g. 18, 19', value: surgeryConsent.tooth_numbers || '' });
+      if (locked) teethInput.disabled = true;
+      const amended = el('div', { class: 'subtle small', style: 'margin-top:8px' });
+      const renderAmended = () => {
+        clear(amended);
+        if (surgeryConsent.amended_by) {
+          amended.append(icon('pen', { size: 12 }), ` Teeth set by ${surgeryConsent.amended_by}${surgeryConsent.amended_at ? ' on ' + fmtWhen(surgeryConsent.amended_at) : ''}`);
+        }
+      };
+      renderAmended();
+      const saveBtn = el('button', { class: 'btn btn--primary btn--sm', type: 'button', onClick: async () => {
+        const val = teethInput.value.trim();
+        try {
+          // setConsentTeeth returns the full refreshed patient; read the authoritative consent back.
+          const res = await api.setConsentTeeth(surgeryConsent.id, val);
+          const updated = (res && res.consents || []).find((c) => c.id === surgeryConsent.id) || {};
+          surgeryConsent.tooth_numbers = updated.tooth_numbers != null ? updated.tooth_numbers : val;
+          surgeryConsent.amended_by = updated.amended_by || (store.user && store.user.full_name) || 'staff';
+          surgeryConsent.amended_at = updated.amended_at || new Date().toISOString();
+          teethInput.value = surgeryConsent.tooth_numbers;
+          renderAmended();
+          toast('Consent tooth number(s) saved', 'success');
+        } catch (e) { toast(e.message, 'error'); }
+      } }, [icon('save', { size: 15 }), 'Save teeth']);
+      return panel('clipboard', 'Oral surgery consent — tooth number(s)',
+        el('p', { class: 'subtle small', style: 'margin:0 0 8px' }, ['Specify the tooth/teeth covered by the signed oral-surgery consent.']),
+        el('div', { class: 'field-row' }, [
+          el('label', { class: 'field', style: 'flex:1;margin:0' }, [el('span', { class: 'field-label' }, ['Tooth number(s)']), teethInput]),
+          locked ? null : el('div', { style: 'display:flex;align-items:flex-end' }, [saveBtn]),
+        ]),
+        amended,
+      );
+    }
+
+    /* ---------- F15: show only relevant treatment sections per triage checklist ---------- */
+    const cl = tr.checklist || {};
+    const hasChecklist = ['cleaning', 'extraction', 'filling'].some((k) => cl[k]);
+    // When a checklist exists, only show the indicated panels; otherwise show all.
+    const relevant = { filling: !hasChecklist || !!cl.filling, extraction: !hasChecklist || !!cl.extraction, cleaning: !hasChecklist || !!cl.cleaning };
+    let showAllSections = !hasChecklist;
+    const visible = (k) => showAllSections || relevant[k];
+    // Panels are always built (so edits are never lost); F15 only toggles display.
+    const sectionPanels = {};
+    const applySectionVisibility = () => {
+      ['filling', 'extraction', 'cleaning'].forEach((k) => {
+        if (sectionPanels[k]) sectionPanels[k].style.display = visible(k) ? '' : 'none';
+      });
+    };
+
+    /* ---------- F13: quadrant zoom buttons (focus the odontogram on a quadrant) ---------- */
+    function quadZoomBar() {
+      const mk = (q, label) => el('button', { class: 'btn btn--soft btn--sm', type: 'button', onClick: () => odo.setQuadrant(q) }, [label]);
+      return el('div', { class: 'chip-row', style: 'margin-bottom:8px;align-items:center' }, [
+        el('span', { class: 'field-label', style: 'margin-right:4px' }, ['Zoom']),
+        ...QUADRANTS.map(([q, l]) => mk(q, l)),
+        mk('all', 'All'),
+      ]);
+    }
+
+    /* ---------- F14: bulk-clean a whole quadrant (hygienist) ---------- */
+    function bulkCleanControl() {
+      if (locked) return null;
+      let quad = 'UR';
+      const quadSel = el('select', { class: 'input input--sm', style: 'max-width:120px', onChange: (e) => { quad = e.target.value; } },
+        QUADRANTS.map(([q, l]) => el('option', { value: q }, [l])));
+      const markQuad = el('button', { class: 'btn btn--soft btn--sm', type: 'button', onClick: () => {
+        const ids = odo.quadrantIds(quad);
+        if (!ids.length) { toast('No teeth in that quadrant for this dentition.', 'info'); return; }
+        odo.bulkTag(ids, 'cleaning');
+        toast(`${ids.length} tooth/teeth marked cleaned (${quad})`, 'success');
+      } }, [icon('checkCircle', { size: 15 }), 'Mark quadrant cleaned']);
+      const markAll = el('button', { class: 'btn btn--soft btn--sm', type: 'button', onClick: () => {
+        const ids = ['UR', 'UL', 'LR', 'LL'].flatMap((q) => odo.quadrantIds(q));
+        if (!ids.length) { toast('No teeth visible to mark.', 'info'); return; }
+        odo.bulkTag(ids, 'cleaning');
+        toast(`${ids.length} tooth/teeth marked cleaned (all)`, 'success');
+      } }, [icon('checkCircle', { size: 15 }), 'Mark all visible cleaned']);
+      return el('div', { class: 'chip-row', style: 'margin-bottom:10px;align-items:center' }, [
+        el('span', { class: 'field-label', style: 'margin-right:4px' }, ['Bulk cleaning']),
+        quadSel, markQuad, markAll,
+      ]);
+    }
+
     /* ---------- helpers to collect + mark ---------- */
     function computeMarksLive() {
       const m = {};
@@ -360,8 +453,20 @@ export function renderProvider(ctx, params = {}) {
         onDelete: async () => { try { await api.deletePatient(id); toast('Empty record deleted', 'success'); ctx.navigate('provider'); } catch (e) { toast(e.message, 'error'); } },
         onNewCheckin: () => ctx.navigate('kiosk'),
       }),
+      // F12: blood thinners get their own prominent danger banner above other flags.
+      thinnerFlags.length ? el('div', { class: 'banner banner--alert' }, [
+        icon('alert', { size: 16 }),
+        el('div', {}, [
+          el('strong', {}, ['BLOOD THINNER — confirm before extraction']),
+          el('div', { class: 'chip-row', style: 'margin-top:6px' }, thinnerFlags.map((f) =>
+            el('span', { class: 'pill pill--danger' }, [icon('alert', { size: 12 }), f.replace(/^Blood thinner:\s*/, '')]))),
+        ]),
+      ]) : null,
       flags.length ? el('div', { class: 'banner banner--alert' }, [icon('flag', { size: 16 }), 'Medical flags: ' + flags.join(' · ')]) : null,
       locked ? el('div', { class: 'banner banner--locked' }, [icon('lock', { size: 16 }), 'This record is signed off and locked. View or export below.']) : null,
+
+      // F20: accountability — who triaged / took vitals / signed off, with timestamps.
+      accountabilityCard(p, tr, tx),
 
       // Full patient history — collapsible, open by default.
       el('details', { class: 'history-details', open: 'open' }, [
@@ -380,24 +485,33 @@ export function renderProvider(ctx, params = {}) {
         el('label', { class: 'field' }, [el('span', { class: 'field-label' }, ['Triage notes']), triageNotes.node]),
       ),
 
-      // The mouth
-      panel('tooth', 'Odontogram — tap teeth of concern', odo.node),
+      // The mouth — with F13 quadrant zoom buttons above the chart.
+      panel('tooth', 'Odontogram — tap teeth of concern', quadZoomBar(), odo.node),
+
+      // F10: oral-surgery consent tooth numbers (only when such a consent exists).
+      consentTeethPanel(),
+
+      // F15: only relevant treatment sections are shown; a toggle reveals all.
+      hasChecklist ? el('div', { class: 'chip-row', style: 'margin:4px 0 12px' }, [
+        el('span', { class: 'subtle small' }, ['Showing sections indicated by triage.']),
+        toggleChip('Show all sections', showAllSections, (on) => { showAllSections = on; applySectionVisibility(); }, false),
+      ]) : null,
 
       el('div', { class: 'panel-grid-2' }, [
-        panel('pen', 'Fillings',
+        (sectionPanels.filling = panel('pen', 'Fillings',
           fillingRows,
-          locked ? null : softBtn('plus', 'Add filling', () => { addFilling(); refreshMarks(); })),
-        panel('tooth', 'Extractions',
+          locked ? null : softBtn('plus', 'Add filling', () => { addFilling(); refreshMarks(); }))),
+        (sectionPanels.extraction = panel('tooth', 'Extractions',
           extractRows,
           locked ? null : softBtn('plus', 'Add extraction', () => { addExtraction(); refreshMarks(); }),
           el('div', { class: 'field-row', style: 'margin-top:10px' }, [
             el('label', { class: 'field', style: 'flex:1;margin:0' }, [el('span', { class: 'field-label' }, ['Other']), extOther]),
             el('label', { class: 'field', style: 'margin:0;max-width:90px' }, [el('span', { class: 'field-label' }, ['Tooth #']), extOtherTooth]),
-          ])),
+          ]))),
       ]),
 
       el('div', { class: 'panel-grid-2' }, [
-        panel('checkCircle', 'Cleaning (hygiene)', cleaning),
+        (sectionPanels.cleaning = panel('checkCircle', 'Cleaning (hygiene)', bulkCleanControl(), cleaning)),
         panel('syringe', 'Anesthetic administered', anesGrid),
       ]),
 
@@ -427,11 +541,59 @@ export function renderProvider(ctx, params = {}) {
             : el('div', { class: 'action-stack', style: 'margin-top:12px' }, [
                 ghostBtn('save', 'Save progress', () => save(false)),
                 primaryBtn('checkCircle', 'Sign off & lock', () => save(true)),
+                // F17: patient summary PDF available before sign-off (doctor/admin only).
+                store.can('admin', 'doctor')
+                  ? el('button', { class: 'btn btn--ghost btn--block', type: 'button', onClick: async () => {
+                      try { const r = await api.pdfGenerate(id, 'summary'); if (r && r.saved) toast(`Saved: ${r.path}`, 'success'); }
+                      catch (e) { toast(e.message, 'error'); }
+                    } }, [icon('user', { size: 16 }), 'Patient summary PDF'])
+                  : null,
               ])),
       ]),
     );
+    applySectionVisibility();
     refreshMarks();
   }
+}
+
+/* ---------------- F20: accountability card ---------------- */
+// Who took vitals / triaged / signed off, with timestamps. Also surfaces the
+// authoritative vitals (staff triage columns preferred, intake self-report as fallback).
+function accountabilityCard(p, tr, tx) {
+  tr = tr || {};
+  tx = tx || {};
+  const lines = [];
+  const line = (ic, label, name, when) => {
+    if (!name && !when) return;
+    lines.push(el('div', { class: 'kv' }, [
+      el('span', { class: 'kv-k' }, [icon(ic, { size: 13 }), ' ', label]),
+      el('span', { class: 'kv-v' }, [`${name || '—'}${when ? ' · ' + fmtWhen(when) : ''}`]),
+    ]));
+  };
+  // Vitals reader: prefer authoritative triage vitals, else intake self-report.
+  const mh = p.medical_history || {};
+  const sys = tr.bp_systolic != null ? tr.bp_systolic : mh.bp_systolic;
+  const dia = tr.bp_diastolic != null ? tr.bp_diastolic : mh.bp_diastolic;
+  const hr = tr.heart_rate != null ? tr.heart_rate : mh.heart_rate;
+  const fromTriage = tr.bp_systolic != null || tr.bp_diastolic != null || tr.heart_rate != null;
+  const vitalsStr = [];
+  if (sys != null || dia != null) vitalsStr.push(`BP ${sys != null ? sys : '—'}/${dia != null ? dia : '—'}`);
+  if (hr != null) vitalsStr.push(`HR ${hr}`);
+
+  line('user', 'Triaged by', p.triaged_by_name, tr.triaged_at);
+  line('syringe', 'Vitals by', p.vitals_by_name, tr.vitals_at);
+  line('pen', 'Signed off by', p.completed_by_name, tx.completed_at);
+  if (p.dismissed_by_name || p.dismissed_at) line('checkCircle', 'Checked out by', p.dismissed_by_name, p.dismissed_at);
+
+  if (!lines.length && !vitalsStr.length) return null;
+  return el('div', { class: 'card' }, [
+    el('div', { class: 'card-title' }, [icon('clipboard', { size: 15 }), 'Accountability']),
+    vitalsStr.length ? el('div', { class: 'chip-row', style: 'margin-bottom:10px' }, [
+      el('span', { class: 'pill pill--info' }, [icon('syringe', { size: 12 }), `${t('intake.vitalsTitle')}: ${vitalsStr.join(' · ')}`]),
+      el('span', { class: 'subtle small' }, [fromTriage ? '(staff-measured)' : '(patient self-report)']),
+    ]) : null,
+    lines.length ? el('div', { class: 'kv-grid' }, lines) : null,
+  ]);
 }
 
 /* ---------------- small UI helpers ---------------- */
@@ -492,6 +654,8 @@ export function exportButtons(ctx, id) {
   return el('div', { class: 'action-stack', style: 'margin-top:12px' }, [
     el('button', { class: 'btn btn--primary btn--block', onClick: () => run(() => api.pdfGenerate(id, 'progress')) }, [icon('save', { size: 16 }), 'Progress Note PDF']),
     el('button', { class: 'btn btn--ghost btn--block', onClick: () => run(() => api.pdfGenerate(id, 'full')) }, [icon('clipboard', { size: 16 }), 'Full Record PDF']),
+    // F17: one-page patient summary PDF.
+    el('button', { class: 'btn btn--ghost btn--block', onClick: () => run(() => api.pdfGenerate(id, 'summary')) }, [icon('user', { size: 16 }), 'Patient summary PDF']),
     el('button', { class: 'btn btn--ghost btn--block', onClick: () => run(() => api.pdfPrint(id, 'full')) }, [icon('print', { size: 16 }), 'Print']),
     el('button', { class: 'btn btn--ghost btn--block', onClick: () => run(() => api.exportRecordUsb(id)) }, [icon('upload', { size: 16 }), 'Save to patient USB']),
   ]);

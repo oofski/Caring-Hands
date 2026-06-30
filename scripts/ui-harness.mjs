@@ -48,6 +48,9 @@ const PERMS = {
   'patientsList': ['admin', 'doctor', 'triage'], 'patientsRecords': ['admin', 'doctor'],
   'patientsSearchAll': ['admin', 'doctor', 'triage'], 'patientsHistory': ['admin', 'doctor', 'triage'],
   'patientsIncomplete': ['admin'], 'patientsCleanupIncomplete': ['admin'], 'patientsDelete': ['admin'],
+  'patientsDismiss': ['admin', 'checkout'], 'patientsAudit': ['admin', 'doctor', 'checkout'],
+  'vitalsSave': ['admin', 'doctor', 'triage', 'emt'], 'consentSetTeeth': ['admin', 'doctor'],
+  'usbLoad': ['admin', 'doctor', 'triage', 'checkout'], 'usbUploadCheckout': ['admin', 'doctor', 'triage', 'checkout'], 'usbClear': ['admin', 'doctor', 'triage', 'checkout'],
   'triageSave': ['admin', 'doctor', 'triage'], 'treatmentSave': ['admin', 'doctor'],
   'xrayAdd': ['admin', 'doctor', 'triage'], 'xrayGet': ['admin', 'doctor', 'triage'], 'xrayList': ['admin', 'doctor', 'triage'], 'xrayDelete': ['admin', 'doctor', 'triage'],
   'pdfPreview': ['admin', 'doctor'], 'pdfGenerate': ['admin', 'doctor'], 'pdfPrint': ['admin', 'doctor'],
@@ -89,6 +92,15 @@ window.api = {
   patientsCleanupIncomplete: okWrap(() => db.deleteIncompletePatients(currentUser), 'patientsCleanupIncomplete'),
   triageSave: okWrap(({ patientId, data }) => db.saveTriage(currentUser, patientId, data), 'triageSave'),
   treatmentSave: okWrap(({ patientId, data, finalize }) => db.saveTreatment(currentUser, patientId, data, finalize), 'treatmentSave'),
+  vitalsSave: okWrap(({ patientId, data }) => db.saveVitals(currentUser, patientId, data), 'vitalsSave'),
+  consentSetTeeth: okWrap(({ consentId, tooth_numbers }) => db.updateConsentTeeth(currentUser, consentId, tooth_numbers), 'consentSetTeeth'),
+  patientsDismiss: okWrap((id) => db.dismissPatient(currentUser, id), 'patientsDismiss'),
+  patientsAudit: okWrap((id) => db.patientAudit(id), 'patientsAudit'),
+  usbList: async () => ({ ok: true, data: [] }),
+  usbWriteCheckin: async () => ({ ok: true, data: { saved: false } }),
+  usbLoad: okWrap(() => ({ loaded: [] }), 'usbLoad'),
+  usbUploadCheckout: okWrap(() => ({ uploaded: 0 }), 'usbUploadCheckout'),
+  usbClear: okWrap(() => ({ cleared: 0 }), 'usbClear'),
   xrayAdd: okWrap((p) => db.addXray(currentUser, p.patientId, p), 'xrayAdd'),
   xrayGet: okWrap((id) => db.getXray(id), 'xrayGet'),
   xrayList: okWrap((id) => db.listXrays(id), 'xrayList'),
@@ -163,6 +175,20 @@ async function main() {
   setInput(textInputs[1], 'Lopez');
   // dob
   const dob = $all('.kiosk-body input').find((i) => i.type === 'date'); if (dob) setInput(dob, '1985-04-12');
+  // v1.0.6 F1-F3: phone + emergency contact name + phone are now required to advance.
+  const fillField = (re, val) => {
+    const lbl = $all('.kiosk-body label.field').find((l) => re.test(((l.querySelector('.field-label') || {}).textContent || '').trim()));
+    const inp = lbl && lbl.querySelector('input');
+    if (inp) setInput(inp, val);
+    return !!inp;
+  };
+  log(fillField(/^Phone/i, '503-555-0100'), 'F1 phone field present (required)');
+  log(fillField(/Emergency contact name/i, 'Jose Lopez'), 'F2 emergency contact name present (required)');
+  log(fillField(/Emergency contact phone/i, '503-555-0199'), 'F3 emergency contact phone present (required)');
+  // F4: referral dropdown
+  const refSel = $all('.kiosk-body label.field').find((l) => /How did you hear/i.test(((l.querySelector('.field-label') || {}).textContent || '')));
+  log(!!(refSel && refSel.querySelector('select')), 'F4 referral dropdown present');
+  if (refSel) { const s = refSel.querySelector('select'); if (s && s.options.length > 1) { s.value = s.options[1].value; s.dispatchEvent(new window.Event('change', { bubbles: true })); } }
   clickText('Next');
   await tick();
 
@@ -232,12 +258,16 @@ async function main() {
   }
 
   // ---- Smoke render the other views to catch runtime errors ----
-  const views = ['dashboard', 'triage', 'provider', 'reports', 'admin'];
+  // Always run authenticated so a kiosk regression can't mask real view errors.
+  currentUser = db.login('admin', 'admin');
+  const views = ['dashboard', 'triage', 'provider', 'reports', 'admin', 'emt', 'checkout'];
   for (const v of views) {
     try {
       const mod = await import('../src/renderer/js/views/' + v + '.js');
       const fn = mod['render' + v[0].toUpperCase() + v.slice(1)];
-      const ctx = { navigate: () => {}, toast: () => {}, store: (await import('../src/renderer/js/store.js')).store };
+      const store = (await import('../src/renderer/js/store.js')).store;
+      store.setUser(currentUser);
+      const ctx = { navigate: () => {}, toast: () => {}, store };
       const node = fn(ctx, {});
       document.body.append(node);
       await tick(); await tick();
@@ -261,6 +291,20 @@ async function main() {
   await window.api.authLogin({ username: 'trix', password: 'x' });
   pr = await window.api.patientsCreate({ first_name: 'Tri', last_name: 'Age', demographics: {}, medical_history: {}, dental_history: {}, consents: [] });
   log(pr.ok, 'TRIAGE can complete a check-in: ' + (pr.ok ? 'allowed' : pr.error));
+  // v1.0.6 roles: EMT records vitals; CHECKOUT dismisses a signed-off patient.
+  currentUser = db.login('admin', 'admin'); db.createUser(currentUser, { username: 'emtx', full_name: 'EMT One', role: 'emt', password: 'x' });
+  db.createUser(currentUser, { username: 'cox', full_name: 'Checkout One', role: 'checkout', password: 'x' });
+  const vp = db.createPatient(currentUser, { first_name: 'Vital', last_name: 'Test', demographics: {}, medical_history: {}, dental_history: {} });
+  await window.api.authLogin({ username: 'emtx', password: 'x' });
+  pr = await window.api.vitalsSave({ patientId: vp.id, data: { bp_systolic: '120', bp_diastolic: '80', heart_rate: '70' } });
+  log(pr.ok, 'EMT can record vitals: ' + (pr.ok ? 'allowed' : pr.error));
+  pr = await window.api.usersList();
+  log(!pr.ok, 'EMT blocked from staff list (guard): ' + (pr.ok ? 'NOT BLOCKED' : 'blocked'));
+  // checkout dismiss: needs a signed-off treatment
+  currentUser = db.login('admin', 'admin'); db.saveTreatment(currentUser, vp.id, { provider_name: 'Dr', provider_signature: 'data:,s' }, true);
+  await window.api.authLogin({ username: 'cox', password: 'x' });
+  pr = await window.api.patientsDismiss(vp.id);
+  log(pr.ok && pr.data.status === 'dismissed', 'CHECKOUT can dismiss a signed-off patient: ' + (pr.ok ? 'allowed' : pr.error));
 
   await tick();
   if (errors.length) errors.forEach((e) => log(false, 'RUNTIME: ' + e));

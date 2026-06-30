@@ -28,7 +28,9 @@ export function renderDashboard(ctx) {
     const quick = el('div', { class: 'quick-actions' }, [
       qa(' qa-card--primary', 'clipboard', t('dash.startCheckin'), 'Hand the device to a patient', () => ctx.navigate('kiosk')),
       store.can('admin', 'doctor', 'triage') ? qa('', 'triage', t('dash.viewQueue'), `${stats.waiting_triage} waiting`, () => ctx.navigate('triage')) : null,
+      store.can('admin', 'emt') ? qa('', 'syringe', 'Record vitals', 'Enter BP & heart rate', () => ctx.navigate('emt')) : null,
       store.can('admin', 'doctor') ? qa('', 'tooth', 'Provider queue', `${stats.triaged} ready`, () => ctx.navigate('provider')) : null,
+      store.can('admin', 'checkout') ? qa('', 'checkCircle', 'Check-out', `${stats.completed} completed`, () => ctx.navigate('checkout')) : null,
       store.can('admin') ? qa('', 'database', 'Back up to USB', 'Save a full database copy', async () => {
         try { const r = await api.backup(); if (r.saved) ctx.toast(`Backed up to ${r.path}`, 'success'); } catch (e) { ctx.toast(e.message, 'error'); }
       }) : null,
@@ -93,6 +95,7 @@ export function statusPill(status) {
     triaged: ['Ready', 'pill--info'],
     in_treatment: ['In treatment', 'pill--warning'],
     completed: ['Completed', 'pill--success'],
+    dismissed: ['Dismissed', 'pill--neutral'],
   };
   const [label, cls] = map[status] || [status, 'pill--neutral'];
   return el('span', { class: `pill ${cls}` }, [el('span', { class: 'pill-dot' }), label]);

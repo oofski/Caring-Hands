@@ -71,7 +71,7 @@ export function renderAdmin(ctx) {
     const name = el('input', { class: 'input', value: u ? u.full_name : '', placeholder: 'Full name' });
     const uname = el('input', { class: 'input', value: u ? u.username : '', placeholder: 'Username', disabled: !isNew });
     const role = el('select', { class: 'input' });
-    [['triage', t('roles.triage')], ['doctor', t('roles.doctor')], ['admin', t('roles.admin')]].forEach(([v, l]) => {
+    [['triage', t('roles.triage')], ['emt', t('roles.emt')], ['doctor', t('roles.doctor')], ['checkout', t('roles.checkout')], ['admin', t('roles.admin')]].forEach(([v, l]) => {
       const op = el('option', { value: v }, [l]); if (u && u.role === v) op.selected = true; role.append(op);
     });
     const pass = el('input', { class: 'input', type: 'password', placeholder: isNew ? 'Password' : 'New password (leave blank to keep)' });

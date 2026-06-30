@@ -5,8 +5,21 @@
 export const LANGUAGES = [
   { code: 'en', label: 'English', native: 'English' },
   { code: 'es', label: 'Spanish', native: 'Español' },
+  { code: 'ru', label: 'Russian', native: 'Русский' },
   { code: 'bzj', label: 'Belizean Creole', native: 'Kriol' },
   { code: 'nya', label: 'Nyanja', native: 'Chinyanja' },
+];
+
+// "How did you hear about us?" dropdown options (F4).
+export const REFERRALS = [
+  { key: 'email', en: 'Email', es: 'Correo electrónico', ru: 'Электронная почта' },
+  { key: 'text', en: 'Text message', es: 'Mensaje de texto', ru: 'СМС' },
+  { key: 'sign', en: 'Sign / banner', es: 'Letrero / pancarta', ru: 'Вывеска / баннер' },
+  { key: 'friend_referral', en: 'Friend / referral', es: 'Amigo / referencia', ru: 'Друг / рекомендация' },
+  { key: 'flyer', en: 'Flyer', es: 'Volante', ru: 'Листовка' },
+  { key: 'church', en: 'Church / community', es: 'Iglesia / comunidad', ru: 'Церковь / община' },
+  { key: 'social_media', en: 'Social media', es: 'Redes sociales', ru: 'Соцсети' },
+  { key: 'other', en: 'Other', es: 'Otro', ru: 'Другое' },
 ];
 
 // Medical-history checklist (the 28 conditions). `flag:true` items raise a
@@ -67,10 +80,11 @@ const en = {
     error: 'Invalid username or password.',
     kiosk: 'Start patient check-in', kioskHint: 'Hand the device to a patient to begin intake',
   },
-  roles: { admin: 'Administrator', doctor: 'Doctor', triage: 'Triage / Front Desk' },
+  roles: { admin: 'Administrator', doctor: 'Doctor', triage: 'Triage / Front Desk', emt: 'EMT / Nurse', checkout: 'Check-Out' },
   nav: {
     dashboard: 'Dashboard', checkin: 'Check-In', triage: 'Triage', provider: 'Provider',
     records: 'Records', reports: 'Reports', admin: 'Admin', logout: 'Sign out',
+    emt: 'Vitals', checkout: 'Check-Out',
   },
   dash: {
     title: 'Clinic Dashboard', event: 'Active event', noEvent: 'No active event',
@@ -91,13 +105,14 @@ const en = {
     marital: 'Marital status', single: 'Single', married: 'Married', divorced: 'Divorced', widowed: 'Widowed',
     children: 'Children by age group', child0: '0–5 yrs', child6: '6–12 yrs', child13: '13–17 yrs', child18: '18+ yrs',
     emergencyName: 'Emergency contact name', emergencyPhone: 'Emergency contact phone',
-    referral: 'How did you hear about us?',
+    referral: 'How did you hear about us?', referralOther: 'Please specify',
     // medical
+    vitalsTitle: 'Vitals', bp: 'Blood pressure', bpSys: 'Systolic', bpDia: 'Diastolic', hr: 'Heart rate (bpm)',
     underTreatment: 'Are you currently under a doctor’s care?', hospitalized: 'Hospitalized in the last 2 years?',
     tobacco: 'Do you use tobacco?', pregnancy: 'Pregnant, nursing, or taking contraceptives?',
     pregnancyNA: 'Not applicable',
-    allergiesTitle: 'Medication allergies', allergiesHint: 'Select all that apply',
-    conditionsTitle: 'Do you have any of these conditions?', conditionsHint: 'Select all that apply',
+    allergiesTitle: 'Medication allergies', allergiesHint: 'Select all that apply', allergyOther: 'Other allergy (specify)',
+    conditionsTitle: 'Do you have any of these conditions?', conditionsHint: 'Select all that apply', conditionOther: 'Other condition (specify)',
     medsTitle: 'Current medications', medName: 'Medication', medDose: 'Dose', medReason: 'Reason', addMed: 'Add medication',
     // dental
     reason: 'Reason for today’s visit', goals: 'Your long-term dental goals',
@@ -115,8 +130,10 @@ const en = {
     done: 'Done', minorNotice: 'This patient is under 18 — a parent or guardian must sign.',
   },
   consent: {
-    generalTitle: 'General Consent to Dental Treatment',
-    generalIntro: 'Please read each section. You may tap “Read aloud” to hear it in your language.',
+    generalTitle: 'Consent to Dental Procedures, Anesthetics, Sedatives, Other Services & Hold Harmless',
+    generalIntro: 'Please read the following. You may tap “Read aloud” to hear it in your language.',
+    // F9: EXACT Oregon statutory language (English authoritative — do not alter).
+    oregon: 'I certify that I have read this Consent, or that it has been read to me, and that I understand the above. The nature and purpose of such operation(s), procedure(s), treatment(s), and/or services and the reasons why the same is (are) considered necessary or advisable has been explained to me. I hereby hold Caring Hands Worldwide, Associate Dentist and/or such assistants harmless for the free dental care provided. Services are provided without compensation and that the provider’s liability is limited and the provider may not be held liable for any injury, death or other loss arising out of the provision of these services, unless the injury, death or other loss results from gross negligence. I am also aware of the risk of exposure to COVID during a dental procedure and I consent to participate in this clinic at my own risk.',
     clauses: [
       'I voluntarily consent to dental examination and treatment by the Caring Hands Worldwide volunteer dental team.',
       'I understand this is a free clinic staffed by volunteers and that treatment is provided as time and resources allow.',
@@ -124,7 +141,6 @@ const en = {
       'I understand that dentistry is not an exact science and that no guarantees have been made about results.',
       'I understand the risks of treatment may include pain, swelling, infection, bleeding, and in rare cases injury to nerves or adjacent teeth.',
       'I agree to follow all post-treatment instructions given to me by the dental team.',
-      'I release and hold harmless Caring Hands Worldwide, its volunteers, and host facilities from liability for care provided in good faith.',
     ],
     covidTitle: 'COVID-19 Risk Acknowledgment',
     covid: 'I understand that dental treatment may involve close contact and aerosol-generating procedures, and that no setting can be completely free of the risk of exposure to COVID-19 or other contagious illness. I accept this risk voluntarily.',
@@ -160,7 +176,7 @@ const es = {
     error: 'Usuario o contraseña inválidos.',
     kiosk: 'Iniciar registro de paciente', kioskHint: 'Entregue el dispositivo al paciente para comenzar',
   },
-  roles: { admin: 'Administrador', doctor: 'Doctor', triage: 'Triaje / Recepción' },
+  roles: { admin: 'Administrador', doctor: 'Doctor', triage: 'Triaje / Recepción', emt: 'Enfermero/a (EMT)', checkout: 'Salida' },
   nav: {
     dashboard: 'Panel', checkin: 'Registro', triage: 'Triaje', provider: 'Proveedor',
     records: 'Registros', reports: 'Reportes', admin: 'Admin', logout: 'Salir',
@@ -176,12 +192,13 @@ const es = {
     marital: 'Estado civil', single: 'Soltero/a', married: 'Casado/a', divorced: 'Divorciado/a', widowed: 'Viudo/a',
     children: 'Hijos por grupo de edad', child0: '0–5 años', child6: '6–12 años', child13: '13–17 años', child18: '18+ años',
     emergencyName: 'Nombre del contacto de emergencia', emergencyPhone: 'Teléfono de emergencia',
-    referral: '¿Cómo se enteró de nosotros?',
+    referral: '¿Cómo se enteró de nosotros?', referralOther: 'Por favor especifique',
+    vitalsTitle: 'Signos vitales', bp: 'Presión arterial', bpSys: 'Sistólica', bpDia: 'Diastólica', hr: 'Frecuencia cardíaca (lpm)',
     underTreatment: '¿Está bajo el cuidado de un médico actualmente?', hospitalized: '¿Hospitalizado en los últimos 2 años?',
     tobacco: '¿Usa tabaco?', pregnancy: '¿Embarazada, amamantando o usando anticonceptivos?',
     pregnancyNA: 'No aplica',
-    allergiesTitle: 'Alergias a medicamentos', allergiesHint: 'Seleccione todas las que apliquen',
-    conditionsTitle: '¿Tiene alguna de estas condiciones?', conditionsHint: 'Seleccione todas las que apliquen',
+    allergiesTitle: 'Alergias a medicamentos', allergiesHint: 'Seleccione todas las que apliquen', allergyOther: 'Otra alergia (especifique)',
+    conditionsTitle: '¿Tiene alguna de estas condiciones?', conditionsHint: 'Seleccione todas las que apliquen', conditionOther: 'Otra condición (especifique)',
     medsTitle: 'Medicamentos actuales', medName: 'Medicamento', medDose: 'Dosis', medReason: 'Motivo', addMed: 'Agregar medicamento',
     reason: 'Motivo de la visita de hoy', goals: 'Sus metas dentales a largo plazo',
     priorDentist: '¿Cuándo visitó al dentista por última vez?',
@@ -198,7 +215,8 @@ const es = {
   },
   consent: {
     generalTitle: 'Consentimiento General para Tratamiento Dental',
-    generalIntro: 'Por favor lea cada sección. Puede tocar “Leer en voz alta” para escucharla en su idioma.',
+    generalIntro: 'Por favor lea lo siguiente. Puede tocar “Leer en voz alta” para escucharlo en su idioma.',
+    oregon: 'Certifico que he leído este Consentimiento, o que me ha sido leído, y que entiendo lo anterior. Se me ha explicado la naturaleza y el propósito de tales operación(es), procedimiento(s), tratamiento(s) y/o servicios y las razones por las que se consideran necesarios o aconsejables. Por la presente eximo de responsabilidad a Caring Hands Worldwide, al Dentista Asociado y/o a dichos asistentes por la atención dental gratuita brindada. Los servicios se prestan sin compensación y la responsabilidad del proveedor es limitada y el proveedor no puede ser considerado responsable por ninguna lesión, muerte u otra pérdida que surja de la prestación de estos servicios, a menos que la lesión, muerte u otra pérdida resulte de negligencia grave. También soy consciente del riesgo de exposición al COVID durante un procedimiento dental y consiento participar en esta clínica bajo mi propio riesgo. (La versión en inglés es la versión legal autoritativa.)',
     clauses: [
       'Doy mi consentimiento voluntario para el examen y tratamiento dental por parte del equipo voluntario de Caring Hands Worldwide.',
       'Entiendo que esta es una clínica gratuita atendida por voluntarios y que el tratamiento se brinda según el tiempo y los recursos disponibles.',
@@ -300,4 +318,59 @@ const nya = {
   },
 };
 
-export const CATALOG = { en, es, bzj, nya };
+// Russian — full patient-facing pack (staff screens fall back to English).
+const ru = {
+  common: {
+    next: 'Далее', back: 'Назад', save: 'Сохранить', cancel: 'Отмена', submit: 'Отправить',
+    yes: 'Да', no: 'Нет', other: 'Другое', none: 'Нет', add: 'Добавить', remove: 'Удалить',
+    clear: 'Очистить', close: 'Закрыть', search: 'Поиск', loading: 'Загрузка…',
+    required: 'Обязательно', optional: 'Необязательно', confirm: 'Подтвердить', continue: 'Продолжить',
+    readAloud: 'Прочитать вслух', stopReading: 'Стоп', signHere: 'Подпишите здесь',
+    clearSignature: 'Очистить подпись', print: 'Печать', export: 'Экспорт', saved: 'Сохранено.',
+  },
+  app: { name: 'Caring Hands', sub: 'Worldwide', tagline: 'Руки помощи для здоровой жизни' },
+  login: { kiosk: 'Начать регистрацию пациента', kioskHint: 'Передайте устройство пациенту, чтобы начать' },
+  roles: { admin: 'Администратор', doctor: 'Врач', triage: 'Сортировка / Регистратура', emt: 'Медбрат/сестра', checkout: 'Выписка' },
+  intake: {
+    welcome: 'Добро пожаловать в Caring Hands', chooseLanguage: 'Пожалуйста, выберите язык',
+    start: 'Начать', step: 'Шаг', of: 'из',
+    s_language: 'Язык', s_demographics: 'О вас', s_medical: 'История болезни',
+    s_dental: 'Стоматологическая история', s_consent: 'Согласие', s_surgery: 'Согласие на операцию', s_review: 'Подпись и отправка',
+    firstName: 'Имя', lastName: 'Фамилия', dob: 'Дата рождения', gender: 'Пол',
+    genderM: 'Мужской', genderF: 'Женский', genderO: 'Другой',
+    phone: 'Телефон', email: 'Эл. почта', address: 'Домашний адрес', mailing: 'Почтовый адрес (если отличается)',
+    marital: 'Семейное положение', single: 'Холост/не замужем', married: 'В браке', divorced: 'В разводе', widowed: 'Вдовец/вдова',
+    children: 'Дети по возрастным группам', child0: '0–5 лет', child6: '6–12 лет', child13: '13–17 лет', child18: '18+ лет',
+    emergencyName: 'Контактное лицо на случай ЧП', emergencyPhone: 'Телефон контактного лица',
+    referral: 'Как вы узнали о нас?', referralOther: 'Уточните, пожалуйста',
+    vitalsTitle: 'Показатели', bp: 'Артериальное давление', bpSys: 'Систолическое', bpDia: 'Диастолическое', hr: 'Пульс (уд/мин)',
+    underTreatment: 'Находитесь ли вы сейчас под наблюдением врача?', hospitalized: 'Госпитализация за последние 2 года?',
+    tobacco: 'Употребляете ли вы табак?', pregnancy: 'Беременность, кормление или приём контрацептивов?',
+    pregnancyNA: 'Не применимо',
+    allergiesTitle: 'Аллергия на лекарства', allergiesHint: 'Выберите все подходящие', allergyOther: 'Другая аллергия (укажите)',
+    conditionsTitle: 'Есть ли у вас какие-либо из этих заболеваний?', conditionsHint: 'Выберите все подходящие', conditionOther: 'Другое заболевание (укажите)',
+    medsTitle: 'Принимаемые лекарства', medName: 'Лекарство', medDose: 'Доза', medReason: 'Причина', addMed: 'Добавить лекарство',
+    reason: 'Причина сегодняшнего визита', goals: 'Ваши долгосрочные стоматологические цели',
+    priorDentist: 'Когда вы последний раз были у стоматолога?',
+    gumBleeding: 'Кровоточат ли дёсны?', sores: 'Язвы или уплотнения во рту?',
+    jawInjury: 'Травмы головы, шеи или челюсти?', grinding: 'Сжимаете или скрипите зубами?',
+    postExtraction: 'Бывало ли кровотечение после удаления зуба?',
+    ortho: 'Носили ли вы брекеты / ортодонтию?', cosmetic: 'Интересует косметическое улучшение?',
+    reviewTitle: 'Проверка и подпись', reviewHint: 'Пожалуйста, проверьте свои данные и подпишите ниже.',
+    relationship: 'Кем вы приходитесь пациенту (если подписываете за другого)',
+    signerName: 'Печатными буквами имя подписавшего',
+    thanks: 'Спасибо! Регистрация завершена.', thanksSub: 'Пожалуйста, верните устройство на стойку регистрации.',
+    done: 'Готово', minorNotice: 'Пациенту меньше 18 лет — должен подписать родитель или опекун.',
+  },
+  consent: {
+    generalTitle: 'Согласие на стоматологические процедуры, анестезию и освобождение от ответственности',
+    generalIntro: 'Пожалуйста, прочитайте следующее. Можно нажать «Прочитать вслух», чтобы услышать на вашем языке.',
+    oregon: 'Я подтверждаю, что прочитал(а) это Согласие или что оно было мне прочитано, и что я понимаю изложенное выше. Мне разъяснены характер и цель таких операций, процедур, лечения и/или услуг и причины, по которым они считаются необходимыми или целесообразными. Настоящим я освобождаю Caring Hands Worldwide, ассоциированного стоматолога и/или их помощников от ответственности за бесплатную стоматологическую помощь. Услуги предоставляются безвозмездно, ответственность поставщика ограничена, и поставщик не может нести ответственность за травму, смерть или иной ущерб, возникший в результате оказания этих услуг, кроме случаев, когда травма, смерть или иной ущерб являются следствием грубой небрежности. Я также осознаю риск заражения COVID во время стоматологической процедуры и соглашаюсь участвовать в этой клинике на свой страх и риск. (Английская версия является юридически обязательной.)',
+    agree: 'Я прочитал(а) и понимаю изложенное выше и даю согласие.',
+    surgeryTitle: 'Согласие на хирургию / удаление зуба',
+    surgeryIntro: 'Это дополнительное согласие необходимо, так как сегодня может быть проведено удаление.',
+    emergency: 'При неотложной ситуации вне рабочих часов звоните 541-556-5902.',
+  },
+};
+
+export const CATALOG = { en, es, ru, bzj, nya };

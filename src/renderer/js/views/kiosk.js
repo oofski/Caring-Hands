@@ -1,6 +1,6 @@
 import { el, clear, toast } from '../dom.js';
 import { icon } from '../icons.js';
-import { t, getLang, setLang, languageList, conditions, allergies, speak, stopSpeaking } from '../i18n.js';
+import { t, getLang, setLang, languageList, conditions, allergies, referrals, speak, stopSpeaking } from '../i18n.js';
 import { textField, textArea, selectField, yesNo, chipGrid } from '../forms.js';
 import { SignaturePad } from '../components/signature.js';
 import { api } from '../api.js';
@@ -110,7 +110,7 @@ export function renderKiosk(ctx) {
       { value: 'female', label: t('intake.genderF') },
       { value: 'other', label: t('intake.genderO') },
     ], { value: data.gender });
-    const phone = textField(t('intake.phone'), { value: data.phone, type: 'tel' });
+    const phone = textField(t('intake.phone'), { value: data.phone, type: 'tel', required: true });
     const email = textField(t('intake.email'), { value: data.email, type: 'email' });
     const address = textField(t('intake.address'), { value: d.address });
     const mailing = textField(t('intake.mailing'), { value: d.mailing_address });
@@ -125,9 +125,19 @@ export function renderKiosk(ctx) {
       { key: '0-5', label: t('intake.child0') }, { key: '6-12', label: t('intake.child6') },
       { key: '13-17', label: t('intake.child13') }, { key: '18+', label: t('intake.child18') },
     ], { selected: d.children || [] });
-    const emName = textField(t('intake.emergencyName'), { value: d.emergency_name });
-    const emPhone = textField(t('intake.emergencyPhone'), { value: d.emergency_phone, type: 'tel' });
-    const referral = textField(t('intake.referral'), { value: d.referral });
+    const emName = textField(t('intake.emergencyName'), { value: d.emergency_name, required: true });
+    const emPhone = textField(t('intake.emergencyPhone'), { value: d.emergency_phone, type: 'tel', required: true });
+
+    // F4: referral as a dropdown of known sources; "Other" reveals a free-text field.
+    const referral = selectField(t('intake.referral'), [
+      { value: '', label: '—' },
+      ...referrals().map((r) => ({ value: r.key, label: r.label })),
+    ], { value: d.referral });
+    const referralOther = textField(t('intake.referralOther'), { value: d.referral_other });
+    const referralOtherWrap = el('div', { class: 'span-2' }, [referralOther.node]);
+    const syncReferralOther = () => { referralOtherWrap.style.display = referral.get() === 'other' ? '' : 'none'; };
+    referral.input.addEventListener('change', syncReferralOther);
+    syncReferralOther();
 
     const node = el('div', { class: 'form-grid' }, [
       first.node, last.node, dob.node, gender.node, phone.node, email.node,
@@ -135,6 +145,7 @@ export function renderKiosk(ctx) {
       el('div', { class: 'span-2' }, [mailing.node]),
       marital.node, children.node, emName.node, emPhone.node,
       el('div', { class: 'span-2' }, [referral.node]),
+      referralOtherWrap,
     ]);
 
     return {
@@ -142,11 +153,16 @@ export function renderKiosk(ctx) {
       node,
       collect: () => {
         if (!first.get() || !last.get()) { toast(t('common.required') + ': ' + t('intake.firstName') + ' / ' + t('intake.lastName'), 'error'); return false; }
+        if (!phone.get()) { toast(t('common.required') + ': ' + t('intake.phone'), 'error'); return false; }
+        if (!emName.get()) { toast(t('common.required') + ': ' + t('intake.emergencyName'), 'error'); return false; }
+        if (!emPhone.get()) { toast(t('common.required') + ': ' + t('intake.emergencyPhone'), 'error'); return false; }
         data.first_name = first.get(); data.last_name = last.get();
         data.dob = dob.get(); data.gender = gender.get(); data.phone = phone.get(); data.email = email.get();
         Object.assign(data.demographics, {
           address: address.get(), mailing_address: mailing.get(), marital_status: marital.get(),
-          children: children.get(), emergency_name: emName.get(), emergency_phone: emPhone.get(), referral: referral.get(),
+          children: children.get(), emergency_name: emName.get(), emergency_phone: emPhone.get(),
+          referral: referral.get(),
+          referral_other: referral.get() === 'other' ? referralOther.get() : '',
         });
         return true;
       },
@@ -155,16 +171,40 @@ export function renderKiosk(ctx) {
 
   function stepMedical() {
     const m = data.medical_history;
+
+    // F5/F6: self-reported vitals at the top of the medical step (parsed to ints on collect).
+    const sys = textField(t('intake.bpSys'), { value: m.bp_systolic != null ? String(m.bp_systolic) : '', type: 'number' });
+    const dia = textField(t('intake.bpDia'), { value: m.bp_diastolic != null ? String(m.bp_diastolic) : '', type: 'number' });
+    const hr = textField(t('intake.hr'), { value: m.heart_rate != null ? String(m.heart_rate) : '', type: 'number' });
+    const vitalsBlock = el('div', { class: 'field' }, [
+      el('span', { class: 'field-label' }, [t('intake.vitalsTitle')]),
+      el('div', { class: 'form-grid' }, [sys.node, dia.node, hr.node]),
+    ]);
+
     const underTx = yesNo(t('intake.underTreatment'), { value: m.under_treatment, yesText: t('common.yes'), noText: t('common.no') });
     const hosp = yesNo(t('intake.hospitalized'), { value: m.hospitalized, yesText: t('common.yes'), noText: t('common.no') });
     const tobacco = yesNo(t('intake.tobacco'), { value: m.tobacco, yesText: t('common.yes'), noText: t('common.no') });
     const pregnancy = yesNo(t('intake.pregnancy'), { value: m.pregnancy, yesText: t('common.yes'), noText: t('common.no') });
+
+    // F7: allergy chips + an "other" chip that reveals a free-text field.
     const allergyGrid = chipGrid(t('intake.allergiesTitle'),
-      allergies().map((a) => ({ key: a.key, label: a.label, flag: true })),
+      [...allergies().map((a) => ({ key: a.key, label: a.label, flag: true })), { key: 'other', label: t('common.other') }],
       { selected: m.allergies || [], hint: t('intake.allergiesHint') });
+    const allergyOther = textField(t('intake.allergyOther'), { value: m.allergies_other });
+    const allergyOtherWrap = el('div', { class: 'span-2' }, [allergyOther.node]);
+    const syncAllergyOther = () => { allergyOtherWrap.style.display = allergyGrid.get().includes('other') ? '' : 'none'; };
+    allergyGrid.node.addEventListener('click', syncAllergyOther);
+    syncAllergyOther();
+
+    // F8: condition chips + an "other" chip that reveals a free-text field.
     const condGrid = chipGrid(t('intake.conditionsTitle'),
-      conditions().map((c) => ({ key: c.key, label: c.label, flag: c.flag })),
+      [...conditions().map((c) => ({ key: c.key, label: c.label, flag: c.flag })), { key: 'other', label: t('common.other') }],
       { selected: m.conditions || [], hint: t('intake.conditionsHint') });
+    const condOther = textField(t('intake.conditionOther'), { value: m.conditions_other });
+    const condOtherWrap = el('div', { class: 'span-2' }, [condOther.node]);
+    const syncCondOther = () => { condOtherWrap.style.display = condGrid.get().includes('other') ? '' : 'none'; };
+    condGrid.node.addEventListener('click', syncCondOther);
+    syncCondOther();
 
     // Medication table
     const medRows = el('div', { class: 'med-rows' });
@@ -180,9 +220,12 @@ export function renderKiosk(ctx) {
     (m.medications || []).forEach(addMedRow);
 
     const node = el('div', {}, [
+      vitalsBlock,
       el('div', { class: 'form-grid' }, [underTx.node, hosp.node, tobacco.node, pregnancy.node]),
       el('div', { class: 'span-2' }, [allergyGrid.node]),
+      el('div', { class: 'form-grid' }, [allergyOtherWrap]),
       el('div', { class: 'span-2' }, [condGrid.node]),
+      el('div', { class: 'form-grid' }, [condOtherWrap]),
       el('div', { class: 'field' }, [
         el('span', { class: 'field-label' }, [t('intake.medsTitle')]),
         medRows,
@@ -190,15 +233,32 @@ export function renderKiosk(ctx) {
       ]),
     ]);
 
+    // Parse a numeric input to an int, or undefined when blank/invalid (so we omit it).
+    const intOrOmit = (s) => {
+      const v = (s || '').trim();
+      if (!v) return undefined;
+      const n = parseInt(v, 10);
+      return Number.isFinite(n) ? n : undefined;
+    };
+
     return {
       title: t('intake.s_medical'),
       node,
       collect: () => {
+        const allergySel = allergyGrid.get();
+        const condSel = condGrid.get();
         Object.assign(m, {
           under_treatment: underTx.get(), hospitalized: hosp.get(), tobacco: tobacco.get(), pregnancy: pregnancy.get(),
-          allergies: allergyGrid.get(), conditions: condGrid.get(),
+          allergies: allergySel, conditions: condSel,
+          allergies_other: allergySel.includes('other') ? allergyOther.get() : '',
+          conditions_other: condSel.includes('other') ? condOther.get() : '',
           medications: Array.from(medRows.children).map((r) => r._get()).filter((x) => x.name),
         });
+        // F5/F6: write intake vitals as ints; omit (delete) when blank.
+        const sysN = intOrOmit(sys.get()), diaN = intOrOmit(dia.get()), hrN = intOrOmit(hr.get());
+        if (sysN !== undefined) m.bp_systolic = sysN; else delete m.bp_systolic;
+        if (diaN !== undefined) m.bp_diastolic = diaN; else delete m.bp_diastolic;
+        if (hrN !== undefined) m.heart_rate = hrN; else delete m.heart_rate;
         return true;
       },
     };
@@ -280,17 +340,15 @@ export function renderKiosk(ctx) {
     const signer = textField(t('intake.signerName'), { value: '', required: true });
     const rel = textField(t('intake.relationship'), { value: minor ? '' : '' });
 
+    // F9: render the verbatim Oregon general-consent paragraph as the primary
+    // consent text. It already includes the COVID acknowledgment, so we do NOT
+    // append a separate COVID section. The read-aloud button reads this text.
     const sections = el('div', {}, [
       consentSection({
         title: t('consent.generalTitle'),
-        intro: t('consent.generalIntro'),
-        clauses: t('consent.clauses'),
+        intro: t('consent.oregon'),
       }),
     ]);
-    // COVID acknowledgment ships with the English (CHW) packet.
-    if (getLang() === 'en') {
-      sections.append(consentSection({ title: t('consent.covidTitle'), clauses: [t('consent.covid')] }));
-    }
 
     const node = el('div', { class: 'consent-screen' }, [
       minor ? el('div', { class: 'minor-banner' }, [icon('alert', { size: 16 }), ' ' + t('intake.minorNotice')]) : null,
@@ -310,7 +368,7 @@ export function renderKiosk(ctx) {
         upsertConsent('general', {
           signer_name: signer.get(), relationship: rel.get(),
           signature_png: sigPad.getDataUrl(),
-          version: `general-${getLang()}-v1${getLang() === 'en' ? '+covid' : ''}`,
+          version: `general-oregon-${getLang()}-v1+covid`,
         });
         return true;
       },
@@ -322,6 +380,13 @@ export function renderKiosk(ctx) {
     const agree = el('input', { class: 'big-check', type: 'checkbox' });
     const signer = textField(t('intake.signerName'), { value: signerFromGeneral() });
 
+    // F10: tooth numbers are NOT collected from the patient — the provider
+    // records them chairside. Show a read-only note instead of an input.
+    const toothNote = {
+      es: 'Número(s) de diente: lo completará el proveedor en el sillón dental.',
+      ru: 'Номер(а) зуба: заполняется врачом у кресла.',
+    }[getLang()] || 'Tooth number(s): to be completed at chairside by the provider.';
+
     const node = el('div', { class: 'consent-screen' }, [
       consentSection({
         title: t('consent.surgeryTitle'),
@@ -329,6 +394,7 @@ export function renderKiosk(ctx) {
         clauses: t('consent.surgeryClauses'),
       }),
       consentSection({ title: t('consent.postOpTitle'), clauses: [t('consent.postOp')], extra: t('consent.emergency') }),
+      el('div', { class: 'banner banner--info' }, [icon('flag', { size: 16 }), ' ' + toothNote]),
       el('label', { class: 'agree-row' }, [agree, el('span', {}, [t('consent.agree')])]),
       signer.node,
       sigPad.node,
@@ -403,12 +469,32 @@ export function renderKiosk(ctx) {
   function showThankYou(patient) {
     stopSpeaking();
     clear(root);
+
+    // F19: optional offline transfer of this check-in to a USB drive. Does not
+    // block the thank-you flow — the patient can simply tap Done.
+    const usbLabel = { es: 'Guardar en unidad USB', ru: 'Сохранить на USB-накопитель' }[getLang()] || 'Save to USB drive';
+    const usbBtn = el('button', { class: 'btn btn--soft btn--lg', type: 'button' }, [icon('usb', { size: 18 }), usbLabel]);
+    usbBtn.addEventListener('click', async () => {
+      usbBtn.disabled = true;
+      try {
+        const res = await api.usbWriteCheckin(patient.id);
+        toast((res && res.message) || (typeof res === 'string' ? res : t('common.saved')), 'success');
+      } catch (e) {
+        toast(e.message, 'error');
+      } finally {
+        usbBtn.disabled = false;
+      }
+    });
+
     root.append(el('div', { class: 'kiosk-thanks' }, [
       el('div', { class: 'thanks-check' }, [icon('check', { size: 44, stroke: 2.2 })]),
       el('h1', {}, [t('intake.thanks')]),
       el('p', {}, [t('intake.thanksSub')]),
       el('div', { class: 'thanks-name' }, [`${patient.first_name} ${patient.last_name}`]),
-      el('button', { class: 'btn btn--primary btn--lg', onClick: () => { setLang('en'); ctx.navigate('login'); } }, [t('intake.done')]),
+      el('div', { class: 'thanks-actions' }, [
+        usbBtn,
+        el('button', { class: 'btn btn--primary btn--lg', onClick: () => { setLang('en'); ctx.navigate('login'); } }, [t('intake.done')]),
+      ]),
     ]));
   }
 

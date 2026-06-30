@@ -59,6 +59,11 @@ function styles() {
       .two > div { flex:1; }
       .pill { display:inline-block; padding:2px 8px; border-radius:10px; font-size:10px; font-weight:700; }
       .pagebreak { page-break-before: always; }
+      .consent-body { white-space: pre-wrap; line-height: 1.45; }
+      .xrays { display:flex; flex-wrap:wrap; gap: 10px; margin-top: 4px; }
+      .xray { border:1px solid #d9e2ec; border-radius:6px; padding:6px; background:#fbfdff; width: 168px; }
+      .xray img { width: 100%; height: 110px; object-fit: cover; display:block; border-radius:4px; background:#000; }
+      .xray .cap { font-size: 10px; color:#627d98; margin-top:4px; }
     </style>`;
 }
 
@@ -91,6 +96,35 @@ const CLEAN_LABELS = {
   sealant: 'Sealant', ohi: 'Oral hygiene instruction',
 };
 const ANES_LABELS = { lidocaine: 'Lidocaine 2%', articaine: 'Articaine 4%', other: 'Other', supplemental: 'Supplemental' };
+
+// F4: map known referral keys to English labels; pass legacy/free text through.
+// (pdf.js cannot import the renderer i18n module, so the small map is hardcoded.)
+const REFERRAL_LABELS = {
+  email: 'Email',
+  text: 'Text message',
+  sign: 'Sign / banner',
+  friend_referral: 'Friend / referral',
+  flyer: 'Flyer',
+  church: 'Church / community',
+  social_media: 'Social media',
+  other: 'Other',
+};
+function referralLabel(key) {
+  if (key == null || key === '') return '';
+  return REFERRAL_LABELS[key] || String(key);
+}
+
+// F9: EXACT Oregon statutory general-consent language (English authoritative —
+// do not alter). Kept verbatim in sync with i18n strings (consent.oregon).
+const OREGON_CONSENT =
+  'I certify that I have read this Consent, or that it has been read to me, and that I understand the above. ' +
+  'The nature and purpose of such operation(s), procedure(s), treatment(s), and/or services and the reasons why ' +
+  'the same is (are) considered necessary or advisable has been explained to me. I hereby hold Caring Hands ' +
+  'Worldwide, Associate Dentist and/or such assistants harmless for the free dental care provided. Services are ' +
+  'provided without compensation and that the provider’s liability is limited and the provider may not be held ' +
+  'liable for any injury, death or other loss arising out of the provision of these services, unless the injury, ' +
+  'death or other loss results from gross negligence. I am also aware of the risk of exposure to COVID during a ' +
+  'dental procedure and I consent to participate in this clinic at my own risk.';
 
 function progressNoteBody(p) {
   const t = p.treatment || {};
@@ -167,17 +201,38 @@ function fullPacketBody(p) {
     (x) => `<tr><td>${esc(x.name)}</td><td>${esc(x.dose || '')}</td><td>${esc(x.reason || '')}</td></tr>`
   ).join('') || '<tr><td colspan="3" class="muted">None reported</td></tr>';
 
-  const consents = (p.consents || []).map((c) => `
+  const consents = (p.consents || []).map((c) => {
+    const isSurgery = c.type === 'oral_surgery';
+    // F10: oral-surgery consent tooth numbers (set later by the doctor).
+    let teethBlock = '';
+    if (isSurgery) {
+      if (c.tooth_numbers != null && String(c.tooth_numbers).trim() !== '') {
+        const amend = c.amended_by || c.amended_at
+          ? ` <span class="muted">(added after signature${c.amended_by ? ' by ' + esc(c.amended_by) : ''}${c.amended_at ? ' on ' + fmtDate(c.amended_at) : ''})</span>`
+          : '';
+        teethBlock = `<div class="box"><span class="label">Tooth #(s): </span><b>${esc(c.tooth_numbers)}</b>${amend}</div>`;
+      } else {
+        teethBlock = `<div class="box"><span class="label">Tooth #(s): </span>____________________</div>`;
+      }
+    }
+    // F9: render the verbatim Oregon general-consent body for general consents.
+    const consentBody = !isSurgery
+      ? `<div class="box consent-body">${esc(c.body || OREGON_CONSENT)}</div>`
+      : '';
+    return `
     <div class="box">
       <div class="two">
         <div>
-          <div class="label">${c.type === 'oral_surgery' ? 'Oral Surgery Consent' : 'General Dental Consent'}</div>
+          <div class="label">${isSurgery ? 'Oral Surgery Consent' : 'General Dental Consent'}</div>
           <div class="val">${esc(c.signer_name)}${c.relationship ? ' (' + esc(c.relationship) + ')' : ''}</div>
           <div class="muted">${esc(c.version)} · Signed ${fmtDate(c.signed_at)}</div>
         </div>
         <div>${c.signature_png ? `<div class="sig"><img src="${c.signature_png}"/></div>` : ''}</div>
       </div>
-    </div>`).join('') || '<span class="muted">No consents on file</span>';
+      ${consentBody}
+      ${teethBlock}
+    </div>`;
+  }).join('') || '<span class="muted">No consents on file</span>';
 
   return `
     <h2>Patient Information</h2>
@@ -188,7 +243,7 @@ function fullPacketBody(p) {
       <tr>${field('Address', d.address)}${field('Mailing address', d.mailing_address)}</tr>
       <tr>${field('Marital status', d.marital_status)}${field('Children', (d.children || []).join(', '))}</tr>
       <tr>${field('Emergency contact', d.emergency_name)}${field('Emergency phone', d.emergency_phone)}</tr>
-      <tr>${field('Referral source', d.referral)}${field('Preferred language', p.language === 'es' ? 'Spanish' : 'English')}</tr>
+      <tr>${field('Referral source', d.referral === 'other' && d.referral_other ? d.referral_other : referralLabel(d.referral))}${field('Preferred language', p.language === 'es' ? 'Spanish' : 'English')}</tr>
     </table>
 
     <h2>Medical History</h2>
@@ -219,9 +274,72 @@ function fullPacketBody(p) {
     ${progressNoteBody(p)}`;
 }
 
+// F17: clean patient summary — procedures, anesthetic, notes, and x-ray images.
+function summaryBody(p) {
+  const t = p.treatment || {};
+
+  const fillings = (t.fillings || []).map((f) => {
+    const surf = Array.isArray(f.surfaces) ? f.surfaces.join(',') : (f.surfaces || '');
+    const ap = [f.ant ? 'Ant' : '', f.post ? 'Post' : ''].filter(Boolean).join('/') || esc(f.position || '');
+    return `<span>#${esc(f.tooth)}${surf ? ' · surf ' + esc(surf) : ''}${ap ? ' · ' + esc(ap) : ''}${f.note ? ' — ' + esc(f.note) : ''}</span>`;
+  }).join('') || '<span class="muted">None</span>';
+
+  const extractions = (t.extractions || []).map((e) => {
+    if (e.other) return `<span>Other: ${esc(e.other)}${e.tooth ? ' · #' + esc(e.tooth) : ''}</span>`;
+    const types = Array.isArray(e.types) ? e.types.map((k) => EXT_LABELS[k] || k).join(', ') : (e.type || '');
+    return `<span>#${esc(e.tooth)} · ${esc(types)}${e.note ? ' — ' + esc(e.note) : ''}</span>`;
+  }).join('') || '<span class="muted">None</span>';
+
+  const cleaning = Object.entries(t.cleaning || {})
+    .filter(([k, v]) => v && k !== 'quad_detail')
+    .map(([k]) => `<span>${esc(CLEAN_LABELS[k] || k)}${k === 'quad_deep_scaling' && t.cleaning.quad_detail ? ' (' + esc(t.cleaning.quad_detail) + ')' : ''}</span>`)
+    .join('') || '<span class="muted">None</span>';
+
+  const anesEntries = Array.isArray(t.anesthetic)
+    ? t.anesthetic.map((a) => `<span>${esc(a.agent)} × ${esc(a.carps)} carp(s)${a.location ? ' · ' + esc(a.location) : ''}</span>`)
+    : Object.entries(t.anesthetic || {}).map(([k, v]) => {
+        const label = k === 'other' && v.name ? `Other (${v.name})` : (ANES_LABELS[k] || k);
+        return `<span>${esc(label)}${v.carps ? ' × ' + esc(v.carps) + ' carp(s)' : ''}${v.location ? ' · ' + esc(v.location) : ''}</span>`;
+      });
+  const anesthetic = anesEntries.join('') || '<span class="muted">None</span>';
+
+  const xrays = (p._xrays || []).filter((x) => x && x.image_png).map((x) => `
+    <div class="xray">
+      <img src="${x.image_png}"/>
+      <div class="cap">${x.station ? 'Station ' + esc(x.station) : 'X-ray'}${x.note ? ' · ' + esc(x.note) : ''}</div>
+    </div>`).join('');
+
+  return `
+    <h2>Patient & Visit</h2>
+    <table class="grid">
+      <tr>${field('Patient', `${p.first_name} ${p.last_name}`)}${field('Date of birth', p.dob)}</tr>
+      <tr>${field('Event', p.event ? p.event.name : '—')}${field('Provider', t.provider_name)}</tr>
+    </table>
+
+    <h2>Procedures Performed</h2>
+    <div><span class="label">Fillings</span><div class="chips">${fillings}</div></div>
+    <div><span class="label">Extractions</span><div class="chips">${extractions}</div></div>
+    <div><span class="label">Cleaning</span><div class="chips">${cleaning}</div></div>
+    <div><span class="label">Anesthetic</span><div class="chips">${anesthetic}</div></div>
+    ${t.other_procedures ? `<div class="box"><span class="label">Other procedures</span><br>${esc(t.other_procedures)}</div>` : ''}
+
+    ${t.clinical_notes ? `<h2>Clinical / Dental Notes</h2><div class="box">${esc(t.clinical_notes)}</div>` : ''}
+
+    <h2>X-Rays</h2>
+    ${xrays ? `<div class="xrays">${xrays}</div>` : '<span class="muted">No x-rays on file</span>'}`;
+}
+
 function buildHtml(p, format) {
-  const title = format === 'full' ? 'Patient Record — Full Packet' : 'Progress Note';
-  const body = format === 'full' ? fullPacketBody(p) : progressNoteBody(p);
+  const title = format === 'full'
+    ? 'Patient Record — Full Packet'
+    : format === 'summary'
+      ? 'Patient Summary'
+      : 'Progress Note';
+  const body = format === 'full'
+    ? fullPacketBody(p)
+    : format === 'summary'
+      ? summaryBody(p)
+      : progressNoteBody(p);
   return `<!doctype html><html><head><meta charset="utf-8">${styles()}</head>
     <body><div class="page">
       ${header(title, p.event ? p.event.name : '')}
