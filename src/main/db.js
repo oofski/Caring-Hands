@@ -39,7 +39,7 @@ function migrate() {
       id           INTEGER PRIMARY KEY AUTOINCREMENT,
       username     TEXT UNIQUE NOT NULL,
       full_name    TEXT NOT NULL,
-      role         TEXT NOT NULL CHECK (role IN ('admin','doctor','triage','emt','checkout')),
+      role         TEXT NOT NULL CHECK (role IN ('admin','doctor','triage','emt','checkout','hygienist')),
       salt         TEXT NOT NULL,
       hash         TEXT NOT NULL,
       active       INTEGER NOT NULL DEFAULT 1,
@@ -171,15 +171,32 @@ function migrate() {
   addColumn('patients', 'dismissed_by', 'INTEGER');
   addColumn('patients', 'dismissed_at', 'TEXT');
   addColumn('xrays', 'updated_at', 'TEXT');
+  // v1.0.7: event-scoped staff. NULL = global (e.g. administrators) so they
+  // survive every event. Existing rows default to NULL and stay global.
+  addColumn('users', 'event_id', 'INTEGER');
 }
 
-const ROLES = ['admin', 'doctor', 'triage', 'emt', 'checkout'];
+const ROLES = ['admin', 'doctor', 'triage', 'emt', 'checkout', 'hygienist'];
+// Roles that do their clinical work on real patients (used for event-scoped
+// staff clearing — administrators are global and never swept).
+const EVENT_STAFF_ROLES = ['doctor', 'triage', 'emt', 'checkout', 'hygienist'];
 
-// SQLite can't ALTER a CHECK constraint, so recreate the users table with the
-// widened role set. Idempotent: no-op once the stored SQL already allows 'emt'.
+// SQLite can't ALTER a CHECK constraint, so recreate the users table whenever a
+// role in ROLES is missing from the stored CHECK. This is how new roles ship
+// (emt/checkout in v1.0.6, hygienist in v1.0.7) WITHOUT ever disabling, dropping
+// or resetting existing accounts — every row is copied verbatim, active flag and
+// all. Idempotent: no-op once the stored SQL already allows every current role.
 function recreateUsersRoleCheck() {
   const row = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='users'").get();
-  if (!row || /'emt'/.test(row.sql)) return;
+  if (!row) return;
+  const missingRole = ROLES.some((r) => !new RegExp(`'${r}'`).test(row.sql));
+  if (!missingRole) return;
+  // Preserve every column that currently exists (incl. event_id on later
+  // upgrades) so no accounts, roles, active flags, or event scoping are lost.
+  const existingCols = db.prepare('PRAGMA table_info(users)').all().map((c) => c.name);
+  const rolesSql = ROLES.map((r) => `'${r}'`).join(',');
+  const carried = ['id', 'username', 'full_name', 'role', 'salt', 'hash', 'active', 'created_at', 'event_id']
+    .filter((c) => existingCols.includes(c));
   db.pragma('foreign_keys = OFF');
   const tx = db.transaction(() => {
     db.exec(`
@@ -187,17 +204,19 @@ function recreateUsersRoleCheck() {
         id           INTEGER PRIMARY KEY AUTOINCREMENT,
         username     TEXT UNIQUE NOT NULL,
         full_name    TEXT NOT NULL,
-        role         TEXT NOT NULL CHECK (role IN ('admin','doctor','triage','emt','checkout')),
+        role         TEXT NOT NULL CHECK (role IN (${rolesSql})),
         salt         TEXT NOT NULL,
         hash         TEXT NOT NULL,
         active       INTEGER NOT NULL DEFAULT 1,
-        created_at   TEXT NOT NULL
+        created_at   TEXT NOT NULL,
+        event_id     INTEGER
       );
-      INSERT INTO users_new (id, username, full_name, role, salt, hash, active, created_at)
-        SELECT id, username, full_name, role, salt, hash, active, created_at FROM users;
-      DROP TABLE users;
-      ALTER TABLE users_new RENAME TO users;
     `);
+    db.exec(
+      `INSERT INTO users_new (${carried.join(', ')}) SELECT ${carried.join(', ')} FROM users;
+       DROP TABLE users;
+       ALTER TABLE users_new RENAME TO users;`
+    );
   });
   tx();
   db.pragma('foreign_keys = ON');
@@ -261,6 +280,14 @@ function seed() {
     ).run('Lowell Fairgrounds Clinic', 'Lowell, OR', today(), today(), 'en,es', now());
     setSetting('active_event_id', String(info.lastInsertRowid));
   }
+
+  // v1.0.7: adopt any legacy clinical staff (created before event scoping, so
+  // event_id IS NULL) into the active event, so "Start fresh for next event"
+  // can clear them like any other event staff. Administrators stay global.
+  const activeId = Number(getSetting('active_event_id'));
+  if (activeId) {
+    db.prepare("UPDATE users SET event_id = ? WHERE event_id IS NULL AND role != 'admin'").run(activeId);
+  }
 }
 
 /* ------------------------------------------------------------------ */
@@ -305,6 +332,7 @@ function publicUser(row) {
     role: row.role,
     active: !!row.active,
     created_at: row.created_at,
+    event_id: row.event_id != null ? row.event_id : null,
   };
 }
 
@@ -326,19 +354,43 @@ function listUsers() {
   return db.prepare('SELECT * FROM users ORDER BY role, full_name').all().map(publicUser);
 }
 
-function createUser(actor, { username, full_name, role, password }) {
+function createUser(actor, { username, full_name, role, password, event_id }) {
   const u = String(username || '').trim().toLowerCase();
   if (!u || !full_name || !role || !password) throw new Error('Missing required fields.');
   if (!ROLES.includes(role)) throw new Error('Invalid role.');
   const exists = db.prepare('SELECT id FROM users WHERE username = ?').get(u);
   if (exists) throw new Error('That username already exists.');
+  // Administrators are always global (event_id NULL). Clinical staff are scoped
+  // to an event so they can be cleared out when the clinic moves on (v1.0.7).
+  // A scoped role with no event given falls back to the active event.
+  let eid = null;
+  if (role !== 'admin') {
+    eid = event_id != null ? Number(event_id) : Number(getSetting('active_event_id')) || null;
+  }
   const { salt, hash } = hashPassword(password);
   const info = db.prepare(
-    `INSERT INTO users (username, full_name, role, salt, hash, active, created_at)
-     VALUES (?,?,?,?,?,1,?)`
-  ).run(u, full_name, role, salt, hash, now());
+    `INSERT INTO users (username, full_name, role, salt, hash, active, created_at, event_id)
+     VALUES (?,?,?,?,?,1,?,?)`
+  ).run(u, full_name, role, salt, hash, now(), eid);
   audit(actor, 'create', 'user', info.lastInsertRowid, `${u} (${role})`);
   return publicUser(db.prepare('SELECT * FROM users WHERE id = ?').get(info.lastInsertRowid));
+}
+
+// Remove all event-scoped clinical staff for an event so the next clinic starts
+// clean. Administrators (global) are never touched, and the actor can't delete
+// their own account. Returns the number of accounts removed. (v1.0.7)
+function clearEventStaff(actor, eventId) {
+  const eid = Number(eventId);
+  if (!eid) throw new Error('An event is required to clear its staff.');
+  const rows = db.prepare(
+    `SELECT * FROM users WHERE event_id = ? AND role != 'admin'`
+  ).all(eid).filter((r) => !(actor && actor.id === r.id));
+  const ids = rows.map((r) => r.id);
+  const del = db.prepare('DELETE FROM users WHERE id = ?');
+  const tx = db.transaction(() => { detachUserRefs(ids); ids.forEach((id) => del.run(id)); });
+  tx();
+  audit(actor, 'clear_staff', 'event', eid, `${rows.length} staff account(s)`);
+  return { deleted: rows.length };
 }
 
 function updateUser(actor, id, { full_name, role, active, password }) {
@@ -361,6 +413,20 @@ function updateUser(actor, id, { full_name, role, active, password }) {
   return publicUser(db.prepare('SELECT * FROM users WHERE id = ?').get(id));
 }
 
+// Null out every reference to these user ids before deleting them, so a staff
+// account that has already logged in / triaged / treated / dismissed patients
+// can still be removed without hitting a foreign-key constraint. Accountability
+// text (audit_log.user_name) is denormalized and stays intact.
+function detachUserRefs(ids) {
+  if (!ids || !ids.length) return;
+  const ph = ids.map(() => '?').join(',');
+  db.prepare(`UPDATE audit_log SET user_id = NULL WHERE user_id IN (${ph})`).run(...ids);
+  db.prepare(`UPDATE triage SET triaged_by = NULL WHERE triaged_by IN (${ph})`).run(...ids);
+  db.prepare(`UPDATE triage SET vitals_by = NULL WHERE vitals_by IN (${ph})`).run(...ids);
+  db.prepare(`UPDATE treatments SET completed_by = NULL WHERE completed_by IN (${ph})`).run(...ids);
+  db.prepare(`UPDATE patients SET dismissed_by = NULL WHERE dismissed_by IN (${ph})`).run(...ids);
+}
+
 function deleteUser(actor, id) {
   const row = db.prepare('SELECT * FROM users WHERE id = ?').get(id);
   if (!row) throw new Error('User not found.');
@@ -369,7 +435,8 @@ function deleteUser(actor, id) {
     const admins = db.prepare("SELECT COUNT(*) AS n FROM users WHERE role = 'admin' AND active = 1").get().n;
     if (admins <= 1) throw new Error('Cannot delete the last administrator.');
   }
-  db.prepare('DELETE FROM users WHERE id = ?').run(id);
+  const tx = db.transaction(() => { detachUserRefs([id]); db.prepare('DELETE FROM users WHERE id = ?').run(id); });
+  tx();
   audit(actor, 'delete', 'user', id, row.username);
   return { deleted: true };
 }
@@ -984,7 +1051,7 @@ function close() {
 
 module.exports = {
   init, close,
-  login, listUsers, createUser, updateUser, deleteUser,
+  login, listUsers, createUser, updateUser, deleteUser, clearEventStaff,
   listEvents, createEvent, updateEvent, setActiveEvent, setEventActive, deleteEvent, getActiveEvent,
   createPatient, updatePatient, deletePatient, getPatient, listPatients, searchAllPatients, patientHistory,
   listIncompletePatients, deleteIncompletePatients,

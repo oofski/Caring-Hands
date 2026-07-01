@@ -30,6 +30,7 @@ export function renderDashboard(ctx) {
       store.can('admin', 'doctor', 'triage') ? qa('', 'triage', t('dash.viewQueue'), `${stats.waiting_triage} waiting`, () => ctx.navigate('triage')) : null,
       store.can('admin', 'emt') ? qa('', 'syringe', 'Record vitals', 'Enter BP & heart rate', () => ctx.navigate('emt')) : null,
       store.can('admin', 'doctor') ? qa('', 'tooth', 'Provider queue', `${stats.triaged} ready`, () => ctx.navigate('provider')) : null,
+      store.can('admin', 'hygienist') ? qa('', 'sparkle', t('nav.hygienist'), `${stats.triaged} ready`, () => ctx.navigate('hygienist')) : null,
       store.can('admin', 'checkout') ? qa('', 'checkCircle', 'Check-out', `${stats.completed} completed`, () => ctx.navigate('checkout')) : null,
       store.can('admin') ? qa('', 'database', 'Back up to USB', 'Save a full database copy', async () => {
         try { const r = await api.backup(); if (r.saved) ctx.toast(`Backed up to ${r.path}`, 'success'); } catch (e) { ctx.toast(e.message, 'error'); }
@@ -59,6 +60,9 @@ export function renderDashboard(ctx) {
     root.append(
       el('div', { class: 'view-head' }, [
         el('div', {}, [
+          el('div', {
+            style: 'font-size:var(--fs-2xs); letter-spacing:var(--tracking-eyebrow); text-transform:uppercase; font-weight:var(--fw-semibold); color:var(--accent-text); margin-bottom:var(--space-1);',
+          }, ['Helping hands for healthy living']),
           el('h1', {}, [t('dash.title')]),
           el('p', { class: 'view-sub' }, [
             event ? `${t('dash.event')}: ` : '',

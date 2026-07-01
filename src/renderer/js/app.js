@@ -13,13 +13,15 @@ import { renderReports } from './views/reports.js';
 import { renderAdmin } from './views/admin.js';
 import { renderEmt } from './views/emt.js';
 import { renderCheckout } from './views/checkout.js';
+import { renderHygienist } from './views/hygienist.js';
 
 const appRoot = document.getElementById('app');
 
 const VIEWS = {
-  dashboard: { render: renderDashboard, roles: ['admin', 'doctor', 'triage', 'emt', 'checkout'], icon: 'dashboard', label: () => t('nav.dashboard') },
+  dashboard: { render: renderDashboard, roles: ['admin', 'doctor', 'triage', 'emt', 'checkout', 'hygienist'], icon: 'dashboard', label: () => t('nav.dashboard') },
   triage: { render: renderTriage, roles: ['admin', 'doctor', 'triage'], icon: 'triage', label: () => t('nav.triage') },
   emt: { render: renderEmt, roles: ['admin', 'emt'], icon: 'syringe', label: () => t('nav.emt') },
+  hygienist: { render: renderHygienist, roles: ['admin', 'hygienist'], icon: 'sparkle', label: () => t('nav.hygienist') },
   provider: { render: renderProvider, roles: ['admin', 'doctor'], icon: 'tooth', label: () => t('nav.provider') },
   checkout: { render: renderCheckout, roles: ['admin', 'checkout'], icon: 'checkCircle', label: () => t('nav.checkout') },
   records: { render: renderRecords, roles: ['admin', 'doctor', 'checkout'], icon: 'records', label: () => t('nav.records') },

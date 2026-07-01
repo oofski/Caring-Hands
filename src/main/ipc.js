@@ -25,6 +25,7 @@ const PERMS = {
   'users:create': ['admin'],
   'users:update': ['admin'],
   'users:delete': ['admin'],
+  'users:clearEventStaff': ['admin'],
   'events:create': ['admin'],
   'events:update': ['admin'],
   'events:setActive': ['admin'],
@@ -33,22 +34,22 @@ const PERMS = {
   'patients:delete': ['admin'],
   'patients:create': ['admin', 'doctor', 'triage', 'emt'],
   'patients:update': ['admin', 'triage', 'doctor'],
-  'patients:get': ['admin', 'doctor', 'triage', 'emt', 'checkout'],
-  'patients:list': ['admin', 'doctor', 'triage', 'emt', 'checkout'],
-  'patients:searchAll': ['admin', 'doctor', 'triage', 'emt', 'checkout'],
-  'patients:history': ['admin', 'doctor', 'triage', 'emt', 'checkout'],
+  'patients:get': ['admin', 'doctor', 'triage', 'emt', 'checkout', 'hygienist'],
+  'patients:list': ['admin', 'doctor', 'triage', 'emt', 'checkout', 'hygienist'],
+  'patients:searchAll': ['admin', 'doctor', 'triage', 'emt', 'checkout', 'hygienist'],
+  'patients:history': ['admin', 'doctor', 'triage', 'emt', 'checkout', 'hygienist'],
   'patients:incomplete': ['admin'],
   'patients:cleanupIncomplete': ['admin'],
   'patients:dismiss': ['admin', 'checkout'],
-  'patients:audit': ['admin', 'doctor', 'checkout'],
+  'patients:audit': ['admin', 'doctor', 'checkout', 'hygienist'],
   'patients:records': ['admin', 'doctor'],
   'triage:save': ['admin', 'doctor', 'triage'],
   'vitals:save': ['admin', 'doctor', 'triage', 'emt'],
-  'treatment:save': ['admin', 'doctor'],
+  'treatment:save': ['admin', 'doctor', 'hygienist'],
   'consent:setTeeth': ['admin', 'doctor'],
   'xray:add': ['admin', 'doctor', 'triage', 'emt'],
-  'xray:get': ['admin', 'doctor', 'triage', 'emt'],
-  'xray:list': ['admin', 'doctor', 'triage', 'emt', 'checkout'],
+  'xray:get': ['admin', 'doctor', 'triage', 'emt', 'hygienist'],
+  'xray:list': ['admin', 'doctor', 'triage', 'emt', 'checkout', 'hygienist'],
   'xray:delete': ['admin', 'doctor', 'triage', 'emt'],
   'pdf:generate': ['admin', 'doctor', 'checkout'],
   'pdf:preview': ['admin', 'doctor', 'checkout'],
@@ -113,6 +114,7 @@ function register(getMainWindow) {
   handle('users:create', (payload) => db.createUser(currentUser, payload));
   handle('users:update', ({ id, ...rest }) => db.updateUser(currentUser, id, rest));
   handle('users:delete', (id) => db.deleteUser(currentUser, id));
+  handle('users:clearEventStaff', (eventId) => db.clearEventStaff(currentUser, eventId));
 
   /* ---- Events ---- */
   handle('events:list', () => db.listEvents(), { });

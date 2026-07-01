@@ -30,6 +30,9 @@ export function renderLogin(ctx) {
 
   const card = el('div', { class: 'login-card' }, [
     el('img', { class: 'login-logo', src: '../../assets/logo.svg', alt: 'Caring Hands Worldwide' }),
+    el('div', {
+      style: 'text-align:center; font-size:var(--fs-2xs); letter-spacing:var(--tracking-eyebrow); text-transform:uppercase; font-weight:var(--fw-semibold); color:var(--accent-text); margin-bottom:var(--space-2);',
+    }, ['Helping hands for healthy living']),
     el('h1', { class: 'login-title' }, [t('login.title')]),
     el('p', { class: 'login-sub' }, [t('login.subtitle')]),
     el('label', { class: 'field' }, [el('span', { class: 'field-label' }, [t('login.username')]), username]),

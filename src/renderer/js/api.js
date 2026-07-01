@@ -18,6 +18,7 @@ export const api = {
   createUser: (p) => call('usersCreate', p),
   updateUser: (p) => call('usersUpdate', p),
   deleteUser: (id) => call('usersDelete', id),
+  clearEventStaff: (eventId) => call('usersClearEventStaff', eventId),
 
   listEvents: () => call('eventsList'),
   activeEvent: () => call('eventsActive'),

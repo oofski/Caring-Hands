@@ -80,11 +80,11 @@ const en = {
     error: 'Invalid username or password.',
     kiosk: 'Start patient check-in', kioskHint: 'Hand the device to a patient to begin intake',
   },
-  roles: { admin: 'Administrator', doctor: 'Doctor', triage: 'Triage / Front Desk', emt: 'EMT / Nurse', checkout: 'Check-Out' },
+  roles: { admin: 'Administrator', doctor: 'Doctor', triage: 'Triage / Front Desk', emt: 'EMT / Nurse', checkout: 'Check-Out', hygienist: 'Hygienist' },
   nav: {
     dashboard: 'Dashboard', checkin: 'Check-In', triage: 'Triage', provider: 'Provider',
     records: 'Records', reports: 'Reports', admin: 'Admin', logout: 'Sign out',
-    emt: 'Vitals', checkout: 'Check-Out',
+    emt: 'Vitals', checkout: 'Check-Out', hygienist: 'Cleanings',
   },
   dash: {
     title: 'Clinic Dashboard', event: 'Active event', noEvent: 'No active event',
@@ -176,10 +176,11 @@ const es = {
     error: 'Usuario o contraseña inválidos.',
     kiosk: 'Iniciar registro de paciente', kioskHint: 'Entregue el dispositivo al paciente para comenzar',
   },
-  roles: { admin: 'Administrador', doctor: 'Doctor', triage: 'Triaje / Recepción', emt: 'Enfermero/a (EMT)', checkout: 'Salida' },
+  roles: { admin: 'Administrador', doctor: 'Doctor', triage: 'Triaje / Recepción', emt: 'Enfermero/a (EMT)', checkout: 'Salida', hygienist: 'Higienista' },
   nav: {
     dashboard: 'Panel', checkin: 'Registro', triage: 'Triaje', provider: 'Proveedor',
     records: 'Registros', reports: 'Reportes', admin: 'Admin', logout: 'Salir',
+    emt: 'Signos vitales', checkout: 'Salida', hygienist: 'Limpiezas',
   },
   intake: {
     welcome: 'Bienvenido a Caring Hands', chooseLanguage: 'Por favor elija su idioma',
@@ -330,7 +331,7 @@ const ru = {
   },
   app: { name: 'Caring Hands', sub: 'Worldwide', tagline: 'Руки помощи для здоровой жизни' },
   login: { kiosk: 'Начать регистрацию пациента', kioskHint: 'Передайте устройство пациенту, чтобы начать' },
-  roles: { admin: 'Администратор', doctor: 'Врач', triage: 'Сортировка / Регистратура', emt: 'Медбрат/сестра', checkout: 'Выписка' },
+  roles: { admin: 'Администратор', doctor: 'Врач', triage: 'Сортировка / Регистратура', emt: 'Медбрат/сестра', checkout: 'Выписка', hygienist: 'Гигиенист' },
   intake: {
     welcome: 'Добро пожаловать в Caring Hands', chooseLanguage: 'Пожалуйста, выберите язык',
     start: 'Начать', step: 'Шаг', of: 'из',

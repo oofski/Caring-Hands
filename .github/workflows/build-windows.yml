@@ -47,31 +47,26 @@ jobs:
       - name: Publish downloadable release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.0.6-build.${{ github.run_number }}
-          name: Caring Hands v1.0.6 (build ${{ github.run_number }})
+          tag_name: v1.0.7-build.${{ github.run_number }}
+          name: Caring Hands v1.0.7 (build ${{ github.run_number }})
           prerelease: false
           make_latest: true
           body: |
-            ## Caring Hands Worldwide — Practice Management Software (v1.0.6)
+            ## Caring Hands Worldwide — Practice Management Software (v1.0.7)
 
             Offline-first dental clinic app for Windows. **Download the installer once — it auto-updates from here on.**
 
-            **New in v1.0.6 — clinical workflow, vitals & accountability**
-            - **Two new roles** — **EMT/Nurse** (records vitals and reviews medical history) and **Check-Out** (verifies the provider's notes are complete, then dismisses the patient).
-            - **Vitals everywhere** — blood pressure and heart rate now sit at the top of the medical history; EMT/triage can record them, and they show across every clinical view.
-            - **Blood-thinner alerts** — medications like Eliquis, Warfarin or Plavix are flagged prominently in Triage and on the provider's chart — critical before any extraction.
-            - **Safer check-in** — phone and emergency-contact name & phone are now required, and "How did you hear about us?" is a clean dropdown.
-            - **Smarter charting** — quadrant zoom (UR/UL/LR/LL) on the odontogram, **bulk-select** for hygienists to mark many teeth cleaned at once, and only the relevant treatment section (filling / extraction / cleaning) is shown.
-            - **Consent updates** — the general consent now uses the exact Oregon statutory language, and the oral-surgery consent has a tooth-number field the **doctor** fills in chairside.
-            - **Patient summary PDF** — one-click summary with procedures, notes and x-ray images, available at check-out.
-            - **Accountability** — every record shows **who did what and when** (triaged by, vitals by, completed by, dismissed by).
-            - **Russian** added as a third patient language (alongside English & Spanish).
-            - **USB workflow** — write a patient's file to a flash drive at check-in, carry it station to station offline, upload to the database at check-out, then clear the drive to reuse it.
+            **New in v1.0.7 — brand refresh, hygienist workflow & per-event staff**
+            - **New brand look** — the whole app now follows the official Caring Hands Brand Standards: Teal + Navy palette with a single Coral accent, Montserrat headings and Open Sans body text (bundled, fully offline), and the tagline "Helping hands for healthy living".
+            - **Hygienist role & screen** — cleanings now have their own focused station. Triage routes cleaning patients to the hygienist; extractions and fillings go to the doctor.
+            - **Doctor screen decluttered** — the provider chart now leads with the treatment the patient actually needs (extraction/filling); cleaning and reference panels are tucked into collapsible sections.
+            - **Staff per event** — create staff for the current event, then "Start fresh for the next event" to clear them out in one click. Administrators are always kept, so you never lock yourself out.
+            - **Updates never disable your team** — installing a new version always preserves your existing staff and their access; enabling a role keeps it enabled.
 
-            Includes everything from v1.0.2–1.0.5 (click-to-tag odontogram, full patient history, in-app auto-update, event/staff management, reports).
+            Includes everything from v1.0.2–1.0.6 (EMT vitals, Check-Out, blood-thinner alerts, Oregon consent, patient summary PDF, USB workflow, accountability, Russian, in-app auto-update).
 
-            - **Caring-Hands-Setup-1.0.6.exe** — installer (recommended; required for auto-update).
-            - **Caring-Hands-Portable-1.0.6.exe** — portable (no auto-update).
+            - **Caring-Hands-Setup-1.0.7.exe** — installer (recommended; required for auto-update).
+            - **Caring-Hands-Portable-1.0.7.exe** — portable (no auto-update).
 
             First sign-in: `admin / admin` — then create your staff accounts. All clinical data stays on the device.
           files: |

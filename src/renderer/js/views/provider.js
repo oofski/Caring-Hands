@@ -468,8 +468,9 @@ export function renderProvider(ctx, params = {}) {
       // F20: accountability — who triaged / took vitals / signed off, with timestamps.
       accountabilityCard(p, tr, tx),
 
-      // Full patient history — collapsible, open by default.
-      el('details', { class: 'history-details', open: 'open' }, [
+      // Full patient history — collapsible reference data, CLOSED by default to
+      // keep actionable treatment leading the chart.
+      el('details', { class: 'history-details', style: 'margin-bottom:var(--space-4)' }, [
         el('summary', { class: 'history-summary' }, [icon('clipboard', { size: 16 }), 'Patient history', priorVisits.length ? el('span', { class: 'pill pill--info', style: 'margin-left:8px' }, [`${priorVisits.length} prior visit(s)`]) : null]),
         el('div', { class: 'history-grid' }, patientHistoryCards(p, priorVisits)),
       ]),
@@ -497,23 +498,38 @@ export function renderProvider(ctx, params = {}) {
         toggleChip('Show all sections', showAllSections, (on) => { showAllSections = on; applySectionVisibility(); }, false),
       ]) : null,
 
-      el('div', { class: 'panel-grid-2' }, [
-        (sectionPanels.filling = panel('pen', 'Fillings',
-          fillingRows,
-          locked ? null : softBtn('plus', 'Add filling', () => { addFilling(); refreshMarks(); }))),
-        (sectionPanels.extraction = panel('tooth', 'Extractions',
-          extractRows,
-          locked ? null : softBtn('plus', 'Add extraction', () => { addExtraction(); refreshMarks(); }),
-          el('div', { class: 'field-row', style: 'margin-top:10px' }, [
-            el('label', { class: 'field', style: 'flex:1;margin:0' }, [el('span', { class: 'field-label' }, ['Other']), extOther]),
-            el('label', { class: 'field', style: 'margin:0;max-width:90px' }, [el('span', { class: 'field-label' }, ['Tooth #']), extOtherTooth]),
-          ]))),
-      ]),
+      // LEAD WITH RELEVANT WORK — the treatment the patient needs (fillings /
+      // extractions) is the prominent first thing after the odontogram. F15's
+      // applySectionVisibility() still hides non-indicated panels.
+      (sectionPanels.filling = panel('pen', 'Fillings',
+        fillingRows,
+        locked ? null : softBtn('plus', 'Add filling', () => { addFilling(); refreshMarks(); }))),
+      (sectionPanels.extraction = panel('tooth', 'Extractions',
+        extractRows,
+        locked ? null : softBtn('plus', 'Add extraction', () => { addExtraction(); refreshMarks(); }),
+        el('div', { class: 'field-row', style: 'margin-top:10px' }, [
+          el('label', { class: 'field', style: 'flex:1;margin:0' }, [el('span', { class: 'field-label' }, ['Other']), extOther]),
+          el('label', { class: 'field', style: 'margin:0;max-width:90px' }, [el('span', { class: 'field-label' }, ['Tooth #']), extOtherTooth]),
+        ]))),
 
-      el('div', { class: 'panel-grid-2' }, [
-        (sectionPanels.cleaning = panel('checkCircle', 'Cleaning (hygiene)', bulkCleanControl(), cleaning)),
-        panel('syringe', 'Anesthetic administered', anesGrid),
-      ]),
+      // Anesthetic supports the extractions/fillings above — kept adjacent.
+      panel('syringe', 'Anesthetic administered', anesGrid),
+
+      // DEMOTED: cleaning belongs to the hygienist. Rendered inside a lightly
+      // styled <details> that is CLOSED unless triage flagged a cleaning, so it
+      // never competes with the doctor's extractions/fillings. Still fully
+      // functional (incl. the bulk-clean control) when opened.
+      (sectionPanels.cleaning = el('details', {
+        class: 'card',
+        style: 'padding:0;overflow:hidden;margin-bottom:var(--space-4)',
+        ...(relevant.cleaning ? { open: 'open' } : {}),
+      }, [
+        el('summary', {
+          class: 'card-title',
+          style: 'cursor:pointer;list-style:none;padding:var(--space-3) var(--space-4);margin:0',
+        }, [icon('checkCircle', { size: 15 }), 'Cleaning (usually done by the hygienist)']),
+        el('div', { style: 'padding:0 var(--space-4) var(--space-4)' }, [bulkCleanControl(), cleaning]),
+      ])),
 
       // X-rays — provider can add/view (user priority)
       panel('xray', 'X-rays', gallery, fileInput),
@@ -522,34 +538,37 @@ export function renderProvider(ctx, params = {}) {
         el('label', { class: 'field' }, [el('span', { class: 'field-label' }, ['Other procedure']), otherProc.node]),
         el('label', { class: 'field' }, [el('span', { class: 'field-label' }, ['Dental notes']), dentalNotes.node])),
 
-      // Patient summary + sign-off + export
-      el('div', { class: 'panel-grid-2' }, [
-        panel('user', 'Patient summary',
-          el('div', { class: 'mini-hist' }, [
-            el('div', {}, [el('b', {}, ['Allergies: ']), (allergies().filter((a) => (p.medical_history.allergies || []).includes(a.key)).map((a) => a.label).join(', ') || 'None')]),
-            el('div', {}, [el('b', {}, ['Conditions: ']), (conditions().filter((c) => (p.medical_history.conditions || []).includes(c.key)).map((c) => c.label).join(', ') || 'None')]),
-            el('div', {}, [el('b', {}, ['Medications: ']), (p.medical_history.medications || []).map((m) => m.name).join(', ') || 'None']),
-            el('div', {}, [el('b', {}, ['Consent: ']), (p.consents || []).some((c) => c.type === 'general') ? 'Signed' : 'Missing']),
-          ])),
-        panel('pen', 'Provider sign-off',
-          el('label', { class: 'field' }, [el('span', { class: 'field-label' }, ['Printed name']), providerName]),
-          locked
-            ? (tx.provider_signature ? el('img', { class: 'sig-locked', src: tx.provider_signature }) : el('span', { class: 'subtle' }, ['—']))
-            : sigPad.node,
-          locked
-            ? exportButtons(ctx, id)
-            : el('div', { class: 'action-stack', style: 'margin-top:12px' }, [
-                ghostBtn('save', 'Save progress', () => save(false)),
-                primaryBtn('checkCircle', 'Sign off & lock', () => save(true)),
-                // F17: patient summary PDF available before sign-off (doctor/admin only).
-                store.can('admin', 'doctor')
-                  ? el('button', { class: 'btn btn--ghost btn--block', type: 'button', onClick: async () => {
-                      try { const r = await api.pdfGenerate(id, 'summary'); if (r && r.saved) toast(`Saved: ${r.path}`, 'success'); }
-                      catch (e) { toast(e.message, 'error'); }
-                    } }, [icon('user', { size: 16 }), 'Patient summary PDF'])
-                  : null,
-              ])),
+      // Patient summary — reference data, DEMOTED into a closed <details> so the
+      // chart leads with treatment, not reference data.
+      el('details', { class: 'card', style: 'padding:0;overflow:hidden;margin-bottom:var(--space-4)' }, [
+        el('summary', { class: 'card-title', style: 'cursor:pointer;list-style:none;padding:var(--space-3) var(--space-4);margin:0' }, [icon('user', { size: 15 }), 'Patient summary']),
+        el('div', { class: 'mini-hist', style: 'padding:0 var(--space-4) var(--space-4)' }, [
+          el('div', {}, [el('b', {}, ['Allergies: ']), (allergies().filter((a) => (p.medical_history.allergies || []).includes(a.key)).map((a) => a.label).join(', ') || 'None')]),
+          el('div', {}, [el('b', {}, ['Conditions: ']), (conditions().filter((c) => (p.medical_history.conditions || []).includes(c.key)).map((c) => c.label).join(', ') || 'None')]),
+          el('div', {}, [el('b', {}, ['Medications: ']), (p.medical_history.medications || []).map((m) => m.name).join(', ') || 'None']),
+          el('div', {}, [el('b', {}, ['Consent: ']), (p.consents || []).some((c) => c.type === 'general') ? 'Signed' : 'Missing']),
+        ]),
       ]),
+
+      // Provider sign-off + export.
+      panel('pen', 'Provider sign-off',
+        el('label', { class: 'field' }, [el('span', { class: 'field-label' }, ['Printed name']), providerName]),
+        locked
+          ? (tx.provider_signature ? el('img', { class: 'sig-locked', src: tx.provider_signature }) : el('span', { class: 'subtle' }, ['—']))
+          : sigPad.node,
+        locked
+          ? exportButtons(ctx, id)
+          : el('div', { class: 'action-stack', style: 'margin-top:12px' }, [
+              ghostBtn('save', 'Save progress', () => save(false)),
+              primaryBtn('checkCircle', 'Sign off & lock', () => save(true)),
+              // F17: patient summary PDF available before sign-off (doctor/admin only).
+              store.can('admin', 'doctor')
+                ? el('button', { class: 'btn btn--ghost btn--block', type: 'button', onClick: async () => {
+                    try { const r = await api.pdfGenerate(id, 'summary'); if (r && r.saved) toast(`Saved: ${r.path}`, 'success'); }
+                    catch (e) { toast(e.message, 'error'); }
+                  } }, [icon('user', { size: 16 }), 'Patient summary PDF'])
+                : null,
+            ])),
     );
     applySectionVisibility();
     refreshMarks();

@@ -43,16 +43,17 @@ window.HTMLElement.prototype.scrollIntoView = function () {};
 let currentUser = null;
 const PERMS = {
   'usersList': ['admin'], 'usersCreate': ['admin'], 'usersUpdate': ['admin'], 'usersDelete': ['admin'],
+  'usersClearEventStaff': ['admin'],
   'eventsCreate': ['admin'], 'eventsUpdate': ['admin'], 'eventsSetActive': ['admin'], 'eventsSetState': ['admin'], 'eventsDelete': ['admin'],
-  'patientsUpdate': ['admin', 'triage', 'doctor'], 'patientsGet': ['admin', 'doctor', 'triage'],
-  'patientsList': ['admin', 'doctor', 'triage'], 'patientsRecords': ['admin', 'doctor'],
-  'patientsSearchAll': ['admin', 'doctor', 'triage'], 'patientsHistory': ['admin', 'doctor', 'triage'],
+  'patientsUpdate': ['admin', 'triage', 'doctor'], 'patientsGet': ['admin', 'doctor', 'triage', 'emt', 'checkout', 'hygienist'],
+  'patientsList': ['admin', 'doctor', 'triage', 'emt', 'checkout', 'hygienist'], 'patientsRecords': ['admin', 'doctor'],
+  'patientsSearchAll': ['admin', 'doctor', 'triage', 'emt', 'checkout', 'hygienist'], 'patientsHistory': ['admin', 'doctor', 'triage', 'emt', 'checkout', 'hygienist'],
   'patientsIncomplete': ['admin'], 'patientsCleanupIncomplete': ['admin'], 'patientsDelete': ['admin'],
-  'patientsDismiss': ['admin', 'checkout'], 'patientsAudit': ['admin', 'doctor', 'checkout'],
+  'patientsDismiss': ['admin', 'checkout'], 'patientsAudit': ['admin', 'doctor', 'checkout', 'hygienist'],
   'vitalsSave': ['admin', 'doctor', 'triage', 'emt'], 'consentSetTeeth': ['admin', 'doctor'],
   'usbLoad': ['admin', 'doctor', 'triage', 'checkout'], 'usbUploadCheckout': ['admin', 'doctor', 'triage', 'checkout'], 'usbClear': ['admin', 'doctor', 'triage', 'checkout'],
-  'triageSave': ['admin', 'doctor', 'triage'], 'treatmentSave': ['admin', 'doctor'],
-  'xrayAdd': ['admin', 'doctor', 'triage'], 'xrayGet': ['admin', 'doctor', 'triage'], 'xrayList': ['admin', 'doctor', 'triage'], 'xrayDelete': ['admin', 'doctor', 'triage'],
+  'triageSave': ['admin', 'doctor', 'triage'], 'treatmentSave': ['admin', 'doctor', 'hygienist'],
+  'xrayAdd': ['admin', 'doctor', 'triage'], 'xrayGet': ['admin', 'doctor', 'triage', 'hygienist'], 'xrayList': ['admin', 'doctor', 'triage', 'hygienist'], 'xrayDelete': ['admin', 'doctor', 'triage'],
   'pdfPreview': ['admin', 'doctor'], 'pdfGenerate': ['admin', 'doctor'], 'pdfPrint': ['admin', 'doctor'],
   'recordExportUsb': ['admin', 'doctor'], 'backupRun': ['admin'], 'exportEvent': ['admin'], 'auditList': ['admin'],
 };
@@ -73,6 +74,7 @@ window.api = {
   usersCreate: okWrap((p) => db.createUser(currentUser, p), 'usersCreate'),
   usersUpdate: okWrap(({ id, ...r }) => db.updateUser(currentUser, id, r), 'usersUpdate'),
   usersDelete: okWrap((id) => db.deleteUser(currentUser, id), 'usersDelete'),
+  usersClearEventStaff: okWrap((eventId) => db.clearEventStaff(currentUser, eventId), 'usersClearEventStaff'),
   eventsList: okWrap(() => db.listEvents()),
   eventsActive: okWrap(() => db.getActiveEvent()),
   eventsCreate: okWrap((p) => db.createEvent(currentUser, p), 'eventsCreate'),
@@ -260,7 +262,7 @@ async function main() {
   // ---- Smoke render the other views to catch runtime errors ----
   // Always run authenticated so a kiosk regression can't mask real view errors.
   currentUser = db.login('admin', 'admin');
-  const views = ['dashboard', 'triage', 'provider', 'reports', 'admin', 'emt', 'checkout'];
+  const views = ['dashboard', 'triage', 'provider', 'reports', 'admin', 'emt', 'checkout', 'hygienist'];
   for (const v of views) {
     try {
       const mod = await import('../src/renderer/js/views/' + v + '.js');
@@ -305,6 +307,27 @@ async function main() {
   await window.api.authLogin({ username: 'cox', password: 'x' });
   pr = await window.api.patientsDismiss(vp.id);
   log(pr.ok && pr.data.status === 'dismissed', 'CHECKOUT can dismiss a signed-off patient: ' + (pr.ok ? 'allowed' : pr.error));
+
+  // ---- v1.0.7: HYGIENIST role + event-scoped staff ----
+  currentUser = db.login('admin', 'admin');
+  const hyg = db.createUser(currentUser, { username: 'hygx', full_name: 'Hyg One', role: 'hygienist', password: 'x' });
+  log(hyg.role === 'hygienist', 'hygienist role can be created (CHECK widened, existing accounts intact)');
+  const activeEv = await window.api.eventsActive();
+  log(hyg.event_id === (activeEv.data ? activeEv.data.id : null), 'new clinical staff scoped to the active event');
+  const cp = db.createPatient(currentUser, { first_name: 'Clean', last_name: 'Only', demographics: {}, medical_history: {}, dental_history: {} });
+  await window.api.authLogin({ username: 'hygx', password: 'x' });
+  pr = await window.api.treatmentSave({ patientId: cp.id, data: { cleaning: { adult_prophy: true, teeth: ['3', '14'] } }, finalize: false });
+  log(pr.ok, 'HYGIENIST can save a cleaning: ' + (pr.ok ? 'allowed' : pr.error));
+  pr = await window.api.usersList();
+  log(!pr.ok && /permission/i.test(pr.error || ''), 'HYGIENIST blocked from staff list (guard): ' + (pr.ok ? 'NOT BLOCKED' : 'blocked'));
+  // Clear-event-staff removes scoped clinical staff but keeps the admin.
+  currentUser = db.login('admin', 'admin');
+  const evId = (activeEv.data ? activeEv.data.id : Number(db.getSetting('active_event_id')));
+  const before = db.listUsers().length;
+  pr = await window.api.usersClearEventStaff(evId);
+  const remaining = db.listUsers();
+  log(pr.ok && pr.data.deleted > 0, 'ADMIN can clear event staff: removed ' + (pr.ok ? pr.data.deleted : '?'));
+  log(remaining.some((u) => u.role === 'admin') && !remaining.some((u) => u.username === 'hygx'), 'clear keeps admin, removes scoped staff');
 
   await tick();
   if (errors.length) errors.forEach((e) => log(false, 'RUNTIME: ' + e));
