@@ -30,12 +30,12 @@ export function renderCheckout(ctx, params = {}) {
     const patients = await api.listPatients({});
     const ready = patients.filter((p) => p.status === 'completed');
     const done = patients.filter((p) => p.status === 'dismissed');
-    const rowFor = (p) => el('tr', {}, [
+    const rowFor = (p) => el('tr', { style: 'cursor:pointer', onClick: () => detail(p.id) }, [
       el('td', {}, [el('strong', {}, [`${p.last_name}, ${p.first_name}`])]),
       el('td', { class: 'num' }, [p.age != null ? String(p.age) : '—']),
       el('td', {}, [p.complaint || '—']),
       el('td', {}, [statusPill(p.status)]),
-      el('td', {}, [el('button', { class: 'btn btn--primary btn--sm', onClick: () => detail(p.id) }, ['Review', icon('chevron', { size: 15 })])]),
+      el('td', {}, [el('button', { class: 'btn btn--primary btn--sm', onClick: (e) => { e.stopPropagation(); detail(p.id); } }, ['Review', icon('chevron', { size: 15 })])]),
     ]);
     clear(root);
     root.append(

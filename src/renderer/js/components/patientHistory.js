@@ -102,3 +102,20 @@ export function patientHistoryCards(p, priorVisits = []) {
 
   return out;
 }
+
+// Collapsible wrapper around patientHistoryCards. Keeps dense clinical screens
+// tidy — the full intake history stays one click away instead of always open.
+// Pass { open:true } to expand by default.
+export function patientHistoryPanel(p, priorVisits = [], { open = false, title = 'Patient health history' } = {}) {
+  const cards = patientHistoryCards(p, priorVisits);
+  const body = el('div', { class: 'collapse-body' }, [el('div', { class: 'history-grid' }, cards)]);
+  const state = el('span', { class: 'subtle small' }, [open ? 'Hide' : 'Show']);
+  const summary = el('summary', {}, [
+    el('span', { style: 'display:flex;align-items:center;gap:9px' }, [icon('records', { size: 16 }), title]),
+    state,
+  ]);
+  const details = el('details', { class: 'collapse' }, [summary, body]);
+  if (open) details.setAttribute('open', '');
+  details.addEventListener('toggle', () => { state.textContent = details.open ? 'Hide' : 'Show'; });
+  return details;
+}

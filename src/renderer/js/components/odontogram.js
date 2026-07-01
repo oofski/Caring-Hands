@@ -46,9 +46,15 @@ function positions(count, arch) {
 
 const isPrimaryId = (id) => /^[A-T]$/.test(id);
 
-export function Odontogram({ mode = 'adult', teeth = {}, selected = [], onChange, onTag, onUntag } = {}) {
+export function Odontogram({ mode = 'adult', teeth = {}, selected = [], onChange, onTag, onUntag, txOptions } = {}) {
   let curMode = mode;
   let curQuad = 'all';
+  // Which tag options the tooth popover offers. Lets a role-specific screen keep
+  // the odontogram but only expose its own service (doctor: fillings/extractions,
+  // hygienist: cleaning). Defaults to all three for general use.
+  const TX_LABELS = { filling: 'Filling', extraction: 'Extraction', cleaning: 'Cleaning' };
+  const txOpts = (Array.isArray(txOptions) && txOptions.length ? txOptions : ['filling', 'extraction', 'cleaning'])
+    .filter((tx) => TX_LABELS[tx]);
   // Normalize incoming teeth (accepts {id:'filling'} or {id:{tx,note}}) + selected ids.
   const toothData = {};
   function seed(obj, sel) {
@@ -185,7 +191,7 @@ export function Odontogram({ mode = 'adult', teeth = {}, selected = [], onChange
 
     const seg = document.createElement('div');
     seg.className = 'odo-pop-seg';
-    seg.append(optBtn('filling', 'Filling'), optBtn('extraction', 'Extraction'), optBtn('cleaning', 'Cleaning'));
+    seg.append(...txOpts.map((tx) => optBtn(tx, TX_LABELS[tx])));
 
     const foot = document.createElement('div');
     foot.className = 'odo-pop-foot';

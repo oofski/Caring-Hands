@@ -88,6 +88,9 @@ export function renderProvider(ctx, params = {}) {
     const odo = Odontogram({
       mode: 'adult',
       teeth: initialTeeth(tx, tr),
+      // Doctor's odontogram offers only the doctor's services; cleaning is the
+      // hygienist's job (still available in the collapsed Cleaning panel).
+      txOptions: ['filling', 'extraction'],
       onTag: (id, d) => { if (!locked) syncToothToRows(id, d); },
       onUntag: (id) => { if (!locked) removeAutoRows(id); },
     });

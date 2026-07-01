@@ -4,7 +4,7 @@ import { api } from '../api.js';
 import { icon } from '../icons.js';
 import { SignaturePad } from '../components/signature.js';
 import { Odontogram } from '../components/odontogram.js';
-import { patientHistoryCards } from '../components/patientHistory.js';
+import { patientHistoryPanel } from '../components/patientHistory.js';
 import { store } from '../store.js';
 import { statusPill } from './dashboard.js';
 
@@ -31,13 +31,13 @@ export function renderHygienist(ctx, params = {}) {
     const patients = await api.listPatients({});
     const live = patients.filter((p) => p.status !== 'dismissed');
     const forCleaning = live.filter((p) => needsCleaning(p) && p.status !== 'completed');
-    const rows = (forCleaning.length ? forCleaning : live).map((p) => el('tr', {}, [
+    const rows = (forCleaning.length ? forCleaning : live).map((p) => el('tr', { style: 'cursor:pointer', onClick: () => detail(p.id) }, [
       el('td', {}, [el('strong', {}, [`${p.last_name}, ${p.first_name}`])]),
       el('td', { class: 'num' }, [p.age != null ? String(p.age) : '—']),
       el('td', {}, [p.complaint || '—']),
       el('td', {}, [needsCleaning(p) ? el('span', { class: 'pill pill--teal' }, [icon('sparkle', { size: 12 }), 'Cleaning']) : el('span', { class: 'subtle small' }, ['—'])]),
       el('td', {}, [statusPill(p.status)]),
-      el('td', {}, [el('button', { class: 'btn btn--primary btn--sm', onClick: () => detail(p.id) }, ['Open', icon('chevron', { size: 15 })])]),
+      el('td', {}, [el('button', { class: 'btn btn--primary btn--sm', onClick: (e) => { e.stopPropagation(); detail(p.id); } }, ['Open', icon('chevron', { size: 15 })])]),
     ]));
     clear(root);
     root.append(
@@ -72,6 +72,7 @@ export function renderHygienist(ctx, params = {}) {
 
     const odo = Odontogram({
       mode: 'adult',
+      txOptions: ['cleaning'],
       teeth: Object.fromEntries([...teeth].map((tid) => [tid, { tx: 'cleaning', note: '' }])),
       onTag: (tid) => { if (!locked) teeth.add(tid); },
       onUntag: (tid) => { if (!locked) teeth.delete(tid); },
@@ -175,7 +176,7 @@ export function renderHygienist(ctx, params = {}) {
               el('button', { class: 'btn btn--primary btn--block', title: alsoDoctor ? 'Doctor work is pending — normally the provider signs off' : '', onClick: () => save(true) }, [icon('checkCircle', { size: 16 }), 'Complete cleaning & sign off']),
             ]),
           ]),
-          el('div', { class: 'history-grid', style: 'margin-top:4px' }, patientHistoryCards(p, [])),
+          patientHistoryPanel(p, [], { open: false }),
         ]),
       ]),
     );

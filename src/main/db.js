@@ -174,6 +174,9 @@ function migrate() {
   // v1.0.7: event-scoped staff. NULL = global (e.g. administrators) so they
   // survive every event. Existing rows default to NULL and stay global.
   addColumn('users', 'event_id', 'INTEGER');
+  // v1.0.8: EMT confirms blood-thinner use with the patient after vitals.
+  addColumn('triage', 'blood_thinner', 'TEXT');          // 'yes' | 'no' | null (unasked)
+  addColumn('triage', 'blood_thinner_detail', 'TEXT');   // which thinner(s), when known
 }
 
 const ROLES = ['admin', 'doctor', 'triage', 'emt', 'checkout', 'hygienist'];
@@ -730,14 +733,20 @@ function saveVitals(actor, patientId, data) {
   const tr = db.prepare('SELECT id FROM triage WHERE patient_id = ?').get(patientId);
   const d = data || {};
   const sys = toIntOrNull(d.bp_systolic), dia = toIntOrNull(d.bp_diastolic), hr = toIntOrNull(d.heart_rate);
+  // Blood-thinner confirmation is optional and only written when the key is
+  // present, so a plain vitals save never clears a previously recorded answer.
+  const hasBT = Object.prototype.hasOwnProperty.call(d, 'blood_thinner');
+  const bt = hasBT ? (d.blood_thinner || null) : null;
+  const btd = hasBT ? (d.blood_thinner_detail || null) : null;
   if (!tr) {
-    db.prepare(`INSERT INTO triage (patient_id, status, bp_systolic, bp_diastolic, heart_rate, vitals_by, vitals_at)
-                VALUES (?, 'waiting', ?, ?, ?, ?, ?)`).run(patientId, sys, dia, hr, actor ? actor.id : null, now());
+    db.prepare(`INSERT INTO triage (patient_id, status, bp_systolic, bp_diastolic, heart_rate, vitals_by, vitals_at, blood_thinner, blood_thinner_detail)
+                VALUES (?, 'waiting', ?, ?, ?, ?, ?, ?, ?)`).run(patientId, sys, dia, hr, actor ? actor.id : null, now(), bt, btd);
   } else {
     db.prepare('UPDATE triage SET bp_systolic=?, bp_diastolic=?, heart_rate=?, vitals_by=?, vitals_at=? WHERE patient_id=?')
       .run(sys, dia, hr, actor ? actor.id : null, now(), patientId);
+    if (hasBT) db.prepare('UPDATE triage SET blood_thinner=?, blood_thinner_detail=? WHERE patient_id=?').run(bt, btd, patientId);
   }
-  audit(actor, 'vitals', 'patient', patientId, `${sys == null ? '—' : sys}/${dia == null ? '—' : dia} HR ${hr == null ? '—' : hr}`);
+  audit(actor, 'vitals', 'patient', patientId, `${sys == null ? '—' : sys}/${dia == null ? '—' : dia} HR ${hr == null ? '—' : hr}${hasBT ? ' · thinner:' + (bt || 'no') : ''}`);
   return getPatient(patientId);
 }
 
