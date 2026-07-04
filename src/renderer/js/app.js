@@ -6,7 +6,6 @@ import { icon } from './icons.js';
 import { renderLogin } from './views/login.js';
 import { renderKiosk } from './views/kiosk.js';
 import { renderDashboard } from './views/dashboard.js';
-import { renderTriage } from './views/triage.js';
 import { renderProvider } from './views/provider.js';
 import { renderRecords } from './views/records.js';
 import { renderReports } from './views/reports.js';
@@ -17,10 +16,13 @@ import { renderHygienist } from './views/hygienist.js';
 
 const appRoot = document.getElementById('app');
 
+// v1.0.9 flow: check-in -> queue -> EMT station (vitals + routing) -> Dentist
+// (planning + fillings/extractions) or Hygienist (cleaning) -> Check-Out.
+// The separate Triage station is gone; legacy 'triage' accounts work the EMT
+// station so no existing login loses access on update.
 const VIEWS = {
   dashboard: { render: renderDashboard, roles: ['admin', 'doctor', 'triage', 'emt', 'checkout', 'hygienist'], icon: 'dashboard', label: () => t('nav.dashboard') },
-  triage: { render: renderTriage, roles: ['admin', 'doctor', 'triage'], icon: 'triage', label: () => t('nav.triage') },
-  emt: { render: renderEmt, roles: ['admin', 'emt'], icon: 'syringe', label: () => t('nav.emt') },
+  emt: { render: renderEmt, roles: ['admin', 'emt', 'triage'], icon: 'syringe', label: () => t('nav.emt') },
   hygienist: { render: renderHygienist, roles: ['admin', 'hygienist'], icon: 'sparkle', label: () => t('nav.hygienist') },
   provider: { render: renderProvider, roles: ['admin', 'doctor'], icon: 'tooth', label: () => t('nav.provider') },
   checkout: { render: renderCheckout, roles: ['admin', 'checkout'], icon: 'checkCircle', label: () => t('nav.checkout') },

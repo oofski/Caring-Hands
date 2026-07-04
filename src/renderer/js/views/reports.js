@@ -6,7 +6,7 @@ import { store } from '../store.js';
 
 const STATUS_META = {
   checked_in: ['Checked in', 'var(--info)'],
-  triaged: ['Ready', 'var(--accent)'],
+  triaged: ['Ready for treatment', 'var(--accent)'],
   in_treatment: ['In treatment', 'var(--warning)'],
   completed: ['Completed', 'var(--success)'],
 };

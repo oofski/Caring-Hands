@@ -201,7 +201,12 @@ export function renderAdmin(ctx) {
     const name = el('input', { class: 'input', value: u && u.full_name ? u.full_name : '', placeholder: 'Full name' });
     const uname = el('input', { class: 'input', value: u && u.username ? u.username : '', placeholder: 'Username', disabled: !isNew });
     const role = el('select', { class: 'input select' });
-    [['triage', t('roles.triage')], ['emt', t('roles.emt')], ['hygienist', t('roles.hygienist')], ['doctor', t('roles.doctor')], ['checkout', t('roles.checkout')], ['admin', t('roles.admin')]].forEach(([v, l]) => {
+    // v1.0.9: the Triage station is gone, so 'triage' is not offered for new
+    // staff. It stays listed ONLY when editing an existing legacy triage
+    // account, so saving that user never silently changes their role.
+    const roleOpts = [['emt', t('roles.emt')], ['hygienist', t('roles.hygienist')], ['doctor', t('roles.doctor')], ['checkout', t('roles.checkout')], ['admin', t('roles.admin')]];
+    if (u && u.role === 'triage') roleOpts.unshift(['triage', t('roles.triage')]);
+    roleOpts.forEach(([v, l]) => {
       const op = el('option', { value: v }, [l]);
       if ((u && u.role === v) || (forceAdmin && v === 'admin')) op.selected = true;
       role.append(op);

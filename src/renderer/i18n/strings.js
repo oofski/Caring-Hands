@@ -80,17 +80,17 @@ const en = {
     error: 'Invalid username or password.',
     kiosk: 'Start patient check-in', kioskHint: 'Hand the device to a patient to begin intake',
   },
-  roles: { admin: 'Administrator', doctor: 'Doctor', triage: 'Triage / Front Desk', emt: 'EMT / Nurse', checkout: 'Check-Out', hygienist: 'Hygienist' },
+  roles: { admin: 'Administrator', doctor: 'Dentist', triage: 'Front Desk (legacy)', emt: 'EMT / Nurse', checkout: 'Check-Out', hygienist: 'Hygienist' },
   nav: {
-    dashboard: 'Dashboard', checkin: 'Check-In', triage: 'Triage', provider: 'Provider',
+    dashboard: 'Dashboard', checkin: 'Check-In', triage: 'Triage', provider: 'Dentist',
     records: 'Records', reports: 'Reports', admin: 'Admin', logout: 'Sign out',
     emt: 'Vitals', checkout: 'Check-Out', hygienist: 'Cleanings',
   },
   dash: {
     title: 'Clinic Dashboard', event: 'Active event', noEvent: 'No active event',
-    total: 'Patients today', waiting: 'Waiting for triage', triaged: 'Ready for provider',
+    total: 'Patients today', waiting: 'Waiting for vitals', triaged: 'Ready for treatment',
     inTreatment: 'In treatment', completed: 'Completed', startCheckin: 'Start patient check-in',
-    quick: 'Quick actions', recent: 'Recent patients', viewQueue: 'Open triage queue',
+    quick: 'Quick actions', recent: 'Recent patients', viewQueue: 'Open vitals station',
     backupPrompt: 'Remember to back up to USB before leaving the event.',
   },
   intake: {
@@ -176,9 +176,9 @@ const es = {
     error: 'Usuario o contraseña inválidos.',
     kiosk: 'Iniciar registro de paciente', kioskHint: 'Entregue el dispositivo al paciente para comenzar',
   },
-  roles: { admin: 'Administrador', doctor: 'Doctor', triage: 'Triaje / Recepción', emt: 'Enfermero/a (EMT)', checkout: 'Salida', hygienist: 'Higienista' },
+  roles: { admin: 'Administrador', doctor: 'Dentista', triage: 'Recepción (anterior)', emt: 'Enfermero/a (EMT)', checkout: 'Salida', hygienist: 'Higienista' },
   nav: {
-    dashboard: 'Panel', checkin: 'Registro', triage: 'Triaje', provider: 'Proveedor',
+    dashboard: 'Panel', checkin: 'Registro', triage: 'Triaje', provider: 'Dentista',
     records: 'Registros', reports: 'Reportes', admin: 'Admin', logout: 'Salir',
     emt: 'Signos vitales', checkout: 'Salida', hygienist: 'Limpiezas',
   },
@@ -331,7 +331,7 @@ const ru = {
   },
   app: { name: 'Caring Hands', sub: 'Worldwide', tagline: 'Руки помощи для здоровой жизни' },
   login: { kiosk: 'Начать регистрацию пациента', kioskHint: 'Передайте устройство пациенту, чтобы начать' },
-  roles: { admin: 'Администратор', doctor: 'Врач', triage: 'Сортировка / Регистратура', emt: 'Медбрат/сестра', checkout: 'Выписка', hygienist: 'Гигиенист' },
+  roles: { admin: 'Администратор', doctor: 'Стоматолог', triage: 'Регистратура (устар.)', emt: 'Медбрат/сестра', checkout: 'Выписка', hygienist: 'Гигиенист' },
   intake: {
     welcome: 'Добро пожаловать в Caring Hands', chooseLanguage: 'Пожалуйста, выберите язык',
     start: 'Начать', step: 'Шаг', of: 'из',

@@ -177,6 +177,12 @@ function migrate() {
   // v1.0.8: EMT confirms blood-thinner use with the patient after vitals.
   addColumn('triage', 'blood_thinner', 'TEXT');          // 'yes' | 'no' | null (unasked)
   addColumn('triage', 'blood_thinner_detail', 'TEXT');   // which thinner(s), when known
+  // v1.0.9: the EMT station routes each patient after vitals — to the dentist
+  // (fillings/extractions + treatment planning), the hygienist (cleaning), or
+  // both. Replaces the separate triage station.
+  addColumn('triage', 'route', 'TEXT');                  // 'dentist' | 'hygienist' | 'both' | null
+  addColumn('triage', 'routed_by', 'INTEGER');
+  addColumn('triage', 'routed_at', 'TEXT');
 }
 
 const ROLES = ['admin', 'doctor', 'triage', 'emt', 'checkout', 'hygienist'];
@@ -717,6 +723,7 @@ function getPatient(id) {
   const nameOf = (uid) => { if (!uid) return null; const u = db.prepare('SELECT full_name FROM users WHERE id = ?').get(uid); return u ? u.full_name : null; };
   p.triaged_by_name = tr ? nameOf(tr.triaged_by) : null;
   p.vitals_by_name = tr ? nameOf(tr.vitals_by) : null;
+  p.routed_by_name = tr ? nameOf(tr.routed_by) : null;
   p.completed_by_name = t ? nameOf(t.completed_by) : null;
   p.dismissed_by_name = nameOf(p.dismissed_by);
   return p;
@@ -747,6 +754,27 @@ function saveVitals(actor, patientId, data) {
     if (hasBT) db.prepare('UPDATE triage SET blood_thinner=?, blood_thinner_detail=? WHERE patient_id=?').run(bt, btd, patientId);
   }
   audit(actor, 'vitals', 'patient', patientId, `${sys == null ? '—' : sys}/${dia == null ? '—' : dia} HR ${hr == null ? '—' : hr}${hasBT ? ' · thinner:' + (bt || 'no') : ''}`);
+  return getPatient(patientId);
+}
+
+// v1.0.9: the EMT station sends the patient onward after vitals — to the
+// dentist, the hygienist, or both. This is what moves a patient into the
+// treatment queues (patients.status 'triaged' is the legacy value the doctor
+// and dashboard queues already key on, so routing reuses it).
+const ROUTES = ['dentist', 'hygienist', 'both'];
+function routePatient(actor, patientId, route) {
+  if (!ROUTES.includes(route)) throw new Error('Choose where the patient goes next: dentist, hygienist, or both.');
+  const tr = db.prepare('SELECT id FROM triage WHERE patient_id = ?').get(patientId);
+  if (!tr) {
+    db.prepare(`INSERT INTO triage (patient_id, status, route, routed_by, routed_at)
+                VALUES (?, 'ready', ?, ?, ?)`).run(patientId, route, actor ? actor.id : null, now());
+  } else {
+    db.prepare(`UPDATE triage SET route=?, routed_by=?, routed_at=?,
+                  status = CASE WHEN status IN ('completed','in_treatment') THEN status ELSE 'ready' END
+                WHERE patient_id=?`).run(route, actor ? actor.id : null, now(), patientId);
+  }
+  db.prepare("UPDATE patients SET status='triaged', updated_at=? WHERE id=? AND status='checked_in'").run(now(), patientId);
+  audit(actor, 'route', 'patient', patientId, route);
   return getPatient(patientId);
 }
 
@@ -827,7 +855,7 @@ function listPatients({ eventId, search } = {}) {
   sql += ' ORDER BY p.created_at DESC';
   return db.prepare(sql).all(...args).map((p) => {
     const pt = rowToPatient(p);
-    const tr = db.prepare('SELECT status, complaint, flags, assigned_to FROM triage WHERE patient_id = ?').get(p.id);
+    const tr = db.prepare('SELECT status, complaint, flags, assigned_to, route, bp_systolic, bp_diastolic, heart_rate, blood_thinner FROM triage WHERE patient_id = ?').get(p.id);
     return {
       id: pt.id,
       first_name: pt.first_name,
@@ -844,6 +872,9 @@ function listPatients({ eventId, search } = {}) {
       complaint: tr ? tr.complaint : null,
       flags: tr ? JSON.parse(tr.flags) : [],
       assigned_to: tr ? tr.assigned_to : null,
+      route: tr ? tr.route : null,
+      has_vitals: !!(tr && (tr.bp_systolic != null || tr.heart_rate != null)),
+      blood_thinner: tr ? tr.blood_thinner : null,
     };
   });
 }
@@ -1064,7 +1095,7 @@ module.exports = {
   listEvents, createEvent, updateEvent, setActiveEvent, setEventActive, deleteEvent, getActiveEvent,
   createPatient, updatePatient, deletePatient, getPatient, listPatients, searchAllPatients, patientHistory,
   listIncompletePatients, deleteIncompletePatients,
-  saveVitals, updateConsentTeeth, dismissPatient, patientAudit, importPatientFromPortable,
+  saveVitals, routePatient, updateConsentTeeth, dismissPatient, patientAudit, importPatientFromPortable,
   saveTriage, saveTreatment,
   addXray, getXray, listXrays, deleteXray,
   dashboardStats, listAudit, audit,

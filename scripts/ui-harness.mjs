@@ -50,7 +50,7 @@ const PERMS = {
   'patientsSearchAll': ['admin', 'doctor', 'triage', 'emt', 'checkout', 'hygienist'], 'patientsHistory': ['admin', 'doctor', 'triage', 'emt', 'checkout', 'hygienist'],
   'patientsIncomplete': ['admin'], 'patientsCleanupIncomplete': ['admin'], 'patientsDelete': ['admin'],
   'patientsDismiss': ['admin', 'checkout'], 'patientsAudit': ['admin', 'doctor', 'checkout', 'hygienist'],
-  'vitalsSave': ['admin', 'doctor', 'triage', 'emt'], 'consentSetTeeth': ['admin', 'doctor'],
+  'vitalsSave': ['admin', 'doctor', 'triage', 'emt'], 'patientsRoute': ['admin', 'doctor', 'triage', 'emt'], 'consentSetTeeth': ['admin', 'doctor'],
   'usbLoad': ['admin', 'doctor', 'triage', 'checkout'], 'usbUploadCheckout': ['admin', 'doctor', 'triage', 'checkout'], 'usbClear': ['admin', 'doctor', 'triage', 'checkout'],
   'triageSave': ['admin', 'doctor', 'triage'], 'treatmentSave': ['admin', 'doctor', 'hygienist'],
   'xrayAdd': ['admin', 'doctor', 'triage'], 'xrayGet': ['admin', 'doctor', 'triage', 'hygienist'], 'xrayList': ['admin', 'doctor', 'triage', 'hygienist'], 'xrayDelete': ['admin', 'doctor', 'triage'],
@@ -95,6 +95,7 @@ window.api = {
   triageSave: okWrap(({ patientId, data }) => db.saveTriage(currentUser, patientId, data), 'triageSave'),
   treatmentSave: okWrap(({ patientId, data, finalize }) => db.saveTreatment(currentUser, patientId, data, finalize), 'treatmentSave'),
   vitalsSave: okWrap(({ patientId, data }) => db.saveVitals(currentUser, patientId, data), 'vitalsSave'),
+  patientsRoute: okWrap(({ patientId, route }) => db.routePatient(currentUser, patientId, route), 'patientsRoute'),
   consentSetTeeth: okWrap(({ consentId, tooth_numbers }) => db.updateConsentTeeth(currentUser, consentId, tooth_numbers), 'consentSetTeeth'),
   patientsDismiss: okWrap((id) => db.dismissPatient(currentUser, id), 'patientsDismiss'),
   patientsAudit: okWrap((id) => db.patientAudit(id), 'patientsAudit'),
@@ -262,7 +263,8 @@ async function main() {
   // ---- Smoke render the other views to catch runtime errors ----
   // Always run authenticated so a kiosk regression can't mask real view errors.
   currentUser = db.login('admin', 'admin');
-  const views = ['dashboard', 'triage', 'provider', 'reports', 'admin', 'emt', 'checkout', 'hygienist'];
+  // v1.0.9: the triage view is unregistered from the app shell (station removed).
+  const views = ['dashboard', 'provider', 'reports', 'admin', 'emt', 'checkout', 'hygienist'];
   for (const v of views) {
     try {
       const mod = await import('../src/renderer/js/views/' + v + '.js');
@@ -305,6 +307,24 @@ async function main() {
   log(pr.ok && pr.data.triage.blood_thinner === 'yes' && pr.data.triage.blood_thinner_detail === 'Eliquis', 'EMT records blood-thinner answer (persists): ' + (pr.ok ? pr.data.triage.blood_thinner : pr.error));
   pr = await window.api.vitalsSave({ patientId: vp.id, data: { bp_systolic: '118', bp_diastolic: '78', heart_rate: '66' } });
   log(pr.ok && pr.data.triage.blood_thinner === 'yes', 'plain vitals re-save keeps the blood-thinner answer');
+
+  // ---- v1.0.9: EMT routes the patient after vitals (triage station removed) ----
+  pr = await window.api.patientsRoute({ patientId: vp.id, route: 'dentist' });
+  log(pr.ok && pr.data.status === 'triaged' && pr.data.triage.route === 'dentist', 'EMT routes to dentist -> patient enters dentist queue (triaged): ' + (pr.ok ? 'ok' : pr.error));
+  let listed = db.listPatients({}).find((x) => x.id === vp.id);
+  log(listed && listed.route === 'dentist' && ['triaged', 'in_treatment'].includes(listed.status), 'routed patient appears in the dentist queue filter with route exposed');
+  const hp = db.createPatient(db.login('admin', 'admin'), { first_name: 'Clean', last_name: 'Route', demographics: {}, medical_history: {}, dental_history: {} });
+  await window.api.authLogin({ username: 'emtx', password: 'x' });
+  pr = await window.api.patientsRoute({ patientId: hp.id, route: 'hygienist' });
+  log(pr.ok && pr.data.triage.route === 'hygienist', 'EMT routes a second patient to the hygienist');
+  pr = await window.api.patientsRoute({ patientId: hp.id, route: 'nowhere' });
+  log(!pr.ok, 'invalid route rejected: ' + (pr.ok ? 'NOT REJECTED' : 'rejected'));
+  // hygienist role cannot route (routing is the EMT/doctor station's job)
+  currentUser = db.login('admin', 'admin');
+  db.createUser(currentUser, { username: 'hygroute', full_name: 'Hyg Route', role: 'hygienist', password: 'x' });
+  await window.api.authLogin({ username: 'hygroute', password: 'x' });
+  pr = await window.api.patientsRoute({ patientId: hp.id, route: 'dentist' });
+  log(!pr.ok && /permission/i.test(pr.error || ''), 'HYGIENIST blocked from routing (guard): ' + (pr.ok ? 'NOT BLOCKED' : 'blocked'));
   pr = await window.api.usersList();
   log(!pr.ok, 'EMT blocked from staff list (guard): ' + (pr.ok ? 'NOT BLOCKED' : 'blocked'));
   // checkout dismiss: needs a signed-off treatment

@@ -47,26 +47,26 @@ jobs:
       - name: Publish downloadable release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.0.8-build.${{ github.run_number }}
-          name: Caring Hands v1.0.8 (build ${{ github.run_number }})
+          tag_name: v1.0.9-build.${{ github.run_number }}
+          name: Caring Hands v1.0.9 (build ${{ github.run_number }})
           prerelease: false
           make_latest: true
           body: |
-            ## Caring Hands Worldwide — Practice Management Software (v1.0.8)
+            ## Caring Hands Worldwide — Practice Management Software (v1.0.9)
 
             Offline-first dental clinic app for Windows. **Download the installer once — it auto-updates from here on.**
 
-            **New in v1.0.8 — cleaner clinical screens & blood-thinner check**
-            - **Tidier EMT screen** — patient health history is now a collapsible dropdown instead of a wall of cards, and the stray "null" is gone. Record vitals, then the app prompts you to confirm with the patient whether they're on any blood thinners.
-            - **Blood-thinner confirmation** — the EMT's answer is saved and shown as a clear alert across the clinical screens (critical before any extraction).
-            - **Click a patient anywhere** — on the Vitals, Cleanings, and Check-Out lists you can now click the whole row (including the name) to open the patient.
-            - **Condensed health history** — the always-open history is collapsed into a neat dropdown on the clinical screens.
-            - **Role-aligned charting** — the doctor's tooth chart offers fillings and extractions; the hygienist's offers cleaning. Both keep the full odontogram.
+            **New in v1.0.9 — a simpler clinic flow: the triage station is gone**
+            - **New patient flow** — check-in → queue → **EMT/nurse station** (vitals + blood-thinner check) → the EMT **sends the patient to the Dentist or the Hygienist** (or both) → check-out. No more separate triage step.
+            - **EMT routes patients** — right after recording vitals, the nurse picks where the patient goes next; the queue shows who still needs vitals and where everyone is headed.
+            - **Dentist is the planning hub** — the dentist screen now owns the treatment plan: chief complaint, tooth chart, and the fillings & extractions panels are always front and center (no more sections hidden behind a triage checklist). Vitals and the blood-thinner answer from the EMT show right at the top.
+            - **Hygienist queue is route-driven** — patients sent to the hygienist appear in the Cleanings queue automatically.
+            - **Legacy accounts keep working** — existing front-desk (triage) logins now open the EMT station; nobody loses access on update.
 
-            Includes everything from v1.0.2–1.0.7 (brand refresh, hygienist workflow, per-event staff, EMT vitals, Check-Out, Oregon consent, patient summary PDF, USB workflow, accountability, Russian, in-app auto-update).
+            Includes everything from v1.0.2–1.0.8 (brand refresh, hygienist workflow, per-event staff, blood-thinner alerts, Oregon consent, patient summary PDF, USB workflow, accountability, Russian, in-app auto-update).
 
-            - **Caring-Hands-Setup-1.0.8.exe** — installer (recommended; required for auto-update).
-            - **Caring-Hands-Portable-1.0.8.exe** — portable (no auto-update).
+            - **Caring-Hands-Setup-1.0.9.exe** — installer (recommended; required for auto-update).
+            - **Caring-Hands-Portable-1.0.9.exe** — portable (no auto-update).
 
             First sign-in: `admin / admin` — then create your staff accounts. All clinical data stays on the device.
           files: |

@@ -1,4 +1,4 @@
-import { el, clear, toast, modal } from '../dom.js';
+import { el, clear, mount, toast, modal } from '../dom.js';
 import { t, conditions, allergies } from '../i18n.js';
 import { api } from '../api.js';
 import { icon } from '../icons.js';
@@ -7,7 +7,7 @@ import { Odontogram } from '../components/odontogram.js';
 import { patientHistoryCards, incompleteBanner } from '../components/patientHistory.js';
 import { store } from '../store.js';
 import { statusPill } from './dashboard.js';
-import { bloodThinnerFlags } from '../medFlags.js';
+import { bloodThinnerFlags, bloodThinnerStatus } from '../medFlags.js';
 
 const QUADRANTS = [['UR', 'UR'], ['UL', 'UL'], ['LR', 'LR'], ['LL', 'LL']];
 const fmtWhen = (ts) => { if (!ts) return ''; const d = new Date(ts); return isNaN(d) ? String(ts) : d.toLocaleString(); };
@@ -20,10 +20,6 @@ const CLEANING_OPTS = [
   ['adult_prophy', 'Adult prophy'], ['adult_fluoride', 'Adult fluoride'], ['gross_debridement', 'Gross debridement'],
   ['quad_deep_scaling', 'Quadrant deep scaling'], ['sealant', 'Sealant'], ['ohi', 'Oral hygiene instruction'],
 ];
-const TRIAGE_OPTS = [
-  ['cleaning', 'Cleaning'], ['extraction', 'Extraction'], ['filling', 'Filling'],
-  ['none', 'No treatment'], ['referral', 'Referral'],
-];
 
 export function renderProvider(ctx, params = {}) {
   const root = el('div', { class: 'view' });
@@ -33,29 +29,37 @@ export function renderProvider(ctx, params = {}) {
   async function queue() {
     const patients = await api.listPatients({});
     const ready = patients.filter((p) => ['triaged', 'in_treatment'].includes(p.status));
-    const rows = ready.map((p) => el('tr', {}, [
+    // EMT routing: 'dentist' and 'both' belong here; route null = legacy rows
+    // (pre-routing data) which default to the dentist. Patients routed only to
+    // the hygienist wait in a collapsed list below — they may come back later.
+    const dentistQueue = ready.filter((p) => p.route === 'dentist' || p.route === 'both' || p.route == null);
+    const atHygienist = ready.filter((p) => p.route === 'hygienist');
+    const row = (p) => el('tr', {}, [
       el('td', {}, [el('strong', {}, [`${p.last_name}, ${p.first_name}`]),
+        p.blood_thinner === 'yes' ? el('span', { class: 'pill pill--danger', style: 'margin-left:8px' }, ['Blood thinner']) : null,
         (p.flags && p.flags.length) ? flagDot(p.flags.length) : null]),
       el('td', { class: 'num' }, [p.age != null ? String(p.age) : '—']),
       el('td', {}, [p.complaint || '—']),
       el('td', {}, [p.assigned_to || '—']),
       el('td', {}, [statusPill(p.status)]),
       el('td', {}, [chevronBtn('Treat', () => detail(p.id))]),
-    ]));
-    clear(root);
-    root.append(
+    ]);
+    const table = (list, emptyMsg) => el('div', { class: 'data-table-wrap' }, [
+      el('table', { class: 'data-table' }, [
+        el('thead', {}, [el('tr', {}, ['Patient', 'Age', 'Complaint', 'Chair', 'Status', ''].map((h) => el('th', {}, [h])))]),
+        el('tbody', {}, list.length ? list.map(row) : [el('tr', {}, [el('td', { colspan: 6, class: 'empty' }, [emptyMsg])])]),
+      ]),
+    ]);
+    mount(root,
       el('div', { class: 'view-head' }, [
-        el('div', {}, [el('h1', {}, ['Provider Queue']), el('p', { class: 'view-sub' }, [`${ready.length} patient(s) ready for treatment`])]),
+        el('div', {}, [el('h1', {}, [t('nav.provider')]), el('p', { class: 'view-sub' }, [`${dentistQueue.length} patient(s) in the dentist queue — patients arrive here once the EMT station records vitals and routes them`])]),
         ghostBtn('refresh', 'Refresh', queue),
       ]),
-      el('div', { class: 'card' }, [
-        el('div', { class: 'data-table-wrap' }, [
-          el('table', { class: 'data-table' }, [
-            el('thead', {}, [el('tr', {}, ['Patient', 'Age', 'Complaint', 'Chair', 'Status', ''].map((h) => el('th', {}, [h])))]),
-            el('tbody', {}, rows.length ? rows : [el('tr', {}, [el('td', { colspan: 6, class: 'empty' }, ['No patients ready. Complete triage first.'])])]),
-          ]),
-        ]),
-      ]),
+      el('div', { class: 'card' }, [table(dentistQueue, 'No patients in the dentist queue yet — the EMT station sends patients here after vitals.')]),
+      atHygienist.length ? el('details', { class: 'collapse' }, [
+        el('summary', {}, [`At the hygienist (${atHygienist.length})`]),
+        el('div', { class: 'collapse-body' }, [table(atHygienist, '')]),
+      ]) : null,
     );
   }
 
@@ -75,10 +79,30 @@ export function renderProvider(ctx, params = {}) {
     // F12: blood-thinner / anticoagulant detection — surfaced as a prominent danger banner.
     const thinnerFlags = bloodThinnerFlags(p.medical_history);
 
-    /* ---------- Triage row (paper: top of sheet) ---------- */
-    const checkState = { ...(tr.checklist || {}) };
-    const triageChips = el('div', { class: 'chip-row' }, TRIAGE_OPTS.map(([k, label]) =>
-      toggleChip(label, !!checkState[k], (on) => { checkState[k] = on; refreshMarks(); }, locked)));
+    /* ---------- EMT vitals + routing strip (read-only) ---------- */
+    // Compact one-line summary of what the EMT station recorded before sending
+    // the patient here. Rendered only when vitals or a route exist.
+    function vitalsStrip() {
+      const hasVitals = tr.bp_systolic != null || tr.bp_diastolic != null || tr.heart_rate != null;
+      if (!hasVitals && !tr.route) return null;
+      const bt = bloodThinnerStatus(p);
+      const parts = [];
+      if (tr.bp_systolic != null || tr.bp_diastolic != null) {
+        parts.push(`BP ${tr.bp_systolic != null ? tr.bp_systolic : '—'}/${tr.bp_diastolic != null ? tr.bp_diastolic : '—'}`);
+      }
+      if (tr.heart_rate != null) parts.push(`HR ${tr.heart_rate}`);
+      parts.push('Blood thinners: ' + (bt.onThinner
+        ? `Yes${bt.names.length ? ' — ' + bt.names.join(', ') : ''}`
+        : (bt.confirmed === 'no' ? 'No' : 'Not asked')));
+      if (p.vitals_by_name) parts.push(`recorded by ${p.vitals_by_name}`);
+      return el('div', { class: 'card', style: 'display:flex;flex-wrap:wrap;align-items:center;gap:var(--space-2) var(--space-3);padding:var(--space-3) var(--space-4)' }, [
+        icon('syringe', { size: 14 }),
+        el('span', { class: 'small' }, [parts.join(' · ')]),
+        tr.route ? el('span', { class: 'subtle small' }, [p.routed_by_name ? `Sent here by ${p.routed_by_name}` : 'Routed by the EMT station']) : null,
+      ]);
+    }
+
+    /* ---------- Visit row (paper: top of sheet) ---------- */
     const complaint = input(tr.complaint || p.dental_history.reason || '', 'Chief complaint', locked);
     const triageNotes = textarea(tr.notes || '', 'Triage notes', 2, locked);
     const station = input(tr.xray_station || '', 'Station #', locked, 'input--sm');
@@ -322,21 +346,6 @@ export function renderProvider(ctx, params = {}) {
       );
     }
 
-    /* ---------- F15: show only relevant treatment sections per triage checklist ---------- */
-    const cl = tr.checklist || {};
-    const hasChecklist = ['cleaning', 'extraction', 'filling'].some((k) => cl[k]);
-    // When a checklist exists, only show the indicated panels; otherwise show all.
-    const relevant = { filling: !hasChecklist || !!cl.filling, extraction: !hasChecklist || !!cl.extraction, cleaning: !hasChecklist || !!cl.cleaning };
-    let showAllSections = !hasChecklist;
-    const visible = (k) => showAllSections || relevant[k];
-    // Panels are always built (so edits are never lost); F15 only toggles display.
-    const sectionPanels = {};
-    const applySectionVisibility = () => {
-      ['filling', 'extraction', 'cleaning'].forEach((k) => {
-        if (sectionPanels[k]) sectionPanels[k].style.display = visible(k) ? '' : 'none';
-      });
-    };
-
     /* ---------- F13: quadrant zoom buttons (focus the odontogram on a quadrant) ---------- */
     function quadZoomBar() {
       const mk = (q, label) => el('button', { class: 'btn btn--soft btn--sm', type: 'button', onClick: () => odo.setQuadrant(q) }, [label]);
@@ -406,7 +415,9 @@ export function renderProvider(ctx, params = {}) {
       return {
         complaint: complaint.get(),
         flags,
-        checklist: checkState,
+        // Checklist chips are gone from the UI (planning now happens here at the
+        // dentist), but legacy stored checklists must round-trip untouched.
+        checklist: tr.checklist || {},
         teeth: odo.getSelected(),
         teeth_notes: odo.getNotes(),
         notes: triageNotes.get(),
@@ -440,8 +451,9 @@ export function renderProvider(ctx, params = {}) {
       el('div', { class: 'card-title' }, [icon(ic, { size: 15 }), title]), ...kids,
     ]);
 
-    clear(root);
-    root.append(
+    // mount() clears and appends while skipping nulls from the conditional
+    // sections below (banners, consent panel, vitals strip).
+    mount(root,
       el('div', { class: 'view-head' }, [
         el('div', {}, [
           backBtn(() => ctx.navigate('provider')),
@@ -465,6 +477,8 @@ export function renderProvider(ctx, params = {}) {
             el('span', { class: 'pill pill--danger' }, [icon('alert', { size: 12 }), f.replace(/^Blood thinner:\s*/, '')]))),
         ]),
       ]) : null,
+      // EMT station handoff — vitals, blood-thinner answer, who routed the patient.
+      vitalsStrip(),
       flags.length ? el('div', { class: 'banner banner--alert' }, [icon('flag', { size: 16 }), 'Medical flags: ' + flags.join(' · ')]) : null,
       locked ? el('div', { class: 'banner banner--locked' }, [icon('lock', { size: 16 }), 'This record is signed off and locked. View or export below.']) : null,
 
@@ -478,13 +492,12 @@ export function renderProvider(ctx, params = {}) {
         el('div', { class: 'history-grid' }, patientHistoryCards(p, priorVisits)),
       ]),
 
-      // Triage / visit bar (paper top row)
-      panel('clipboard', 'Triage & Visit',
+      // Visit bar (paper top row) — the dentist is the planning hub now.
+      panel('clipboard', 'Visit & treatment plan',
         el('div', { class: 'field-row', style: 'margin-bottom:10px' }, [
           el('div', {}, [el('span', { class: 'field-label' }, ['Total x-rays']), el('div', { style: 'padding-top:6px' }, [xrayCountEl])]),
           el('label', { class: 'field', style: 'margin:0;max-width:130px' }, [el('span', { class: 'field-label' }, ['X-ray station #']), station.node]),
         ]),
-        el('div', { class: 'field' }, [el('span', { class: 'field-label' }, ['Triage — treatment indicated']), triageChips]),
         el('label', { class: 'field' }, [el('span', { class: 'field-label' }, ['Chief complaint']), complaint.node]),
         el('label', { class: 'field' }, [el('span', { class: 'field-label' }, ['Triage notes']), triageNotes.node]),
       ),
@@ -495,44 +508,37 @@ export function renderProvider(ctx, params = {}) {
       // F10: oral-surgery consent tooth numbers (only when such a consent exists).
       consentTeethPanel(),
 
-      // F15: only relevant treatment sections are shown; a toggle reveals all.
-      hasChecklist ? el('div', { class: 'chip-row', style: 'margin:4px 0 12px' }, [
-        el('span', { class: 'subtle small' }, ['Showing sections indicated by triage.']),
-        toggleChip('Show all sections', showAllSections, (on) => { showAllSections = on; applySectionVisibility(); }, false),
-      ]) : null,
-
-      // LEAD WITH RELEVANT WORK — the treatment the patient needs (fillings /
-      // extractions) is the prominent first thing after the odontogram. F15's
-      // applySectionVisibility() still hides non-indicated panels.
-      (sectionPanels.filling = panel('pen', 'Fillings',
+      // LEAD WITH THE DENTIST'S WORK — fillings and extractions are always the
+      // prominent first thing after the odontogram (planning + execution both
+      // happen here now that the triage station is gone).
+      panel('pen', 'Fillings',
         fillingRows,
-        locked ? null : softBtn('plus', 'Add filling', () => { addFilling(); refreshMarks(); }))),
-      (sectionPanels.extraction = panel('tooth', 'Extractions',
+        locked ? null : softBtn('plus', 'Add filling', () => { addFilling(); refreshMarks(); })),
+      panel('tooth', 'Extractions',
         extractRows,
         locked ? null : softBtn('plus', 'Add extraction', () => { addExtraction(); refreshMarks(); }),
         el('div', { class: 'field-row', style: 'margin-top:10px' }, [
           el('label', { class: 'field', style: 'flex:1;margin:0' }, [el('span', { class: 'field-label' }, ['Other']), extOther]),
           el('label', { class: 'field', style: 'margin:0;max-width:90px' }, [el('span', { class: 'field-label' }, ['Tooth #']), extOtherTooth]),
-        ]))),
+        ])),
 
       // Anesthetic supports the extractions/fillings above — kept adjacent.
       panel('syringe', 'Anesthetic administered', anesGrid),
 
       // DEMOTED: cleaning belongs to the hygienist. Rendered inside a lightly
-      // styled <details> that is CLOSED unless triage flagged a cleaning, so it
-      // never competes with the doctor's extractions/fillings. Still fully
-      // functional (incl. the bulk-clean control) when opened.
-      (sectionPanels.cleaning = el('details', {
+      // styled <details> that is CLOSED by default, so it never competes with
+      // the dentist's extractions/fillings. Still fully functional (incl. the
+      // bulk-clean control) when opened.
+      el('details', {
         class: 'card',
         style: 'padding:0;overflow:hidden;margin-bottom:var(--space-4)',
-        ...(relevant.cleaning ? { open: 'open' } : {}),
       }, [
         el('summary', {
           class: 'card-title',
           style: 'cursor:pointer;list-style:none;padding:var(--space-3) var(--space-4);margin:0',
         }, [icon('checkCircle', { size: 15 }), 'Cleaning (usually done by the hygienist)']),
         el('div', { style: 'padding:0 var(--space-4) var(--space-4)' }, [bulkCleanControl(), cleaning]),
-      ])),
+      ]),
 
       // X-rays — provider can add/view (user priority)
       panel('xray', 'X-rays', gallery, fileInput),
@@ -573,7 +579,6 @@ export function renderProvider(ctx, params = {}) {
                 : null,
             ])),
     );
-    applySectionVisibility();
     refreshMarks();
   }
 }

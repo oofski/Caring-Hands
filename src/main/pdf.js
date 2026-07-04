@@ -163,10 +163,13 @@ function progressNoteBody(p) {
       <tr>${field('Chief Complaint', tr.complaint)}${field('Status', p.status)}</tr>
     </table>
 
-    <h2>Triage Assessment</h2>
+    <h2>Clinical Assessment</h2>
+    ${(tr.bp_systolic != null || tr.heart_rate != null || tr.blood_thinner)
+      ? `<div class="box"><span class="label">Vitals: </span>BP ${tr.bp_systolic != null ? esc(tr.bp_systolic) : '—'}/${tr.bp_diastolic != null ? esc(tr.bp_diastolic) : '—'} · HR ${tr.heart_rate != null ? esc(tr.heart_rate) : '—'}${tr.blood_thinner ? ' · Blood thinners: ' + (tr.blood_thinner === 'yes' ? 'YES' + (tr.blood_thinner_detail ? ' (' + esc(tr.blood_thinner_detail) + ')' : '') : 'No') : ''}</div>`
+      : ''}
     <div class="chips">${checklist}</div>
     <div class="box"><span class="label">Teeth of concern: </span>${(tr.teeth || []).map((x) => `<b>${esc(x)}</b>`).join(', ') || '<span class="muted">—</span>'}</div>
-    ${tr.notes ? `<div class="box"><span class="label">Triage notes</span><br>${esc(tr.notes)}</div>` : ''}
+    ${tr.notes ? `<div class="box"><span class="label">Assessment notes</span><br>${esc(tr.notes)}</div>` : ''}
     <div class="box"><span class="label">X-rays taken: </span>${esc(tr.xray_count || 0)}${tr.xray_station ? ' · Station ' + esc(tr.xray_station) : ''}</div>
 
     <h2>Treatment Provided</h2>

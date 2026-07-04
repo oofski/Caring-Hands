@@ -1,4 +1,4 @@
-import { el, clear } from '../dom.js';
+import { el, mount } from '../dom.js';
 import { t } from '../i18n.js';
 import { api } from '../api.js';
 import { store } from '../store.js';
@@ -15,7 +15,7 @@ export function renderDashboard(ctx) {
 
     const statCards = [
       { label: t('dash.total'), value: stats.total, ic: 'users' },
-      { label: t('dash.waiting'), value: stats.waiting_triage, ic: 'triage', warn: stats.waiting_triage > 0 },
+      { label: t('dash.waiting'), value: stats.waiting_triage, ic: 'syringe', warn: stats.waiting_triage > 0 },
       { label: t('dash.triaged'), value: stats.triaged, ic: 'clipboard' },
       { label: t('dash.inTreatment'), value: stats.in_treatment, ic: 'tooth' },
       { label: t('dash.completed'), value: stats.completed, ic: 'checkCircle' },
@@ -27,9 +27,9 @@ export function renderDashboard(ctx) {
     ]);
     const quick = el('div', { class: 'quick-actions' }, [
       qa(' qa-card--primary', 'clipboard', t('dash.startCheckin'), 'Hand the device to a patient', () => ctx.navigate('kiosk')),
-      store.can('admin', 'doctor', 'triage') ? qa('', 'triage', t('dash.viewQueue'), `${stats.waiting_triage} waiting`, () => ctx.navigate('triage')) : null,
+      store.can('admin', 'emt', 'triage') ? qa('', 'syringe', t('dash.viewQueue'), `${stats.waiting_triage} waiting`, () => ctx.navigate('emt')) : null,
       store.can('admin', 'emt') ? qa('', 'syringe', 'Record vitals', 'Enter BP & heart rate', () => ctx.navigate('emt')) : null,
-      store.can('admin', 'doctor') ? qa('', 'tooth', 'Provider queue', `${stats.triaged} ready`, () => ctx.navigate('provider')) : null,
+      store.can('admin', 'doctor') ? qa('', 'tooth', t('nav.provider'), `${stats.triaged} ready`, () => ctx.navigate('provider')) : null,
       store.can('admin', 'hygienist') ? qa('', 'sparkle', t('nav.hygienist'), `${stats.triaged} ready`, () => ctx.navigate('hygienist')) : null,
       store.can('admin', 'checkout') ? qa('', 'checkCircle', 'Check-out', `${stats.completed} completed`, () => ctx.navigate('checkout')) : null,
       store.can('admin') ? qa('', 'database', 'Back up to USB', 'Save a full database copy', async () => {
@@ -50,14 +50,33 @@ export function renderDashboard(ctx) {
     ]);
     if (!patients.length) recent.querySelector('tbody').append(el('tr', {}, [el('td', { colspan: 5, class: 'empty' }, ['No patients checked in yet.'])]));
 
+    // Route "Open" to a view the current role is actually allowed to see —
+    // never to an unregistered view that would bounce back with access denied.
     function openByStatus(p) {
-      if (p.status === 'checked_in') ctx.navigate('triage', { id: p.id });
-      else if (store.can('admin', 'doctor')) ctx.navigate('provider', { id: p.id });
-      else ctx.navigate('triage', { id: p.id });
+      const go = (view) => ctx.navigate(view, { id: p.id });
+      const canEmt = store.can('admin', 'emt', 'triage');
+      const canRecords = store.can('admin', 'doctor', 'checkout');
+      if (p.status === 'checked_in') {
+        if (canEmt) go('emt');
+        else if (canRecords) go('records');
+        else ctx.toast('This patient is waiting for vitals at the EMT station.', 'info');
+      } else if (p.status === 'triaged' || p.status === 'in_treatment') {
+        if (store.can('admin', 'doctor')) go('provider');
+        else if (store.can('admin', 'hygienist')) go('hygienist');
+        else if (canEmt) go('emt');
+        else if (canRecords) go('records');
+        else ctx.toast('This patient is with a treatment provider.', 'info');
+      } else { // completed / dismissed
+        if (store.can('admin', 'checkout')) go('checkout');
+        else if (canRecords) go('records');
+        else if (store.can('admin', 'doctor')) go('provider');
+        else ctx.toast('This visit is finished — check-out has the record.', 'info');
+      }
     }
 
-    clear(root);
-    root.append(
+    // mount() clears and skips null children — root.append(null) would render
+    // a literal "null" text node for non-admin roles (backup banner below).
+    mount(root,
       el('div', { class: 'view-head' }, [
         el('div', {}, [
           el('div', {
@@ -96,7 +115,7 @@ export function renderDashboard(ctx) {
 export function statusPill(status) {
   const map = {
     checked_in: ['Checked in', 'pill--info'],
-    triaged: ['Ready', 'pill--info'],
+    triaged: ['Ready for treatment', 'pill--info'],
     in_treatment: ['In treatment', 'pill--warning'],
     completed: ['Completed', 'pill--success'],
     dismissed: ['Dismissed', 'pill--neutral'],

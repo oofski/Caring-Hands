@@ -1,4 +1,4 @@
-import { el, clear, toast, modal } from '../dom.js';
+import { el, clear, mount, toast, modal } from '../dom.js';
 import { t } from '../i18n.js';
 import { api } from '../api.js';
 import { icon } from '../icons.js';
@@ -15,11 +15,11 @@ const CLEANING_OPTS = [
 ];
 const QUADRANTS = [['UR', 'UR'], ['UL', 'UL'], ['LR', 'LR'], ['LL', 'LL']];
 const fmtWhen = (ts) => { if (!ts) return ''; const d = new Date(ts); return isNaN(d) ? String(ts) : d.toLocaleString(); };
-const needsCleaning = (p) => !!(p.triage && p.triage.checklist && p.triage.checklist.cleaning);
+const routedToHygienist = (p) => p.route === 'hygienist' || p.route === 'both';
 const needsDoctor = (cl = {}) => !!(cl.extraction || cl.filling);
 
-// Hygienist view (v1.0.7): a focused cleaning station. Patients that triage
-// flags for a cleaning land here; the doctor's extraction/filling work stays on
+// Hygienist view: a focused cleaning station. Patients the EMT station routes
+// to the hygienist land here; the doctor's extraction/filling work stays on
 // the Provider screen. Saving only ever touches the cleaning fields, so the two
 // roles can work the same chart without overwriting each other.
 export function renderHygienist(ctx, params = {}) {
@@ -30,23 +30,23 @@ export function renderHygienist(ctx, params = {}) {
   async function queue() {
     const patients = await api.listPatients({});
     const live = patients.filter((p) => p.status !== 'dismissed');
-    const forCleaning = live.filter((p) => needsCleaning(p) && p.status !== 'completed');
+    const forCleaning = live.filter((p) => routedToHygienist(p) && !['completed', 'dismissed'].includes(p.status));
     const rows = (forCleaning.length ? forCleaning : live).map((p) => el('tr', { style: 'cursor:pointer', onClick: () => detail(p.id) }, [
       el('td', {}, [el('strong', {}, [`${p.last_name}, ${p.first_name}`])]),
       el('td', { class: 'num' }, [p.age != null ? String(p.age) : '—']),
       el('td', {}, [p.complaint || '—']),
-      el('td', {}, [needsCleaning(p) ? el('span', { class: 'pill pill--teal' }, [icon('sparkle', { size: 12 }), 'Cleaning']) : el('span', { class: 'subtle small' }, ['—'])]),
+      el('td', {}, [routedToHygienist(p) ? el('span', { class: 'pill pill--teal' }, [icon('sparkle', { size: 12 }), 'Cleaning']) : el('span', { class: 'subtle small' }, ['—'])]),
       el('td', {}, [statusPill(p.status)]),
       el('td', {}, [el('button', { class: 'btn btn--primary btn--sm', onClick: (e) => { e.stopPropagation(); detail(p.id); } }, ['Open', icon('chevron', { size: 15 })])]),
     ]));
     clear(root);
     root.append(
       el('div', { class: 'view-head' }, [
-        el('div', {}, [el('h1', {}, ['Cleanings']), el('p', { class: 'view-sub' }, [`${forCleaning.length} flagged for cleaning · ${live.length} patient(s) in clinic`])]),
+        el('div', {}, [el('h1', {}, ['Cleanings']), el('p', { class: 'view-sub' }, [`${forCleaning.length} routed for cleaning · ${live.length} patient(s) in clinic`])]),
         el('button', { class: 'btn btn--ghost btn--sm', onClick: queue }, [icon('refresh', { size: 15 }), 'Refresh']),
       ]),
       el('div', { class: 'card' }, [
-        el('div', { class: 'card-title' }, [icon('sparkle', { size: 15 }), forCleaning.length ? 'Flagged for cleaning' : 'All patients']),
+        el('div', { class: 'card-title' }, [icon('sparkle', { size: 15 }), forCleaning.length ? 'Routed for cleaning' : 'All patients']),
         el('div', { class: 'data-table-wrap' }, [
           el('table', { class: 'data-table' }, [
             el('thead', {}, [el('tr', {}, ['Patient', 'Age', 'Complaint', 'Cleaning', 'Status', ''].map((h) => el('th', {}, [h])))]),
@@ -63,7 +63,7 @@ export function renderHygienist(ctx, params = {}) {
     const tr = p.triage || {};
     const cl = tr.checklist || {};
     const locked = !!tx.locked;
-    const alsoDoctor = needsDoctor(cl);
+    const alsoDoctor = (p.triage && p.triage.route === 'both') || needsDoctor(cl);
     const me = store.user || null;
 
     // Cleaning state — preserved from any prior save; teeth tracked as a Set.
@@ -138,8 +138,9 @@ export function renderHygienist(ctx, params = {}) {
       } catch (e) { toast(e.message, 'error'); }
     }
 
-    clear(root);
-    root.append(
+    // mount() clears and skips null children — the conditional banners below
+    // would otherwise render as literal "null" text via native append().
+    mount(root,
       el('div', { class: 'view-head' }, [
         el('div', {}, [
           el('button', { class: 'btn btn--ghost btn--sm', onClick: () => queue() }, [icon('back', { size: 15 }), t('common.back')]),
