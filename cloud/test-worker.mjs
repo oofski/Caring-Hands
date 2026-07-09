@@ -43,6 +43,11 @@ function makeFakeD1() {
       },
       async run() {
         const s = this._sql;
+        // Self-initializing schema DDL (CREATE TABLE/INDEX IF NOT EXISTS) — the
+        // in-memory store needs no schema, so these are no-ops.
+        if (/^\s*CREATE\s+(TABLE|INDEX)/i.test(s)) {
+          return { success: true, meta: { changes: 0 } };
+        }
         if (/INSERT OR REPLACE INTO sync_rows/.test(s)) {
           const [uid, entity, event_uid, patient_uid, deleted, updated_at, data] =
             this._binds;

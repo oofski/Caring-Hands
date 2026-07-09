@@ -1,4 +1,13 @@
 // Caring Hands — Cloud Sync Worker (v1.1.0)
+// =============================================================================
+// NO INSTALLS NEEDED. To deploy: create a Worker in the Cloudflare dashboard,
+// paste THIS ENTIRE FILE into its code editor, then:
+//   1. bind a D1 database with the variable name  DB   (Settings -> Bindings)
+//   2. add a Secret named  CLINIC_KEY  = your shared clinic password
+//   3. click Deploy.
+// The database table is created automatically on first use (see ensureSchema),
+// so there is no migration/CLI step. Full walkthrough: docs/CLOUD_SETUP.md.
+// =============================================================================
 // Cloudflare Worker + D1, implementing the shared "queue brain" sync API.
 // Offline-first: the Electron app pushes locally-changed rows and pulls deltas.
 // Dependency-free: pure Worker + D1 SQL via env.DB.
@@ -15,6 +24,26 @@ const CORS_HEADERS = {
   'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
   'Access-Control-Allow-Headers': 'authorization,content-type',
 };
+
+// Self-initializing schema — so setup needs ZERO command-line tools. The Worker
+// creates its own table on first use; the admin just pastes this file into the
+// Cloudflare dashboard, binds a D1 database as "DB", sets CLINIC_KEY, and deploys.
+const SCHEMA_STATEMENTS = [
+  'CREATE TABLE IF NOT EXISTS sync_rows (' +
+    'uid TEXT PRIMARY KEY, entity TEXT NOT NULL, event_uid TEXT, patient_uid TEXT, ' +
+    'deleted INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL, data TEXT NOT NULL)',
+  'CREATE INDEX IF NOT EXISTS idx_sync_updated ON sync_rows(updated_at)',
+  'CREATE INDEX IF NOT EXISTS idx_sync_event ON sync_rows(event_uid, updated_at)',
+  'CREATE INDEX IF NOT EXISTS idx_sync_entity ON sync_rows(entity)',
+];
+let schemaReady = false;
+async function ensureSchema(env) {
+  if (schemaReady || !env || !env.DB) return;
+  for (const sql of SCHEMA_STATEMENTS) {
+    await env.DB.prepare(sql).run();
+  }
+  schemaReady = true;
+}
 
 export default {
   async fetch(request, env, ctx) {
@@ -43,6 +72,9 @@ export default {
         if (!isAuthorized(request, env)) {
           return json({ ok: false, error: 'unauthorized' }, 401);
         }
+
+        // Create the table on first authorized call — no CLI migration needed.
+        await ensureSchema(env);
 
         if (path === '/v1/push') {
           if (request.method !== 'POST') return methodNotAllowed();
