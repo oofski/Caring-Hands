@@ -429,10 +429,10 @@ export function renderAdmin(ctx) {
       return;
     }
 
-    // Repaint the tab whenever remote data is pulled — but drop the previous
-    // subscription first so repaints never stack listeners.
-    if (cloudUnsub) { try { cloudUnsub(); } catch (_) { /* ignore */ } }
-    cloudUnsub = api.onCloudChanged(() => { if (tab === 'cloud') paint(); });
+    // Note: we deliberately do NOT auto-repaint this tab on live sync events —
+    // that would wipe a URL/key the admin is typing. The status refreshes when
+    // the tab is opened and after "Sync now".
+    if (cloudUnsub) { try { cloudUnsub(); } catch (_) { /* ignore */ } cloudUnsub = null; }
 
     body.append(el('p', { class: 'view-sub', style: 'margin:0 0 var(--space-4);' }, [
       'Connect this station to your clinic’s cloud so patients flow between devices in real time. Leave it off to run fully offline.',

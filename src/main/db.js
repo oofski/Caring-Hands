@@ -447,9 +447,18 @@ function updateUser(actor, id, { full_name, role, active, password }) {
 function detachUserRefs(ids) {
   if (!ids || !ids.length) return;
   const ph = ids.map(() => '?').join(',');
+  // v1.1.0: preserve the accountability name into the denormalized column BEFORE
+  // clearing the id, so deleting a staff account doesn't erase (or, via sync,
+  // overwrite on other devices) the record of who performed each action.
+  db.prepare(`UPDATE triage SET triaged_by_name = COALESCE(triaged_by_name, (SELECT full_name FROM users WHERE id = triaged_by)) WHERE triaged_by IN (${ph})`).run(...ids);
+  db.prepare(`UPDATE triage SET vitals_by_name = COALESCE(vitals_by_name, (SELECT full_name FROM users WHERE id = vitals_by)) WHERE vitals_by IN (${ph})`).run(...ids);
+  db.prepare(`UPDATE triage SET routed_by_name = COALESCE(routed_by_name, (SELECT full_name FROM users WHERE id = routed_by)) WHERE routed_by IN (${ph})`).run(...ids);
+  db.prepare(`UPDATE treatments SET completed_by_name = COALESCE(completed_by_name, (SELECT full_name FROM users WHERE id = completed_by)) WHERE completed_by IN (${ph})`).run(...ids);
+  db.prepare(`UPDATE patients SET dismissed_by_name = COALESCE(dismissed_by_name, (SELECT full_name FROM users WHERE id = dismissed_by)) WHERE dismissed_by IN (${ph})`).run(...ids);
   db.prepare(`UPDATE audit_log SET user_id = NULL WHERE user_id IN (${ph})`).run(...ids);
   db.prepare(`UPDATE triage SET triaged_by = NULL WHERE triaged_by IN (${ph})`).run(...ids);
   db.prepare(`UPDATE triage SET vitals_by = NULL WHERE vitals_by IN (${ph})`).run(...ids);
+  db.prepare(`UPDATE triage SET routed_by = NULL WHERE routed_by IN (${ph})`).run(...ids);
   db.prepare(`UPDATE treatments SET completed_by = NULL WHERE completed_by IN (${ph})`).run(...ids);
   db.prepare(`UPDATE patients SET dismissed_by = NULL WHERE dismissed_by IN (${ph})`).run(...ids);
 }
@@ -1130,6 +1139,15 @@ const NAME_SOURCE = {
 };
 
 function nameOfId(uid) { if (!uid) return null; const u = db.prepare('SELECT full_name FROM users WHERE id = ?').get(uid); return u ? u.full_name : null; }
+// Strictly-increasing per-device timestamp so no two rows on one device share an
+// updated_at — keeps the pull cursor from skipping rows tied at a page boundary.
+let _lastStamp = '';
+function monotonicNow() {
+  let t = now();
+  if (t <= _lastStamp) t = new Date(Date.parse(_lastStamp) + 1).toISOString();
+  _lastStamp = t;
+  return t;
+}
 function sig(obj) { return crypto.createHash('sha256').update(JSON.stringify(obj)).digest('hex'); }
 function uidOf(table, id) { if (!id) return null; const r = db.prepare(`SELECT uid FROM ${table} WHERE id = ?`).get(id); return r ? r.uid : null; }
 function localIdByUid(table, uid) { if (!uid) return null; const r = db.prepare(`SELECT id FROM ${table} WHERE uid = ?`).get(uid); return r ? r.id : null; }
@@ -1176,8 +1194,14 @@ function collectSyncRows(max = 400) {
       // last stamped for (content_rev), keeping timestamps stable across retries.
       let updatedAt = row.updated_at;
       if (row.content_rev !== s || !updatedAt) {
-        updatedAt = now();
-        db.prepare(`UPDATE ${table} SET updated_at = ?, content_rev = ? WHERE id = ?`).run(updatedAt, s, row.id);
+        if (row.content_rev == null && updatedAt) {
+          // First sync of a pre-existing row: keep its real updated_at (fair LWW),
+          // just record which content that timestamp is for.
+          db.prepare(`UPDATE ${table} SET content_rev = ? WHERE id = ?`).run(s, row.id);
+        } else {
+          updatedAt = monotonicNow();
+          db.prepare(`UPDATE ${table} SET updated_at = ?, content_rev = ? WHERE id = ?`).run(updatedAt, s, row.id);
+        }
       }
       rows.push({
         entity, uid: row.uid,
@@ -1207,6 +1231,7 @@ function markSynced(mark) {
 function applyRemoteRows(remoteRows) {
   const list = (remoteRows || []).slice().sort((a, b) => APPLY_ORDER.indexOf(a.entity) - APPLY_ORDER.indexOf(b.entity));
   let applied = 0, skipped = 0, deferred = 0;
+  const deferredRows = [];
   const applyOne = (env) => {
     const entity = env.entity, table = ENTITY_TABLE[entity];
     if (!table || !env.uid || !env.data) { skipped++; return; }
@@ -1218,9 +1243,9 @@ function applyRemoteRows(remoteRows) {
     const rowSig = sig(data);
     // Resolve parent local id.
     let parentCol = null, parentId = null;
-    if (entity === 'patient') { parentCol = 'event_id'; parentId = localIdByUid('events', env.event_uid); if (!parentId) { deferred++; return; } }
+    if (entity === 'patient') { parentCol = 'event_id'; parentId = localIdByUid('events', env.event_uid); if (!parentId) { deferred++; deferredRows.push(env); return; } }
     else if (entity !== 'event') {
-      parentCol = 'patient_id'; parentId = localIdByUid('patients', env.patient_uid); if (!parentId) { deferred++; return; }
+      parentCol = 'patient_id'; parentId = localIdByUid('patients', env.patient_uid); if (!parentId) { deferred++; deferredRows.push(env); return; }
       // Guard the UNIQUE(patient_id) tables (triage/treatments): if a row already
       // exists for this patient under a DIFFERENT uid, adopt it instead of a
       // colliding INSERT (can't happen in the normal single-check-in flow, but
@@ -1251,7 +1276,9 @@ function applyRemoteRows(remoteRows) {
     try { db.transaction(applyOne)(env); }
     catch (e) { skipped++; }
   }
-  return { applied, skipped, deferred };
+  // deferredRows = children whose parent wasn't present in THIS batch. The caller
+  // (cloud.js) holds the sync cursor back so they are re-pulled, never lost.
+  return { applied, skipped, deferred, deferredRows };
 }
 
 // Cloud config/state lives in the settings table under a cloud_ prefix.

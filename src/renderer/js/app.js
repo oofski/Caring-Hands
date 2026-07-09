@@ -60,10 +60,14 @@ function navigate(name, params = {}) {
 // queue visibly "moves through" across stations without a manual refresh.
 if (api.onCloudChanged) {
   api.onCloudChanged(() => {
-    if (store.user && LIVE_VIEWS.has(lastNav.name) && !(lastNav.params && lastNav.params.id)) {
-      const view = VIEWS[lastNav.name];
-      if (view && view.roles.includes(store.user.role)) renderShell(lastNav.name, view.render(ctx, lastNav.params));
-    }
+    if (!store.user || !LIVE_VIEWS.has(lastNav.name) || (lastNav.params && lastNav.params.id)) return;
+    // Never yank the page out from under someone typing (search box, inline form)
+    // or with a dialog open — wait for the next sync tick instead.
+    const ae = document.activeElement;
+    if (ae && /^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName)) return;
+    if (document.querySelector('.modal-overlay, .modal')) return;
+    const view = VIEWS[lastNav.name];
+    if (view && view.roles.includes(store.user.role)) renderShell(lastNav.name, view.render(ctx, lastNav.params));
   });
 }
 

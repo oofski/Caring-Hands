@@ -56,18 +56,27 @@ async function pushOnce(base, key, deviceId) {
 
 async function pullOnce(base, key) {
   let cursor = db.getSyncMeta().cursor || '';
+  let safeCursor = cursor;   // only advanced past rows that fully applied
+  let carry = [];            // deferred children waiting for a parent in a later page
   let pulled = 0, applied = 0, guard = 0;
-  // Follow `more` pages so a first sync catches up fully.
+  // Follow `more` pages so a first sync catches up fully. Deferred rows (a child
+  // whose parent lands in a later page) are carried forward and re-applied, and
+  // the persisted cursor is never advanced past anything still deferred — so a
+  // row can be re-ordered across pages but never dropped.
   for (;;) {
-    if (guard++ > 50) break;
+    if (guard++ > 200) break;
     const qs = `?since=${encodeURIComponent(cursor)}&limit=${PULL_LIMIT}`;
     const r = await httpJson('GET', base + '/v1/pull' + qs, key);
     const rows = (r && r.rows) || [];
-    if (rows.length) {
-      const res = db.applyRemoteRows(rows);
+    const batch = carry.length ? carry.concat(rows) : rows;
+    if (batch.length) {
+      const res = db.applyRemoteRows(batch);
       applied += res.applied; pulled += rows.length;
+      carry = res.deferredRows || [];
     }
-    if (r && r.cursor && r.cursor !== cursor) { cursor = r.cursor; db.setSyncMeta({ cursor }); }
+    const pageCursor = (r && r.cursor) || cursor;
+    if (!carry.length) { safeCursor = pageCursor; db.setSyncMeta({ cursor: safeCursor }); }
+    cursor = pageCursor;
     if (!r || !r.more) break;
   }
   return { pulled, applied };
