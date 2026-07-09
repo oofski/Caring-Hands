@@ -1,0 +1,16 @@
+name = "caring-hands-sync"
+main = "worker.js"
+compatibility_date = "2024-11-01"
+
+# D1 binding. Create the database once with:
+#   wrangler d1 create caring-hands
+# then paste the returned database_id below (replacing REPLACE_WITH_YOUR_D1_ID).
+[[d1_databases]]
+binding = "DB"
+database_name = "caring-hands"
+database_id = "REPLACE_WITH_YOUR_D1_ID"
+
+# CLINIC_KEY is NOT stored here. It is a secret — set it out-of-band with:
+#   wrangler secret put CLINIC_KEY
+# The Worker compares the Authorization: Bearer <key> header against it
+# (constant-time). Rotate the key by re-running the command above.

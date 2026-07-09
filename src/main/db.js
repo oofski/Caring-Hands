@@ -183,6 +183,24 @@ function migrate() {
   addColumn('triage', 'route', 'TEXT');                  // 'dentist' | 'hygienist' | 'both' | null
   addColumn('triage', 'routed_by', 'INTEGER');
   addColumn('triage', 'routed_at', 'TEXT');
+
+  // v1.1.0: cloud sync. Each syncable row carries a stable uid (cloud identity),
+  // an updated_at revision, and synced_rev (the revision last pushed/applied —
+  // a row is "dirty" when updated_at != synced_rev). Denormalized *_by_name
+  // columns let accountability survive across devices without syncing accounts.
+  for (const tbl of ['events', 'patients', 'triage', 'treatments', 'consents', 'xrays']) {
+    addColumn(tbl, 'uid', 'TEXT');
+    addColumn(tbl, 'updated_at', 'TEXT');
+    addColumn(tbl, 'synced_rev', 'TEXT');   // sig last confirmed synced (== sig means clean)
+    addColumn(tbl, 'content_rev', 'TEXT');  // sig that updated_at currently corresponds to
+  }
+  addColumn('patients', 'dismissed_by_name', 'TEXT');
+  addColumn('triage', 'triaged_by_name', 'TEXT');
+  addColumn('triage', 'vitals_by_name', 'TEXT');
+  addColumn('triage', 'routed_by_name', 'TEXT');
+  addColumn('treatments', 'completed_by_name', 'TEXT');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_sync_patients ON patients(uid)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_sync_events ON events(uid)');
 }
 
 const ROLES = ['admin', 'doctor', 'triage', 'emt', 'checkout', 'hygienist'];
@@ -720,12 +738,15 @@ function getPatient(id) {
   p.xrays = db.prepare('SELECT id, station, note, created_at FROM xrays WHERE patient_id = ?').all(id);
   p.event = db.prepare('SELECT * FROM events WHERE id = ?').get(p.event_id);
   // v1.0.6 accountability: resolve the staff name for each recorded action.
+  // v1.1.0: prefer the denormalized *_by_name column (set by cloud sync from
+  // another device) so accountability survives across stations; fall back to
+  // resolving the local user id for rows created on this device.
   const nameOf = (uid) => { if (!uid) return null; const u = db.prepare('SELECT full_name FROM users WHERE id = ?').get(uid); return u ? u.full_name : null; };
-  p.triaged_by_name = tr ? nameOf(tr.triaged_by) : null;
-  p.vitals_by_name = tr ? nameOf(tr.vitals_by) : null;
-  p.routed_by_name = tr ? nameOf(tr.routed_by) : null;
-  p.completed_by_name = t ? nameOf(t.completed_by) : null;
-  p.dismissed_by_name = nameOf(p.dismissed_by);
+  p.triaged_by_name = tr ? (tr.triaged_by_name || nameOf(tr.triaged_by)) : null;
+  p.vitals_by_name = tr ? (tr.vitals_by_name || nameOf(tr.vitals_by)) : null;
+  p.routed_by_name = tr ? (tr.routed_by_name || nameOf(tr.routed_by)) : null;
+  p.completed_by_name = t ? (t.completed_by_name || nameOf(t.completed_by)) : null;
+  p.dismissed_by_name = p.dismissed_by_name || nameOf(p.dismissed_by);
   return p;
 }
 
@@ -1084,6 +1105,169 @@ function exportEventJson(eventId) {
   return { exported_at: now(), event, patients };
 }
 
+/* ================================================================== */
+/*  v1.1.0 — CLOUD SYNC (row-level, uid-keyed, last-write-wins)        */
+/*  Offline-first: these functions are only driven by cloud.js when an */
+/*  admin enables sync. Dirtiness is content-based (a row's syncable   */
+/*  fields are hashed) so no write path had to change.                 */
+/* ================================================================== */
+
+const ENTITY_TABLE = { event: 'events', patient: 'patients', triage: 'triage', treatment: 'treatments', consent: 'consents', xray: 'xrays' };
+const APPLY_ORDER = ['event', 'patient', 'triage', 'treatment', 'consent', 'xray'];
+// Syncable payload columns per entity (fixed order -> stable content hash).
+const SYNC_COLS = {
+  event: ['name', 'location', 'start_date', 'end_date', 'languages', 'active', 'created_at'],
+  patient: ['language', 'first_name', 'last_name', 'dob', 'gender', 'phone', 'email', 'demographics', 'medical_history', 'dental_history', 'status', 'created_at', 'dismissed_at', 'dismissed_by_name'],
+  triage: ['complaint', 'flags', 'checklist', 'teeth', 'teeth_notes', 'notes', 'xray_count', 'xray_station', 'assigned_to', 'status', 'triage_signature', 'triage_signer_name', 'triaged_at', 'bp_systolic', 'bp_diastolic', 'heart_rate', 'vitals_at', 'blood_thinner', 'blood_thinner_detail', 'route', 'routed_at', 'triaged_by_name', 'vitals_by_name', 'routed_by_name'],
+  treatment: ['fillings', 'extractions', 'cleaning', 'anesthetic', 'other_procedures', 'clinical_notes', 'provider_name', 'provider_signature', 'locked', 'completed_at', 'completed_by_name'],
+  consent: ['type', 'version', 'language', 'signer_name', 'relationship', 'signature_png', 'signed_at', 'tooth_numbers', 'amended_by', 'amended_at'],
+  xray: ['station', 'image_png', 'note', 'created_at'],
+};
+// Denormalized name field -> the local user-id column it is resolved from.
+const NAME_SOURCE = {
+  dismissed_by_name: 'dismissed_by', triaged_by_name: 'triaged_by',
+  vitals_by_name: 'vitals_by', routed_by_name: 'routed_by', completed_by_name: 'completed_by',
+};
+
+function nameOfId(uid) { if (!uid) return null; const u = db.prepare('SELECT full_name FROM users WHERE id = ?').get(uid); return u ? u.full_name : null; }
+function sig(obj) { return crypto.createHash('sha256').update(JSON.stringify(obj)).digest('hex'); }
+function uidOf(table, id) { if (!id) return null; const r = db.prepare(`SELECT uid FROM ${table} WHERE id = ?`).get(id); return r ? r.uid : null; }
+function localIdByUid(table, uid) { if (!uid) return null; const r = db.prepare(`SELECT id FROM ${table} WHERE uid = ?`).get(uid); return r ? r.id : null; }
+
+// Build the ordered, stable payload object for a row (denormalizing names).
+function buildData(entity, row) {
+  const out = {};
+  for (const col of SYNC_COLS[entity]) {
+    if (NAME_SOURCE[col]) out[col] = row[col] || nameOfId(row[NAME_SOURCE[col]]) || null;
+    else out[col] = row[col] === undefined ? null : row[col];
+  }
+  return out;
+}
+
+// Give every syncable row a uid (once). Cheap, idempotent.
+function ensureUids() {
+  const tx = db.transaction(() => {
+    for (const table of Object.values(ENTITY_TABLE)) {
+      const missing = db.prepare(`SELECT id FROM ${table} WHERE uid IS NULL`).all();
+      const upd = db.prepare(`UPDATE ${table} SET uid = ? WHERE id = ?`);
+      for (const r of missing) upd.run(crypto.randomUUID(), r.id);
+    }
+  });
+  tx();
+}
+
+// Local-change cursor: gather dirty rows (content sig != synced_rev) as sync
+// envelopes. Stamps updated_at only when the content actually changed (tracked
+// by content_rev) so an offline edit keeps its original timestamp for fair LWW.
+function collectSyncRows(max = 400) {
+  ensureUids();
+  const rows = [];
+  const mark = [];
+  for (const entity of APPLY_ORDER) {
+    if (rows.length >= max) break;
+    const table = ENTITY_TABLE[entity];
+    const all = db.prepare(`SELECT * FROM ${table}`).all();
+    for (const row of all) {
+      if (rows.length >= max) break;
+      const data = buildData(entity, row);
+      const s = sig(data);
+      if (s === row.synced_rev) continue; // clean
+      // Stamp updated_at only when the content is different from what it was
+      // last stamped for (content_rev), keeping timestamps stable across retries.
+      let updatedAt = row.updated_at;
+      if (row.content_rev !== s || !updatedAt) {
+        updatedAt = now();
+        db.prepare(`UPDATE ${table} SET updated_at = ?, content_rev = ? WHERE id = ?`).run(updatedAt, s, row.id);
+      }
+      rows.push({
+        entity, uid: row.uid,
+        event_uid: entity === 'patient' ? uidOf('events', row.event_id) : null,
+        patient_uid: (entity !== 'event' && entity !== 'patient') ? uidOf('patients', row.patient_id) : null,
+        deleted: 0, updated_at: updatedAt, data,
+      });
+      mark.push({ table, id: row.id, sig: s });
+    }
+  }
+  return { rows, mark };
+}
+
+// Confirm rows as synced (called after a successful push). Only marks clean if
+// the content hasn't changed again since it was collected.
+function markSynced(mark) {
+  const tx = db.transaction(() => {
+    for (const m of (mark || [])) {
+      db.prepare(`UPDATE ${m.table} SET synced_rev = ? WHERE id = ? AND content_rev = ?`).run(m.sig, m.id, m.sig);
+    }
+  });
+  tx();
+}
+
+// Apply remote envelopes into the local database (LWW), remapping parent uids to
+// local ids and marking applied rows clean so they are never echoed back.
+function applyRemoteRows(remoteRows) {
+  const list = (remoteRows || []).slice().sort((a, b) => APPLY_ORDER.indexOf(a.entity) - APPLY_ORDER.indexOf(b.entity));
+  let applied = 0, skipped = 0, deferred = 0;
+  const tx = db.transaction(() => {
+    for (const env of list) {
+      const entity = env.entity, table = ENTITY_TABLE[entity];
+      if (!table || !env.uid || !env.data) { skipped++; continue; }
+      const existing = db.prepare(`SELECT id, updated_at FROM ${table} WHERE uid = ?`).get(env.uid);
+      if (existing && existing.updated_at && env.updated_at && existing.updated_at >= env.updated_at) { skipped++; continue; }
+      // Rebuild an ordered data object so the applied sig matches the origin's.
+      const data = {};
+      for (const col of SYNC_COLS[entity]) data[col] = env.data[col] === undefined ? null : env.data[col];
+      const rowSig = sig(data);
+      // Resolve parent local id.
+      let parentCol = null, parentId = null;
+      if (entity === 'patient') { parentCol = 'event_id'; parentId = localIdByUid('events', env.event_uid); if (!parentId) { deferred++; continue; } }
+      else if (entity !== 'event') { parentCol = 'patient_id'; parentId = localIdByUid('patients', env.patient_uid); if (!parentId) { deferred++; continue; } }
+      const cols = [...SYNC_COLS[entity]];
+      const vals = cols.map((c) => data[c]);
+      const extraCols = ['uid', 'updated_at', 'synced_rev', 'content_rev'];
+      const extraVals = [env.uid, env.updated_at, rowSig, rowSig];
+      if (parentCol) { extraCols.push(parentCol); extraVals.push(parentId); }
+      if (existing) {
+        const setSql = [...cols, 'updated_at', 'synced_rev', 'content_rev'].map((c) => `${c} = ?`).join(', ');
+        db.prepare(`UPDATE ${table} SET ${setSql} WHERE id = ?`).run(...vals, env.updated_at, rowSig, rowSig, existing.id);
+      } else {
+        const allCols = [...cols, ...extraCols];
+        const ph = allCols.map(() => '?').join(', ');
+        db.prepare(`INSERT INTO ${table} (${allCols.join(', ')}) VALUES (${ph})`).run(...vals, ...extraVals);
+      }
+      applied++;
+    }
+  });
+  tx();
+  return { applied, skipped, deferred };
+}
+
+// Cloud config/state lives in the settings table under a cloud_ prefix.
+function getSyncMeta() {
+  return {
+    url: getSetting('cloud_url') || '',
+    key: getSetting('cloud_key') || '',
+    enabled: getSetting('cloud_enabled') === '1',
+    deviceId: getSetting('cloud_device_id') || '',
+    cursor: getSetting('cloud_cursor') || '',
+    lastPush: getSetting('cloud_last_push') || '',
+    lastOk: getSetting('cloud_last_ok') || '',
+    lastError: getSetting('cloud_last_error') || '',
+  };
+}
+function setSyncMeta(patch) {
+  const map = { url: 'cloud_url', key: 'cloud_key', enabled: 'cloud_enabled', deviceId: 'cloud_device_id', cursor: 'cloud_cursor', lastPush: 'cloud_last_push', lastOk: 'cloud_last_ok', lastError: 'cloud_last_error' };
+  for (const [k, v] of Object.entries(patch || {})) {
+    if (!map[k]) continue;
+    setSetting(map[k], k === 'enabled' ? (v ? '1' : '0') : (v == null ? '' : String(v)));
+  }
+  return getSyncMeta();
+}
+function ensureDeviceId() {
+  let id = getSetting('cloud_device_id');
+  if (!id) { id = crypto.randomUUID(); setSetting('cloud_device_id', id); }
+  return id;
+}
+
 function close() {
   if (db) db.close();
   db = null;
@@ -1101,4 +1285,6 @@ module.exports = {
   dashboardStats, listAudit, audit,
   backupTo, exportEventJson,
   getSetting, setSetting,
+  // v1.1.0 cloud sync
+  collectSyncRows, applyRemoteRows, markSynced, getSyncMeta, setSyncMeta, ensureDeviceId,
 };

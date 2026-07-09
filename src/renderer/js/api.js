@@ -80,5 +80,12 @@ export const api = {
   installOnline: () => call('updateInstallOnline'),
   onUpdateEvent: (cb) => window.api.onUpdateEvent(cb),
 
+  // Cloud sync (v1.1.0)
+  cloudStatus: () => call('cloudStatus'),
+  cloudConfig: (cfg) => call('cloudConfig', cfg),
+  cloudTest: (url, key) => call('cloudTest', { url, key }),
+  cloudSyncNow: () => call('cloudSyncNow'),
+  onCloudChanged: (cb) => window.api.onCloudChanged(cb),
+
   openExternal: (url) => window.api.appOpenExternal(url),
 };

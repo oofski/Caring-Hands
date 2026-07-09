@@ -15,6 +15,7 @@ const db = require('./db');
 const pdf = require('./pdf');
 const updater = require('./updater');
 const autoupdate = require('./autoupdate');
+const cloud = require('./cloud');
 const usb = require('./usb');
 
 let currentUser = null;
@@ -63,6 +64,10 @@ const PERMS = {
   'backup:run': ['admin'],
   'export:event': ['admin'],
   'audit:list': ['admin'],
+  'cloud:config': ['admin'],
+  'cloud:test': ['admin'],
+  'cloud:status': ['admin', 'doctor', 'triage', 'emt', 'checkout', 'hygienist'],
+  'cloud:syncNow': ['admin', 'doctor', 'triage', 'emt', 'checkout', 'hygienist'],
   // update:* and app:version are open to any signed-in user (available in any view).
 };
 
@@ -116,6 +121,12 @@ function register(getMainWindow) {
   handle('users:update', ({ id, ...rest }) => db.updateUser(currentUser, id, rest));
   handle('users:delete', (id) => db.deleteUser(currentUser, id));
   handle('users:clearEventStaff', (eventId) => db.clearEventStaff(currentUser, eventId));
+
+  // v1.1.0 cloud sync
+  handle('cloud:config', (payload) => cloud.applyConfig(payload || {}));
+  handle('cloud:test', ({ url, key }) => cloud.testConnection(url, key));
+  handle('cloud:status', () => cloud.status());
+  handle('cloud:syncNow', () => cloud.syncOnce());
 
   /* ---- Events ---- */
   handle('events:list', () => db.listEvents(), { });

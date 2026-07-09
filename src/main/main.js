@@ -80,6 +80,7 @@ app.whenReady().then(() => {
   db.init(app.getPath('userData'));
   ipc.register(() => mainWindow);
   autoupdate.init(() => mainWindow);
+  require('./cloud').start(() => mainWindow);
   buildMenu();
   createWindow();
 

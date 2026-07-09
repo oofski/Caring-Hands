@@ -120,6 +120,12 @@ window.api = {
   updateCheck: async () => ({ ok: true, data: { current: '1.0.2', hasUpdate: false, latest: null, checkedAt: '' } }),
   updateInstall: async () => ({ ok: true, data: { launched: true } }),
   appOpenExternal: async () => ({ ok: true }),
+  // v1.1.0 cloud sync (offline/off in tests)
+  cloudStatus: async () => ({ ok: true, data: { enabled: false, url: '', hasKey: false, deviceId: 'test-device', cursor: '', lastOk: '', lastPush: '', lastError: '', running: false, pushed: 0, pulled: 0, applied: 0 } }),
+  cloudConfig: async () => ({ ok: true, data: { enabled: false, url: '', hasKey: false } }),
+  cloudTest: async () => ({ ok: true, data: { service: 'caring-hands-sync', version: '1.1.0' } }),
+  cloudSyncNow: async () => ({ ok: true, data: { ok: true, pushed: 0, pulled: 0, applied: 0 } }),
+  onCloudChanged: () => () => {},
 };
 
 const tick = () => new Promise((r) => setTimeout(r, 5));

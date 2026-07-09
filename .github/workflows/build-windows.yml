@@ -47,28 +47,27 @@ jobs:
       - name: Publish downloadable release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.0.9-build.${{ github.run_number }}
-          name: Caring Hands v1.0.9 (build ${{ github.run_number }})
+          tag_name: v1.1.0-build.${{ github.run_number }}
+          name: Caring Hands v1.1.0 (build ${{ github.run_number }})
           prerelease: false
           make_latest: true
           body: |
-            ## Caring Hands Worldwide — Practice Management Software (v1.0.9)
+            ## Caring Hands Worldwide — Practice Management Software (v1.1.0)
 
             Offline-first dental clinic app for Windows. **Download the installer once — it auto-updates from here on.**
 
-            **New in v1.0.9 — a simpler clinic flow: the triage station is gone**
-            - **New patient flow** — check-in → queue → **EMT/nurse station** (vitals + blood-thinner check) → the EMT **sends the patient to the Dentist or the Hygienist** (or both) → check-out. No more separate triage step.
-            - **EMT routes patients** — right after recording vitals, the nurse picks where the patient goes next; the queue shows who still needs vitals and where everyone is headed.
-            - **Dentist is the planning hub** — the dentist screen now owns the treatment plan: chief complaint, tooth chart, and the fillings & extractions panels are always front and center (no more sections hidden behind a triage checklist). Vitals and the blood-thinner answer from the EMT show right at the top.
-            - **Hygienist queue is route-driven** — patients sent to the hygienist appear in the Cleanings queue automatically.
-            - **Legacy accounts keep working** — existing front-desk (triage) logins now open the EMT station; nobody loses access on update.
+            **New in v1.1.0 — optional Cloud Sync: one shared queue across every station**
+            - **Cloud sync (optional)** — connect your stations to your clinic's own Cloudflare cloud and the patient queue moves through in real time: a patient checked in at the front desk appears at the EMT, dentist, and hygienist screens on other devices within seconds.
+            - **Still fully offline-first** — cloud is **off by default**. The app works exactly as before with zero internet; if the network drops mid-clinic it keeps running locally and re-syncs automatically when it reconnects (most-recent edit wins).
+            - **Your cloud, your data** — runs on your own Cloudflare account (generous free tier). One shared clinic key connects the stations; staff accounts stay on each device. See `docs/CLOUD_SETUP.md` for the 5-command setup.
+            - **Admin → Cloud** — a new settings tab to paste your Cloud URL + key, test the connection, and turn sync on, with a live "Synced" status indicator.
 
-            Includes everything from v1.0.2–1.0.8 (brand refresh, hygienist workflow, per-event staff, blood-thinner alerts, Oregon consent, patient summary PDF, USB workflow, accountability, Russian, in-app auto-update).
+            Includes everything from v1.0.2–1.0.9 (triage-free EMT→dentist/hygienist flow, brand refresh, per-event staff, blood-thinner check, Oregon consent, patient summary PDF, USB workflow, accountability, Russian, in-app auto-update).
 
-            - **Caring-Hands-Setup-1.0.9.exe** — installer (recommended; required for auto-update).
-            - **Caring-Hands-Portable-1.0.9.exe** — portable (no auto-update).
+            - **Caring-Hands-Setup-1.1.0.exe** — installer (recommended; required for auto-update).
+            - **Caring-Hands-Portable-1.1.0.exe** — portable (no auto-update).
 
-            First sign-in: `admin / admin` — then create your staff accounts. All clinical data stays on the device.
+            First sign-in: `admin / admin` — then create your staff accounts. All clinical data stays on the device unless you enable Cloud Sync.
           files: |
             release/*.exe
             release/latest.yml

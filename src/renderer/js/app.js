@@ -36,6 +36,12 @@ const ctx = { navigate, toast: (m, k) => toast(m, k), store };
 // App version + offline-update state, shown in any view.
 const appInfo = { version: '', hasUpdate: false, latest: null, checked: false };
 
+let lastNav = { name: 'dashboard', params: {} };
+// Queue/list screens safe to auto-refresh when cloud sync pulls new data. Detail
+// screens (params.id set) are never auto-refreshed so a clinician mid-edit is
+// never interrupted.
+const LIVE_VIEWS = new Set(['dashboard', 'emt', 'provider', 'hygienist', 'checkout', 'records']);
+
 function navigate(name, params = {}) {
   if (name === 'login') return renderFullscreen(renderLogin(ctx));
   if (name === 'kiosk') return renderFullscreen(renderKiosk(ctx));
@@ -46,7 +52,19 @@ function navigate(name, params = {}) {
     toast('You do not have access to that screen.', 'error');
     return navigate('dashboard');
   }
+  lastNav = { name, params };
   renderShell(name, view.render(ctx, params));
+}
+
+// v1.1.0: when cloud sync pulls new data, refresh the current list view so the
+// queue visibly "moves through" across stations without a manual refresh.
+if (api.onCloudChanged) {
+  api.onCloudChanged(() => {
+    if (store.user && LIVE_VIEWS.has(lastNav.name) && !(lastNav.params && lastNav.params.id)) {
+      const view = VIEWS[lastNav.name];
+      if (view && view.roles.includes(store.user.role)) renderShell(lastNav.name, view.render(ctx, lastNav.params));
+    }
+  });
 }
 
 function renderFullscreen(node) {

@@ -22,6 +22,7 @@ const CHANNELS = [
   'app:version', 'update:check', 'update:install',
   'update:onlineAvailable', 'update:checkOnline', 'update:downloadOnline', 'update:installOnline',
   'app:openExternal',
+  'cloud:config', 'cloud:test', 'cloud:status', 'cloud:syncNow',
 ];
 
 const api = {
@@ -36,6 +37,12 @@ const api = {
     const listener = (_e, data) => cb(data);
     ipcRenderer.on('update:event', listener);
     return () => ipcRenderer.removeListener('update:event', listener);
+  },
+  // Subscribe to cloud-sync change events (remote data pulled) so open views can refresh.
+  onCloudChanged(cb) {
+    const listener = (_e, data) => cb(data);
+    ipcRenderer.on('cloud:changed', listener);
+    return () => ipcRenderer.removeListener('cloud:changed', listener);
   },
 };
 

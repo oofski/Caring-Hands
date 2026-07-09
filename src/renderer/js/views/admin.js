@@ -4,13 +4,17 @@ import { api } from '../api.js';
 import { store } from '../store.js';
 import { icon } from '../icons.js';
 
+// Cloud-sync live-update subscription. Kept at module scope so repaints of the
+// Cloud tab can drop the previous listener before adding a new one (no stacking).
+let cloudUnsub = null;
+
 export function renderAdmin(ctx) {
   const root = el('div', { class: 'view' });
   let tab = 'staff';
 
   const tabs = [
     ['staff', 'Staff', 'users'], ['events', 'Events', 'calendar'], ['data', 'Backup & Export', 'database'],
-    ['languages', 'Languages', 'globe'], ['audit', 'Audit log', 'clipboard'],
+    ['languages', 'Languages', 'globe'], ['cloud', 'Cloud', 'globe'], ['audit', 'Audit log', 'clipboard'],
   ];
 
   function paint() {
@@ -30,7 +34,7 @@ export function renderAdmin(ctx) {
       el('div', { class: 'tab-body', id: 'tab-body' }),
     );
     const body = root.querySelector('#tab-body');
-    ({ staff: staffTab, events: eventsTab, data: dataTab, languages: langTab, audit: auditTab }[tab])(body);
+    ({ staff: staffTab, events: eventsTab, data: dataTab, languages: langTab, cloud: cloudTab, audit: auditTab }[tab])(body);
   }
 
   /* ---- Staff ---- */
@@ -407,6 +411,164 @@ export function renderAdmin(ctx) {
             ? el('span', { class: 'pill pill--success' }, [el('span', { class: 'pill-dot' }), 'On for active event'])
             : el('span', { class: 'pill pill--neutral' }, ['Available']),
         ]))),
+    ]));
+  }
+
+  /* ---- Cloud sync (v1.1.0) ---- */
+  async function cloudTab(body) {
+    clear(body);
+
+    let st;
+    try {
+      st = await api.cloudStatus();
+    } catch (e) {
+      body.append(el('div', { class: 'card' }, [
+        el('h3', { class: 'card-title' }, [icon('globe', { size: 15 }), 'Cloud sync']),
+        el('p', { class: 'muted', style: 'margin:0;' }, [`Could not load cloud status: ${e.message}`]),
+      ]));
+      return;
+    }
+
+    // Repaint the tab whenever remote data is pulled — but drop the previous
+    // subscription first so repaints never stack listeners.
+    if (cloudUnsub) { try { cloudUnsub(); } catch (_) { /* ignore */ } }
+    cloudUnsub = api.onCloudChanged(() => { if (tab === 'cloud') paint(); });
+
+    body.append(el('p', { class: 'view-sub', style: 'margin:0 0 var(--space-4);' }, [
+      'Connect this station to your clinic’s cloud so patients flow between devices in real time. Leave it off to run fully offline.',
+    ]));
+
+    /* --- Connection --- */
+    const urlInput = el('input', {
+      class: 'input', type: 'text', value: st.url || '',
+      placeholder: 'https://caring-hands-sync.<subdomain>.workers.dev',
+    });
+    const keyInput = el('input', {
+      class: 'input', type: 'password',
+      placeholder: st.hasKey ? 'Leave blank to keep current key' : 'Clinic key',
+    });
+
+    const connFields = [
+      el('label', { class: 'field span-2' }, [
+        el('span', { class: 'field-label' }, ['Cloud URL']),
+        urlInput,
+      ]),
+      el('label', { class: 'field span-2' }, [
+        el('span', { class: 'field-label' }, ['Clinic key']),
+        keyInput,
+        st.hasKey
+          ? el('span', { class: 'field-hint', style: 'display:inline-flex; align-items:center; gap:6px;' }, [icon('lock', { size: 12 }), 'A key is saved — leave blank to keep it.'])
+          : null,
+      ]),
+    ];
+
+    const testBtn = el('button', { class: 'btn btn--ghost', onClick: async () => {
+      const url = urlInput.value.trim();
+      const key = keyInput.value;
+      if (!url) { toast('Enter the cloud URL first.', 'error'); return; }
+      // A blank key would just 401 on the server — require one so the test is meaningful.
+      if (!key) { toast('Re-enter the clinic key to test the connection.', 'error'); return; }
+      try {
+        const r = await api.cloudTest(url, key);
+        toast(`Connected to sync server v${r.version}`, 'success');
+      } catch (e) { toast(e.message, 'error'); }
+    } }, [icon('checkCircle', { size: 16 }), 'Test connection']);
+
+    const saveBtn = el('button', { class: 'btn btn--primary', onClick: async () => {
+      try {
+        // Only send the key when the user typed one, so a blank field never wipes a saved key.
+        await api.cloudConfig({ url: urlInput.value.trim(), key: keyInput.value ? keyInput.value : undefined });
+        toast('Saved', 'success');
+        paint();
+      } catch (e) { toast(e.message, 'error'); }
+    } }, [icon('save', { size: 16 }), 'Save']);
+
+    body.append(el('div', { class: 'card' }, [
+      el('h3', { class: 'card-title' }, [icon('globe', { size: 15 }), 'Connection']),
+      el('p', { class: 'muted', style: 'margin:0 0 var(--space-4);' }, ['Point this station at your clinic’s sync server, then test and save.']),
+      el('div', { class: 'form-grid' }, connFields),
+      el('div', { class: 'action-row', style: 'margin-top:var(--space-2);' }, [testBtn, saveBtn]),
+    ]));
+
+    /* --- Sync --- */
+    const canEnable = !!(st.url && st.hasKey);
+    const enableToggle = el('input', {
+      type: 'checkbox', checked: st.enabled,
+      style: 'width:18px; height:18px; accent-color:var(--accent); cursor:pointer; flex:0 0 auto;',
+      onChange: async (ev) => {
+        const on = ev.target.checked;
+        if (on && !canEnable) {
+          ev.target.checked = false;
+          toast('Save your cloud URL and key first, then enable sync.', 'error');
+          return;
+        }
+        try {
+          await api.cloudConfig({ enabled: on });
+          toast(on ? 'Cloud sync enabled' : 'Cloud sync turned off', 'success');
+          paint();
+        } catch (e) {
+          ev.target.checked = !on;
+          toast(e.message, 'error');
+        }
+      },
+    });
+
+    // Status pill: Off when disabled, else Syncing / Error / Synced / waiting.
+    let pill;
+    if (!st.enabled) {
+      pill = el('span', { class: 'pill pill--neutral' }, ['Off']);
+    } else if (st.running) {
+      pill = el('span', { class: 'pill pill--amber' }, [el('span', { class: 'pill-dot' }), 'Syncing…']);
+    } else if (st.lastError) {
+      pill = el('span', { class: 'pill pill--danger' }, [icon('alert', { size: 12 }), 'Error']);
+    } else if (st.lastOk) {
+      pill = el('span', { class: 'pill pill--success' }, [el('span', { class: 'pill-dot' }), 'Synced']);
+    } else {
+      pill = el('span', { class: 'pill pill--neutral' }, ['Waiting for first sync']);
+    }
+
+    const statusRows = [
+      el('div', { class: 'inline-row', style: 'margin:0; align-items:center; gap:var(--space-2);' }, [
+        pill,
+        st.lastOk ? el('span', { class: 'muted small' }, [`Last sync ${new Date(st.lastOk).toLocaleTimeString()}`]) : null,
+      ]),
+    ];
+    if (st.enabled && st.lastError) {
+      statusRows.push(el('div', { class: 'small', style: 'color:var(--danger);' }, [st.lastError]));
+    }
+    statusRows.push(
+      el('div', { class: 'muted small' }, [`pushed ${st.pushed} · pulled ${st.pulled} · applied ${st.applied}`]),
+      el('div', { class: 'subtle small' }, [`Device ${st.deviceId}`]),
+    );
+
+    const syncNowBtn = el('button', { class: 'btn btn--ghost', onClick: async () => {
+      try {
+        const r = await api.cloudSyncNow();
+        if (r && r.ok) toast(`Synced — pushed ${r.pushed}, pulled ${r.pulled}, applied ${r.applied}`, 'success');
+        else toast((r && r.error) || 'Sync failed', 'error');
+        paint();
+      } catch (e) { toast(e.message, 'error'); }
+    } }, [icon('refresh', { size: 16 }), 'Sync now']);
+
+    body.append(el('div', { class: 'card' }, [
+      el('h3', { class: 'card-title' }, [icon('refresh', { size: 15 }), 'Sync']),
+      el('label', {
+        class: 'inline-row',
+        style: 'margin:0 0 var(--space-4); align-items:center; gap:var(--space-3); cursor:pointer;',
+      }, [
+        enableToggle,
+        el('div', {}, [
+          el('strong', { style: 'color:var(--text-strong); display:block;' }, ['Enable cloud sync for this station']),
+          el('span', { class: 'muted small' }, ['Automatically push local changes and pull updates from other stations.']),
+        ]),
+      ]),
+      el('div', {
+        class: 'inline-row',
+        style: 'margin:0; align-items:flex-start; justify-content:space-between; gap:var(--space-4); flex-wrap:wrap;',
+      }, [
+        el('div', { style: 'display:flex; flex-direction:column; gap:6px;' }, statusRows),
+        syncNowBtn,
+      ]),
     ]));
   }
 
