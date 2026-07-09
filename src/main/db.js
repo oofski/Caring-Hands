@@ -1207,37 +1207,50 @@ function markSynced(mark) {
 function applyRemoteRows(remoteRows) {
   const list = (remoteRows || []).slice().sort((a, b) => APPLY_ORDER.indexOf(a.entity) - APPLY_ORDER.indexOf(b.entity));
   let applied = 0, skipped = 0, deferred = 0;
-  const tx = db.transaction(() => {
-    for (const env of list) {
-      const entity = env.entity, table = ENTITY_TABLE[entity];
-      if (!table || !env.uid || !env.data) { skipped++; continue; }
-      const existing = db.prepare(`SELECT id, updated_at FROM ${table} WHERE uid = ?`).get(env.uid);
-      if (existing && existing.updated_at && env.updated_at && existing.updated_at >= env.updated_at) { skipped++; continue; }
-      // Rebuild an ordered data object so the applied sig matches the origin's.
-      const data = {};
-      for (const col of SYNC_COLS[entity]) data[col] = env.data[col] === undefined ? null : env.data[col];
-      const rowSig = sig(data);
-      // Resolve parent local id.
-      let parentCol = null, parentId = null;
-      if (entity === 'patient') { parentCol = 'event_id'; parentId = localIdByUid('events', env.event_uid); if (!parentId) { deferred++; continue; } }
-      else if (entity !== 'event') { parentCol = 'patient_id'; parentId = localIdByUid('patients', env.patient_uid); if (!parentId) { deferred++; continue; } }
-      const cols = [...SYNC_COLS[entity]];
-      const vals = cols.map((c) => data[c]);
-      const extraCols = ['uid', 'updated_at', 'synced_rev', 'content_rev'];
-      const extraVals = [env.uid, env.updated_at, rowSig, rowSig];
-      if (parentCol) { extraCols.push(parentCol); extraVals.push(parentId); }
-      if (existing) {
-        const setSql = [...cols, 'updated_at', 'synced_rev', 'content_rev'].map((c) => `${c} = ?`).join(', ');
-        db.prepare(`UPDATE ${table} SET ${setSql} WHERE id = ?`).run(...vals, env.updated_at, rowSig, rowSig, existing.id);
-      } else {
-        const allCols = [...cols, ...extraCols];
-        const ph = allCols.map(() => '?').join(', ');
-        db.prepare(`INSERT INTO ${table} (${allCols.join(', ')}) VALUES (${ph})`).run(...vals, ...extraVals);
+  const applyOne = (env) => {
+    const entity = env.entity, table = ENTITY_TABLE[entity];
+    if (!table || !env.uid || !env.data) { skipped++; return; }
+    const existing = db.prepare(`SELECT id, updated_at FROM ${table} WHERE uid = ?`).get(env.uid);
+    if (existing && existing.updated_at && env.updated_at && existing.updated_at >= env.updated_at) { skipped++; return; }
+    // Rebuild an ordered data object so the applied sig matches the origin's.
+    const data = {};
+    for (const col of SYNC_COLS[entity]) data[col] = env.data[col] === undefined ? null : env.data[col];
+    const rowSig = sig(data);
+    // Resolve parent local id.
+    let parentCol = null, parentId = null;
+    if (entity === 'patient') { parentCol = 'event_id'; parentId = localIdByUid('events', env.event_uid); if (!parentId) { deferred++; return; } }
+    else if (entity !== 'event') {
+      parentCol = 'patient_id'; parentId = localIdByUid('patients', env.patient_uid); if (!parentId) { deferred++; return; }
+      // Guard the UNIQUE(patient_id) tables (triage/treatments): if a row already
+      // exists for this patient under a DIFFERENT uid, adopt it instead of a
+      // colliding INSERT (can't happen in the normal single-check-in flow, but
+      // keeps a stray/duplicate from wedging the whole batch).
+      if (!existing && (table === 'triage' || table === 'treatments')) {
+        const dupe = db.prepare(`SELECT id FROM ${table} WHERE patient_id = ?`).get(parentId);
+        if (dupe) { db.prepare(`UPDATE ${table} SET uid = ? WHERE id = ?`).run(env.uid, dupe.id); return applyOne(env); }
       }
-      applied++;
     }
-  });
-  tx();
+    const cols = [...SYNC_COLS[entity]];
+    const vals = cols.map((c) => data[c]);
+    const extraCols = ['uid', 'updated_at', 'synced_rev', 'content_rev'];
+    const extraVals = [env.uid, env.updated_at, rowSig, rowSig];
+    if (parentCol) { extraCols.push(parentCol); extraVals.push(parentId); }
+    if (existing) {
+      const setSql = [...cols, 'updated_at', 'synced_rev', 'content_rev'].map((c) => `${c} = ?`).join(', ');
+      db.prepare(`UPDATE ${table} SET ${setSql} WHERE id = ?`).run(...vals, env.updated_at, rowSig, rowSig, existing.id);
+    } else {
+      const allCols = [...cols, ...extraCols];
+      const ph = allCols.map(() => '?').join(', ');
+      db.prepare(`INSERT INTO ${table} (${allCols.join(', ')}) VALUES (${ph})`).run(...vals, ...extraVals);
+    }
+    applied++;
+  };
+  // Each row is applied in its own transaction so one malformed/poison row can
+  // never roll back or wedge the whole pull batch — it is counted and skipped.
+  for (const env of list) {
+    try { db.transaction(applyOne)(env); }
+    catch (e) { skipped++; }
+  }
   return { applied, skipped, deferred };
 }
 
