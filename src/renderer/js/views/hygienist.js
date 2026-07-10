@@ -30,8 +30,11 @@ export function renderHygienist(ctx, params = {}) {
   async function queue() {
     const patients = await api.listPatients({});
     const live = patients.filter((p) => p.status !== 'dismissed');
-    const forCleaning = live.filter((p) => routedToHygienist(p) && !['completed', 'dismissed'].includes(p.status));
-    const rows = (forCleaning.length ? forCleaning : live).map((p) => el('tr', { style: 'cursor:pointer', onClick: () => detail(p.id) }, [
+    // B1/B2 QUEUE GATE: a patient only belongs in the cleaning queue once the EMT
+    // has signed them off into a clinical queue (status 'triaged'/'in_treatment')
+    // AND they were routed to the hygienist. Checked-in patients stay with the EMT.
+    const forCleaning = live.filter((p) => routedToHygienist(p) && ['triaged', 'in_treatment'].includes(p.status));
+    const rows = forCleaning.map((p) => el('tr', { style: 'cursor:pointer', onClick: () => detail(p.id) }, [
       el('td', {}, [el('strong', {}, [`${p.last_name}, ${p.first_name}`])]),
       el('td', { class: 'num' }, [p.age != null ? String(p.age) : '—']),
       el('td', {}, [p.complaint || '—']),
@@ -46,11 +49,11 @@ export function renderHygienist(ctx, params = {}) {
         el('button', { class: 'btn btn--ghost btn--sm', onClick: queue }, [icon('refresh', { size: 15 }), 'Refresh']),
       ]),
       el('div', { class: 'card' }, [
-        el('div', { class: 'card-title' }, [icon('sparkle', { size: 15 }), forCleaning.length ? 'Routed for cleaning' : 'All patients']),
+        el('div', { class: 'card-title' }, [icon('sparkle', { size: 15 }), 'Routed for cleaning']),
         el('div', { class: 'data-table-wrap' }, [
           el('table', { class: 'data-table' }, [
             el('thead', {}, [el('tr', {}, ['Patient', 'Age', 'Complaint', 'Cleaning', 'Status', ''].map((h) => el('th', {}, [h])))]),
-            el('tbody', {}, rows.length ? rows : [el('tr', {}, [el('td', { colspan: 6, class: 'empty' }, ['No patients waiting.'])])]),
+            el('tbody', {}, rows.length ? rows : [el('tr', {}, [el('td', { colspan: 6, class: 'empty' }, ["No patients sent to the hygienist yet — they'll appear here once the EMT signs them off."])])]),
           ]),
         ]),
       ]),
@@ -138,8 +141,30 @@ export function renderHygienist(ctx, params = {}) {
       } catch (e) { toast(e.message, 'error'); }
     }
 
+    // B3: hand a patient off to the dentist when they actually need restorative
+    // work (extraction/filling). Confirms, routes, then refreshes back to the queue
+    // (the patient leaves the cleaning list once routed to the dentist).
+    async function transferToDentist() {
+      const ok = await modal({
+        title: 'Transfer to dentist?',
+        body: 'Send this patient to the dentist for restorative work (extraction/filling). They will leave the cleaning queue. Continue?',
+        confirmText: 'Transfer to dentist', cancelText: 'Cancel',
+      });
+      if (!ok) return;
+      try {
+        await api.routePatient(id, 'dentist');
+        toast('Patient transferred to the dentist', 'success');
+        queue();
+      } catch (e) { toast(e.message, 'error'); }
+    }
+
     // mount() clears and skips null children — the conditional banners below
     // would otherwise render as literal "null" text via native append().
+    // LAYOUT (D7): the odontogram gets its OWN full-width card (like provider.js)
+    // so the .odo-arch SVG (min-width 680px) has room to render at full size —
+    // it is NOT boxed into a narrow .split column. Reads top-to-bottom:
+    // header/banners → full-width Odontogram → cleaning options → split for the
+    // secondary sign-off + collapsed patient history.
     mount(root,
       el('div', { class: 'view-head' }, [
         el('div', {}, [
@@ -147,24 +172,33 @@ export function renderHygienist(ctx, params = {}) {
           el('h1', {}, [`${p.first_name} ${p.last_name}`]),
           el('p', { class: 'view-sub' }, [`${p.age != null ? p.age + ' yrs · ' : ''}${p.gender || ''}`]),
         ]),
-        statusPill(p.status),
+        el('div', { class: 'inline-row', style: 'align-items:center;gap:8px' }, [
+          locked ? null : el('button', { class: 'btn btn--soft btn--sm', onClick: transferToDentist, title: 'Send to the dentist for restorative work' }, [icon('tooth', { size: 15 }), 'Transfer to dentist']),
+          statusPill(p.status),
+        ]),
       ]),
 
       locked ? el('div', { class: 'banner banner--locked' }, [icon('lock', { size: 16 }), 'This record is signed off and locked.']) : null,
       alsoDoctor && !locked ? el('div', { class: 'banner banner--info' }, [icon('tooth', { size: 16 }), 'This patient is also flagged for the doctor (extraction/filling). Save your cleaning and leave sign-off to the provider.']) : null,
 
+      // FULL-WIDTH odontogram card — spans the whole view, outside any .split.
+      el('div', { class: 'card' }, [
+        el('div', { class: 'card-title' }, [icon('tooth', { size: 15 }), 'Odontogram — tap teeth cleaned']),
+        odo.node, bulkClean,
+      ]),
+
+      // Cleaning options — full width, directly under the odontogram.
+      el('div', { class: 'card' }, [
+        el('div', { class: 'card-title' }, [icon('sparkle', { size: 15 }), 'Cleaning performed']),
+        chipRow,
+        el('div', { style: 'margin-top:8px;max-width:280px' }, [quadDetail]),
+        el('label', { class: 'field', style: 'margin-top:10px' }, [el('span', { class: 'field-label' }, ['Notes']), notes]),
+      ]),
+
+      // Secondary content — sign-off + collapsed patient history in a .split.
       el('div', { class: 'split' }, [
         el('div', { class: 'col col--wide' }, [
-          el('div', { class: 'card' }, [
-            el('div', { class: 'card-title' }, [icon('tooth', { size: 15 }), 'Odontogram — tap teeth cleaned']),
-            odo.node, bulkClean,
-          ]),
-          el('div', { class: 'card' }, [
-            el('div', { class: 'card-title' }, [icon('sparkle', { size: 15 }), 'Cleaning performed']),
-            chipRow,
-            el('div', { style: 'margin-top:8px;max-width:280px' }, [quadDetail]),
-            el('label', { class: 'field', style: 'margin-top:10px' }, [el('span', { class: 'field-label' }, ['Notes']), notes]),
-          ]),
+          patientHistoryPanel(p, [], { open: false }),
         ]),
         el('div', { class: 'col' }, [
           el('div', { class: 'card' }, [
@@ -177,7 +211,6 @@ export function renderHygienist(ctx, params = {}) {
               el('button', { class: 'btn btn--primary btn--block', title: alsoDoctor ? 'Doctor work is pending — normally the provider signs off' : '', onClick: () => save(true) }, [icon('checkCircle', { size: 16 }), 'Complete cleaning & sign off']),
             ]),
           ]),
-          patientHistoryPanel(p, [], { open: false }),
         ]),
       ]),
     );

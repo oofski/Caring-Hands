@@ -140,10 +140,10 @@ function progressNoteBody(p) {
     return `<span>#${esc(e.tooth)} · ${esc(types)}${e.note ? ' — ' + esc(e.note) : ''}</span>`;
   }).join('') || '<span class="muted">None</span>';
   const anesEntries = Array.isArray(t.anesthetic)
-    ? t.anesthetic.map((a) => `<span>${esc(a.agent)} × ${esc(a.carps)} carp(s)${a.location ? ' · ' + esc(a.location) : ''}</span>`)
+    ? t.anesthetic.map((a) => `<span>${esc(a.agent === 'other' ? (a.name || 'Other') : (ANES_LABELS[a.agent] || a.agent))}${a.carps ? ' × ' + esc(a.carps) + ' carp(s)' : ''}${a.tooth ? ' · #' + esc(a.tooth) : ''}${a.location ? ' · ' + esc(a.location) : ''}</span>`)
     : Object.entries(t.anesthetic || {}).map(([k, v]) => {
         const label = k === 'other' && v.name ? `Other (${v.name})` : (ANES_LABELS[k] || k);
-        return `<span>${esc(label)}${v.carps ? ' × ' + esc(v.carps) + ' carp(s)' : ''}${v.location ? ' · ' + esc(v.location) : ''}</span>`;
+        return `<span>${esc(label)}${v.carps ? ' × ' + esc(v.carps) + ' carp(s)' : ''}${v.tooth ? ' · #' + esc(v.tooth) : ''}${v.location ? ' · ' + esc(v.location) : ''}</span>`;
       });
   const anesthetic = anesEntries.join('') || '<span class="muted">None</span>';
   const cleaning = Object.entries(t.cleaning || {})
@@ -278,6 +278,51 @@ function fullPacketBody(p) {
 }
 
 // F17: clean patient summary — procedures, anesthetic, notes, and x-ray images.
+// Title-case a stored key ("blood_pressure_meds" -> "Blood Pressure Meds").
+function titleKey(k) {
+  return String(k || '').replace(/[_-]+/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+// v1.2.0: the Vitals & Health block that was previously MISSING from the summary
+// PDF — EMT-entered vitals, the blood-thinner answer, the patient's medical
+// history, and the EMT's yes/no confirmations now attach to the record.
+function healthBlock(p) {
+  const tr = p.triage || {};
+  const m = p.medical_history || {};
+  // vitals/thinner are passed through field(), which escapes — so build them RAW
+  // here (no esc()) to avoid double-escaping a blood-thinner detail like "A & B".
+  const vitals = (tr.bp_systolic != null || tr.bp_diastolic != null || tr.heart_rate != null)
+    ? `BP ${tr.bp_systolic != null ? tr.bp_systolic : '—'}/${tr.bp_diastolic != null ? tr.bp_diastolic : '—'} · HR ${tr.heart_rate != null ? tr.heart_rate : '—'} bpm`
+    : 'Not recorded';
+  const thinner = tr.blood_thinner === 'yes'
+    ? 'YES' + (tr.blood_thinner_detail ? ` (${tr.blood_thinner_detail})` : '')
+    : (tr.blood_thinner === 'no' ? 'No' : 'Not asked');
+  const list = (arr, otherKey) => {
+    // Filter the sentinel keys so an all-'none' section correctly shows the
+    // "reviewed" fallback rather than a literal "None".
+    const items = (arr || []).filter((x) => x !== 'other' && x !== 'none').map((x) => titleKey(x));
+    if ((arr || []).includes('other') && m[otherKey]) items.push(esc(m[otherKey]));
+    return items.length ? items.join(', ') : (arr && arr.includes('none') ? 'None (reviewed)' : 'None reported');
+  };
+  const allergies = list(m.allergies, 'allergies_other');
+  const conditions = list(m.conditions, 'conditions_other');
+  const meds = (m.medications || []).length
+    ? (m.medications || []).map((x) => `${esc(x.name)}${x.dose ? ' ' + esc(x.dose) : ''}`).join(', ')
+    : (m.medications_none ? 'None (reviewed)' : 'None reported');
+  const review = tr.emt_review && typeof tr.emt_review === 'object'
+    ? Object.entries(tr.emt_review).filter(([, v]) => v != null && v !== '').map(([k, v]) => `${titleKey(k)}: ${esc(String(v)).toUpperCase()}`)
+    : [];
+  return `
+    <h2>Vitals & Health</h2>
+    <table class="grid">
+      <tr>${field('Vitals (by EMT)', vitals)}${field('Blood thinners', thinner)}</tr>
+    </table>
+    <div><span class="label">Allergies</span> ${allergies}</div>
+    <div><span class="label">Conditions</span> ${conditions}</div>
+    <div><span class="label">Medications</span> ${meds}</div>
+    ${review.length ? `<div class="box"><span class="label">EMT review</span><br>${review.join(' · ')}</div>` : ''}`;
+}
+
 function summaryBody(p) {
   const t = p.treatment || {};
 
@@ -299,10 +344,10 @@ function summaryBody(p) {
     .join('') || '<span class="muted">None</span>';
 
   const anesEntries = Array.isArray(t.anesthetic)
-    ? t.anesthetic.map((a) => `<span>${esc(a.agent)} × ${esc(a.carps)} carp(s)${a.location ? ' · ' + esc(a.location) : ''}</span>`)
+    ? t.anesthetic.map((a) => `<span>${esc(a.agent === 'other' ? (a.name || 'Other') : (ANES_LABELS[a.agent] || a.agent))}${a.carps ? ' × ' + esc(a.carps) + ' carp(s)' : ''}${a.tooth ? ' · #' + esc(a.tooth) : ''}${a.location ? ' · ' + esc(a.location) : ''}</span>`)
     : Object.entries(t.anesthetic || {}).map(([k, v]) => {
         const label = k === 'other' && v.name ? `Other (${v.name})` : (ANES_LABELS[k] || k);
-        return `<span>${esc(label)}${v.carps ? ' × ' + esc(v.carps) + ' carp(s)' : ''}${v.location ? ' · ' + esc(v.location) : ''}</span>`;
+        return `<span>${esc(label)}${v.carps ? ' × ' + esc(v.carps) + ' carp(s)' : ''}${v.tooth ? ' · #' + esc(v.tooth) : ''}${v.location ? ' · ' + esc(v.location) : ''}</span>`;
       });
   const anesthetic = anesEntries.join('') || '<span class="muted">None</span>';
 
@@ -318,6 +363,8 @@ function summaryBody(p) {
       <tr>${field('Patient', `${p.first_name} ${p.last_name}`)}${field('Date of birth', p.dob)}</tr>
       <tr>${field('Event', p.event ? p.event.name : '—')}${field('Provider', t.provider_name)}</tr>
     </table>
+
+    ${healthBlock(p)}
 
     <h2>Procedures Performed</h2>
     <div><span class="label">Fillings</span><div class="chips">${fillings}</div></div>

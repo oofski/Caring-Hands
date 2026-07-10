@@ -183,6 +183,10 @@ function migrate() {
   addColumn('triage', 'route', 'TEXT');                  // 'dentist' | 'hygienist' | 'both' | null
   addColumn('triage', 'routed_by', 'INTEGER');
   addColumn('triage', 'routed_at', 'TEXT');
+  // v1.2.0: the EMT's yes/no medical confirmations (JSON), and whether the EMT
+  // has signed the patient off from the vitals station into a clinical queue.
+  addColumn('triage', 'emt_review', "TEXT NOT NULL DEFAULT '{}'");
+  addColumn('triage', 'emt_signed_off', 'INTEGER NOT NULL DEFAULT 0');
 
   // v1.1.0: cloud sync. Each syncable row carries a stable uid (cloud identity),
   // an updated_at revision, and synced_rev (the revision last pushed/applied —
@@ -616,9 +620,14 @@ function createPatient(actor, data) {
   const id = info.lastInsertRowid;
 
   // Auto-create an empty triage row so the patient appears in the queue.
+  // v1.2.0: the patient chooses dentist or hygienist at check-in (their intended
+  // provider). We store that choice on the triage row now, but the patient stays
+  // status 'checked_in' — they appear ONLY in the EMT/nurse queue until the EMT
+  // records vitals and signs them off into the chosen clinical queue.
+  const intendedRoute = ['dentist', 'hygienist'].includes(d.route) ? d.route : null;
   db.prepare(
-    `INSERT INTO triage (patient_id, complaint, status) VALUES (?,?, 'waiting')`
-  ).run(id, (d.dental_history && d.dental_history.reason) || null);
+    `INSERT INTO triage (patient_id, complaint, status, route) VALUES (?,?, 'waiting', ?)`
+  ).run(id, (d.dental_history && d.dental_history.reason) || null, intendedRoute);
 
   // Persist consents
   (d.consents || []).forEach((c) => addConsent(id, c));
@@ -732,7 +741,7 @@ function getPatient(id) {
   if (!p) return null;
   p.consents = db.prepare('SELECT * FROM consents WHERE patient_id = ? ORDER BY signed_at').all(id);
   const tr = db.prepare('SELECT * FROM triage WHERE patient_id = ?').get(id);
-  p.triage = tr ? { ...tr, flags: JSON.parse(tr.flags), checklist: JSON.parse(tr.checklist), teeth: JSON.parse(tr.teeth), teeth_notes: JSON.parse(tr.teeth_notes || '{}') } : null;
+  p.triage = tr ? { ...tr, flags: JSON.parse(tr.flags), checklist: JSON.parse(tr.checklist), teeth: JSON.parse(tr.teeth), teeth_notes: JSON.parse(tr.teeth_notes || '{}'), emt_review: JSON.parse(tr.emt_review || '{}'), emt_signed_off: !!tr.emt_signed_off } : null;
   const t = db.prepare('SELECT * FROM treatments WHERE patient_id = ?').get(id);
   p.treatment = t
     ? {
@@ -783,6 +792,11 @@ function saveVitals(actor, patientId, data) {
       .run(sys, dia, hr, actor ? actor.id : null, now(), patientId);
     if (hasBT) db.prepare('UPDATE triage SET blood_thinner=?, blood_thinner_detail=? WHERE patient_id=?').run(bt, btd, patientId);
   }
+  // v1.2.0: the EMT's yes/no medical confirmations, stored only when provided so
+  // a plain vitals save never wipes them. Attaches to the patient record + PDFs.
+  if (Object.prototype.hasOwnProperty.call(d, 'emt_review') && d.emt_review && typeof d.emt_review === 'object') {
+    db.prepare('UPDATE triage SET emt_review=? WHERE patient_id=?').run(JSON.stringify(d.emt_review), patientId);
+  }
   audit(actor, 'vitals', 'patient', patientId, `${sys == null ? '—' : sys}/${dia == null ? '—' : dia} HR ${hr == null ? '—' : hr}${hasBT ? ' · thinner:' + (bt || 'no') : ''}`);
   return getPatient(patientId);
 }
@@ -799,10 +813,13 @@ function routePatient(actor, patientId, route) {
     db.prepare(`INSERT INTO triage (patient_id, status, route, routed_by, routed_at)
                 VALUES (?, 'ready', ?, ?, ?)`).run(patientId, route, actor ? actor.id : null, now());
   } else {
-    db.prepare(`UPDATE triage SET route=?, routed_by=?, routed_at=?,
+    db.prepare(`UPDATE triage SET route=?, routed_by=?, routed_at=?, emt_signed_off=1,
                   status = CASE WHEN status IN ('completed','in_treatment') THEN status ELSE 'ready' END
                 WHERE patient_id=?`).run(route, actor ? actor.id : null, now(), patientId);
   }
+  // Routing IS the EMT sign-off: it moves the patient out of the vitals queue and
+  // into the chosen clinical queue (checked_in -> triaged). Re-routing later
+  // (dentist <-> hygienist transfer) keeps whatever clinical status they're in.
   db.prepare("UPDATE patients SET status='triaged', updated_at=? WHERE id=? AND status='checked_in'").run(now(), patientId);
   audit(actor, 'route', 'patient', patientId, route);
   return getPatient(patientId);
@@ -885,7 +902,7 @@ function listPatients({ eventId, search } = {}) {
   sql += ' ORDER BY p.created_at DESC';
   return db.prepare(sql).all(...args).map((p) => {
     const pt = rowToPatient(p);
-    const tr = db.prepare('SELECT status, complaint, flags, assigned_to, route, bp_systolic, bp_diastolic, heart_rate, blood_thinner FROM triage WHERE patient_id = ?').get(p.id);
+    const tr = db.prepare('SELECT status, complaint, flags, assigned_to, route, bp_systolic, bp_diastolic, heart_rate, blood_thinner, emt_signed_off FROM triage WHERE patient_id = ?').get(p.id);
     return {
       id: pt.id,
       first_name: pt.first_name,
@@ -898,12 +915,14 @@ function listPatients({ eventId, search } = {}) {
       created_at: pt.created_at,
       event_id: p.event_id,
       event_name: p.event_name,
+      email: pt.email || (pt.demographics && pt.demographics.email) || null,
       triage_status: tr ? tr.status : null,
       complaint: tr ? tr.complaint : null,
       flags: tr ? JSON.parse(tr.flags) : [],
       assigned_to: tr ? tr.assigned_to : null,
       route: tr ? tr.route : null,
       has_vitals: !!(tr && (tr.bp_systolic != null || tr.heart_rate != null)),
+      emt_signed_off: !!(tr && tr.emt_signed_off),
       blood_thinner: tr ? tr.blood_thinner : null,
     };
   });
@@ -1127,7 +1146,7 @@ const APPLY_ORDER = ['event', 'patient', 'triage', 'treatment', 'consent', 'xray
 const SYNC_COLS = {
   event: ['name', 'location', 'start_date', 'end_date', 'languages', 'active', 'created_at'],
   patient: ['language', 'first_name', 'last_name', 'dob', 'gender', 'phone', 'email', 'demographics', 'medical_history', 'dental_history', 'status', 'created_at', 'dismissed_at', 'dismissed_by_name'],
-  triage: ['complaint', 'flags', 'checklist', 'teeth', 'teeth_notes', 'notes', 'xray_count', 'xray_station', 'assigned_to', 'status', 'triage_signature', 'triage_signer_name', 'triaged_at', 'bp_systolic', 'bp_diastolic', 'heart_rate', 'vitals_at', 'blood_thinner', 'blood_thinner_detail', 'route', 'routed_at', 'triaged_by_name', 'vitals_by_name', 'routed_by_name'],
+  triage: ['complaint', 'flags', 'checklist', 'teeth', 'teeth_notes', 'notes', 'xray_count', 'xray_station', 'assigned_to', 'status', 'triage_signature', 'triage_signer_name', 'triaged_at', 'bp_systolic', 'bp_diastolic', 'heart_rate', 'vitals_at', 'blood_thinner', 'blood_thinner_detail', 'route', 'routed_at', 'emt_review', 'emt_signed_off', 'triaged_by_name', 'vitals_by_name', 'routed_by_name'],
   treatment: ['fillings', 'extractions', 'cleaning', 'anesthetic', 'other_procedures', 'clinical_notes', 'provider_name', 'provider_signature', 'locked', 'completed_at', 'completed_by_name'],
   consent: ['type', 'version', 'language', 'signer_name', 'relationship', 'signature_png', 'signed_at', 'tooth_numbers', 'amended_by', 'amended_at'],
   xray: ['station', 'image_png', 'note', 'created_at'],

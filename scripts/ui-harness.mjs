@@ -230,6 +230,15 @@ async function main() {
   clickText('Next');
   await tick();
 
+  // v1.2.0 Step: provider choice — "Who would you like to see today?" (required).
+  const routeCards = $all('.route-card, .kiosk-body .lang-card');
+  log(routeCards.length >= 2, 'provider-choice step: dentist/hygienist options present (' + routeCards.length + ')');
+  const dentistCard = routeCards.find((c) => /Dentist|Dentista|Стоматолог/i.test(c.textContent)) || routeCards[0];
+  if (dentistCard) dentistCard.click();
+  await tick();
+  clickText('Next');
+  await tick();
+
   // Now should be Review (may_need_extraction was not 'yes')
   const onReview = /Sign|Review|Firmar|Send|Submit/i.test($('.kiosk-step-label') ? $('.kiosk-step-label').textContent : '');
   log(!!$('.review') || onReview, 'reached review/sign step');
@@ -251,6 +260,10 @@ async function main() {
     log((full.medical_history.conditions || []).includes('diabetes'), 'medical conditions captured: ' + JSON.stringify(full.medical_history.conditions));
     log(!!full.dental_history.reason, 'dental history captured: reason=' + full.dental_history.reason);
     log((full.consents || []).length > 0, 'consent captured: ' + (full.consents || []).length + ' consent(s)');
+    // v1.2.0: patient chose a provider at check-in; vitals are NOT collected here.
+    log(full.triage && full.triage.route === 'dentist', 'A4: check-in provider choice stored (route=' + (full.triage && full.triage.route) + ')');
+    log(full.status === 'checked_in', 'B1: new check-in stays checked_in (EMT queue only)');
+    log(full.medical_history.bp_systolic == null, 'A2: vitals NOT collected at patient check-in');
 
     // ---- Render the clinician views and check history appears ----
     currentUser = db.login('admin', 'admin');

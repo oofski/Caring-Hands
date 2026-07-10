@@ -7,7 +7,7 @@ import { Odontogram } from '../components/odontogram.js';
 import { patientHistoryCards, incompleteBanner } from '../components/patientHistory.js';
 import { store } from '../store.js';
 import { statusPill } from './dashboard.js';
-import { bloodThinnerFlags, bloodThinnerStatus } from '../medFlags.js';
+import { bloodThinnerStatus } from '../medFlags.js';
 
 const QUADRANTS = [['UR', 'UR'], ['UL', 'UL'], ['LR', 'LR'], ['LL', 'LL']];
 const fmtWhen = (ts) => { if (!ts) return ''; const d = new Date(ts); return isNaN(d) ? String(ts) : d.toLocaleString(); };
@@ -68,6 +68,12 @@ export function renderProvider(ctx, params = {}) {
     const tr = p.triage || {};
     const tx = p.treatment || {};
     const locked = tx.locked;
+    // D2: shared tooth-number datalist so providers can quick-pick a tooth
+    // (permanent 1–32 + primary A–T) instead of typing it.
+    const TEETH_LIST_ID = 'tooth-quickpick-list';
+    const teethDatalist = el('datalist', { id: TEETH_LIST_ID },
+      [...Array.from({ length: 32 }, (_, i) => String(i + 1)), ...'ABCDEFGHIJKLMNOPQRST'.split('')]
+        .map((n) => el('option', { value: n })));
     let xrays = await api.listXrays(id);
     const priorVisits = await api.patientHistory(id).catch(() => []);
 
@@ -76,8 +82,10 @@ export function renderProvider(ctx, params = {}) {
     const flagAllergies = allergies().filter((a) => (p.medical_history.allergies || []).includes(a.key)).map((a) => `Allergy: ${a.label}`);
     if (p.medical_history.pregnancy === 'yes') flagConds.push('Pregnant');
     const flags = [...flagConds, ...flagAllergies];
-    // F12: blood-thinner / anticoagulant detection — surfaced as a prominent danger banner.
-    const thinnerFlags = bloodThinnerFlags(p.medical_history);
+    // F12: blood-thinner detection — combine the EMT-confirmed triage answer
+    // (triage.blood_thinner) with medication auto-detection so the danger banner
+    // reflects both, not just the medication list (v1.2 bugfix).
+    const thinnerStatus = bloodThinnerStatus(p);
 
     /* ---------- EMT vitals + routing strip (read-only) ---------- */
     // Compact one-line summary of what the EMT station recorded before sending
@@ -149,10 +157,29 @@ export function renderProvider(ctx, params = {}) {
     }
     function setRowNote(row, note) { if (row._setNote) row._setNote(note); }
 
+    // D2: a compact tooth field — datalist autocomplete + tap-friendly +/- steppers,
+    // with manual typing preserved. onChange fires on every value change.
+    function toothField(value, onChange) {
+      const cb = typeof onChange === 'function' ? onChange : () => {};
+      const inp = el('input', { class: 'input input--sm num', list: TEETH_LIST_ID, inputmode: 'numeric', placeholder: 'Tooth #', value: value || '', onInput: () => cb() });
+      if (locked) { inp.disabled = true; return { node: inp, input: inp }; }
+      const step = (delta) => {
+        const cur = parseInt(inp.value, 10);
+        let next = isNaN(cur) ? (delta > 0 ? 1 : 32) : cur + delta;
+        next = Math.max(1, Math.min(32, next));
+        inp.value = String(next);
+        cb();
+      };
+      const stepBtn = (label, delta, title) => el('button', { type: 'button', class: 'btn btn--soft btn--sm', style: 'min-width:28px;padding:0', title, onClick: () => step(delta) }, [label]);
+      const node = el('div', { style: 'display:flex;gap:4px;align-items:center' }, [inp, stepBtn('−', -1, 'Previous tooth'), stepBtn('+', 1, 'Next tooth')]);
+      return { node, input: inp };
+    }
+
     /* ---------- Fillings ---------- */
     const fillingRows = el('div', { class: 'tx-rows' });
     function addFilling(f = {}, auto = false) {
-      const tooth = el('input', { class: 'input input--sm num', placeholder: 'Tooth #', value: f.tooth || '', onInput: () => refreshMarks() });
+      const toothF = toothField(f.tooth, () => refreshMarks());
+      const tooth = toothF.input;
       const surf = new Set((f.surfaces || []).map(String));
       const surfWrap = el('div', { class: 'surface-pills' }, ['1', '2', '3', '4'].map((n) =>
         el('button', { type: 'button', class: 'surf-chip' + (surf.has(n) ? ' surf-chip--on' : ''), onClick: (e) => { if (locked) return; if (surf.has(n)) surf.delete(n); else surf.add(n); e.currentTarget.classList.toggle('surf-chip--on'); } }, [n])));
@@ -160,8 +187,8 @@ export function renderProvider(ctx, params = {}) {
       const antBtn = toggleChip('Ant', ant, (on) => { ant = on; }, locked);
       const postBtn = toggleChip('Post', post, (on) => { post = on; }, locked);
       const noteChip = el('span', { class: 'tx-note' + (f.note ? '' : ' hidden') }, [f.note || '']);
-      const row = el('div', { class: 'filling-row' }, [
-        el('label', { class: 'field' }, [el('span', { class: 'field-label' }, ['Tooth #']), tooth]),
+      const row = el('div', { class: 'filling-row', style: 'grid-template-columns:160px auto auto auto' }, [
+        el('label', { class: 'field' }, [el('span', { class: 'field-label' }, ['Tooth #']), toothF.node]),
         el('label', { class: 'field' }, [el('span', { class: 'field-label' }, ['Surfaces']), surfWrap]),
         el('div', { class: 'antpost' }, [antBtn, postBtn]),
         noteChip,
@@ -179,13 +206,14 @@ export function renderProvider(ctx, params = {}) {
     /* ---------- Extractions ---------- */
     const extractRows = el('div', { class: 'tx-rows' });
     function addExtraction(x = {}, auto = false) {
-      const tooth = el('input', { class: 'input input--sm num', placeholder: 'Tooth #', value: x.tooth || '', onInput: () => refreshMarks() });
+      const toothF = toothField(x.tooth, () => refreshMarks());
+      const tooth = toothF.input;
       const types = new Set(x.types || []);
       const typeChips = EXTRACTION_TYPES.map(([k, label]) =>
         toggleChip(label, types.has(k), (on) => { if (on) types.add(k); else types.delete(k); }, locked));
       const noteChip = el('span', { class: 'tx-note' + (x.note ? '' : ' hidden') }, [x.note || '']);
       const row = el('div', { class: 'ext-row' }, [
-        el('label', { class: 'field', style: 'margin:0' }, [el('span', { class: 'field-label' }, ['Tooth #']), tooth]),
+        el('label', { class: 'field', style: 'margin:0' }, [el('span', { class: 'field-label' }, ['Tooth #']), toothF.node]),
         ...typeChips,
         noteChip,
         locked ? el('span') : iconBtn('x', () => { row.remove(); refreshMarks(); }),
@@ -199,7 +227,7 @@ export function renderProvider(ctx, params = {}) {
     (tx.extractions || []).filter((x) => !x.other).forEach((x) => addExtraction(x));
     const otherExisting = (tx.extractions || []).find((x) => x.other) || {};
     const extOther = el('input', { class: 'input', placeholder: 'Other extraction (describe)', value: otherExisting.other || '' });
-    const extOtherTooth = el('input', { class: 'input input--sm num', placeholder: 'Tooth #', value: otherExisting.tooth || '' });
+    const extOtherTooth = el('input', { class: 'input input--sm num', list: TEETH_LIST_ID, inputmode: 'numeric', placeholder: 'Tooth #', value: otherExisting.tooth || '' });
 
     /* ---------- Cleaning ---------- */
     const cleanState = { ...(tx.cleaning || {}) };
@@ -224,31 +252,69 @@ export function renderProvider(ctx, params = {}) {
     ]);
     renderCleanTeeth();
 
-    /* ---------- Anesthetic ---------- */
-    const an = tx.anesthetic && !Array.isArray(tx.anesthetic) ? tx.anesthetic : legacyAnesthetic(tx.anesthetic);
-    const anesAgents = [
-      { key: 'lidocaine', label: 'Lidocaine 2%' },
-      { key: 'articaine', label: 'Articaine 4%' },
-      { key: 'other', label: 'Other agent' },
-      { key: 'supplemental', label: 'Supplemental' },
+    /* ---------- Anesthetic (D4): discrete per-tooth administrations ---------- */
+    // Each administration records agent, carpules, location and a TOOTH NUMBER, so
+    // multiple entries are captured (e.g. #14 1.5 carps buccal; #30 1 carp lingual).
+    // Saved as an ARRAY (see collectTreatment); legacy object-keyed data is parsed
+    // on load so prior records pre-fill correctly.
+    const ANES_AGENTS = [
+      ['lidocaine', 'Lidocaine 2%'],
+      ['articaine', 'Articaine 4%'],
+      ['other', 'Other'],
     ];
-    const anesInputs = {};
-    const anesGrid = el('div', {}, anesAgents.map((a) => {
-      const cur = an[a.key] || {};
-      const carps = el('input', { class: 'input input--sm num', type: 'number', min: '0', step: '0.5', placeholder: 'Carps', value: cur.carps || '' });
-      const loc = el('input', { class: 'input input--sm', placeholder: 'Location', value: cur.location || '' });
-      let nameInput = null;
-      let agentCell;
-      if (a.key === 'other') {
-        nameInput = el('input', { class: 'input input--sm', placeholder: 'Name agent', value: cur.name || '' });
-        agentCell = el('div', { class: 'anes-agent', style: 'display:flex;gap:6px;align-items:center' }, ['Other:', nameInput]);
-      } else {
-        agentCell = el('span', { class: 'anes-agent' }, [a.label]);
+    const anesRows = el('div', { class: 'tx-rows' });
+    function anesFromStored(stored) {
+      const known = (k) => ['lidocaine', 'articaine', 'other'].includes(k);
+      if (Array.isArray(stored)) {
+        return stored.map((a) => ({
+          agent: known(a.agent) ? a.agent : 'other',
+          carps: a.carps != null ? String(a.carps) : '',
+          location: a.location || '',
+          tooth: a.tooth != null ? String(a.tooth) : '',
+          name: a.name || (known(a.agent) ? '' : (a.agent || '')),
+        }));
       }
-      if (locked) { carps.disabled = true; loc.disabled = true; if (nameInput) nameInput.disabled = true; }
-      anesInputs[a.key] = { carps, loc, nameInput };
-      return el('div', { class: 'anes-grid' }, [agentCell, carps, loc]);
-    }));
+      // Legacy object shape keyed by agent: { lidocaine:{carps,location,tooth?}, other:{name,...} }.
+      return Object.entries(stored || {}).map(([k, v]) => {
+        v = v || {};
+        return {
+          agent: known(k) ? k : 'other',
+          carps: v.carps != null ? String(v.carps) : '',
+          location: v.location || '',
+          tooth: v.tooth != null ? String(v.tooth) : '',
+          name: v.name || (known(k) ? '' : k),
+        };
+      });
+    }
+    function addAnes(a = {}) {
+      const agent = ['lidocaine', 'articaine', 'other'].includes(a.agent) ? a.agent : 'lidocaine';
+      const agentSel = el('select', { class: 'input input--sm' }, ANES_AGENTS.map(([k, l]) =>
+        el('option', { value: k, selected: k === agent }, [l])));
+      const nameInput = el('input', { class: 'input input--sm', placeholder: 'Agent name', value: a.name || '', style: agent === 'other' ? '' : 'display:none' });
+      agentSel.addEventListener('change', () => { nameInput.style.display = agentSel.value === 'other' ? '' : 'none'; });
+      const carps = el('input', { class: 'input input--sm num', type: 'number', min: '0', step: '0.5', placeholder: 'Carps', value: a.carps || '' });
+      const toothF = toothField(a.tooth, null);
+      const loc = el('input', { class: 'input input--sm', placeholder: 'e.g. buccal', value: a.location || '' });
+      if (locked) { agentSel.disabled = true; nameInput.disabled = true; carps.disabled = true; loc.disabled = true; }
+      const fieldCol = (label, node) => el('label', { class: 'field', style: 'margin:0' }, [el('span', { class: 'field-label' }, [label]), node]);
+      const row = el('div', { class: 'anes-admin-row', style: 'display:grid;grid-template-columns:1.3fr 76px 168px 1.1fr auto;gap:8px;align-items:end;padding:8px;border:var(--border-line);border-radius:var(--radius-sm);background:var(--surface);margin-bottom:7px' }, [
+        el('label', { class: 'field', style: 'margin:0' }, [
+          el('span', { class: 'field-label' }, ['Agent']),
+          el('div', { style: 'display:flex;flex-direction:column;gap:4px' }, [agentSel, nameInput]),
+        ]),
+        fieldCol('Carps', carps),
+        fieldCol('Tooth #', toothF.node),
+        fieldCol('Location', loc),
+        locked ? el('span') : iconBtn('x', () => { row.remove(); }),
+      ]);
+      row._get = () => {
+        const ag = agentSel.value;
+        return { agent: ag, carps: carps.value.trim(), location: loc.value.trim(), tooth: toothF.input.value.trim(), name: ag === 'other' ? nameInput.value.trim() : '' };
+      };
+      anesRows.append(row);
+    }
+    anesFromStored(tx.anesthetic).forEach((a) => addAnes(a));
+    if (!anesRows.children.length && !locked) addAnes({ agent: 'lidocaine' });
 
     /* ---------- Notes ---------- */
     const otherProc = textarea(tx.other_procedures || '', 'Other procedure', 2, locked);
@@ -268,29 +334,48 @@ export function renderProvider(ctx, params = {}) {
         gallery.append(card);
       });
       if (!locked) {
-        gallery.append(el('div', { class: 'xray-add', onClick: () => fileInput.click() }, [icon('upload', { size: 20 }), el('span', {}, ['Add x-ray'])]));
+        gallery.append(el('div', { class: 'xray-add', title: 'Capture or attach an x-ray image', onClick: () => fileInput.click() }, [
+          icon('upload', { size: 20 }),
+          el('span', {}, ['Capture / Attach X-ray']),
+          el('span', { class: 'subtle', style: 'font-size:var(--fs-2xs);font-weight:var(--fw-medium)' }, ['or drag an image here']),
+        ]));
       }
       if (!xrays.length && locked) gallery.append(el('span', { class: 'subtle' }, ['No x-rays on file.']));
       xrayCountEl.lastChild.textContent = String(xrays.length);
     }
-    fileInput.addEventListener('change', async () => {
-      const files = Array.from(fileInput.files || []);
+    // E1/E2: single robust attach path shared by the file picker AND drag-and-drop.
+    async function addXrayFiles(fileList) {
+      const files = Array.from(fileList || []).filter((f) => f && (!f.type || f.type.startsWith('image/')));
+      if (!files.length) { toast('No image files to attach', 'info'); return; }
+      let added = 0;
       for (const file of files) {
         await new Promise((res) => {
           const reader = new FileReader();
           reader.onload = async () => {
-            try { await api.addXray({ patientId: id, station: station.input ? station.input.value.trim() : '', image_png: reader.result, note: '' }); }
+            try { await api.addXray({ patientId: id, station: station.input ? station.input.value.trim() : '', image_png: reader.result, note: '' }); added++; }
             catch (e) { toast(e.message, 'error'); }
             res();
           };
+          reader.onerror = () => res();
           reader.readAsDataURL(file);
         });
       }
       xrays = await api.listXrays(id);
       renderGallery();
-      toast(`${files.length} x-ray(s) added`, 'success');
-      fileInput.value = '';
-    });
+      if (added) toast(`${added} x-ray(s) added`, 'success');
+    }
+    fileInput.addEventListener('change', async () => { await addXrayFiles(fileInput.files); fileInput.value = ''; });
+    // Drag-and-drop an image file straight onto the gallery.
+    if (!locked) {
+      const setDrag = (on) => { gallery.style.outline = on ? '2px dashed var(--accent)' : ''; gallery.style.outlineOffset = on ? '4px' : ''; };
+      gallery.addEventListener('dragover', (e) => { e.preventDefault(); if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy'; setDrag(true); });
+      gallery.addEventListener('dragleave', (e) => { if (e.target === gallery) setDrag(false); });
+      gallery.addEventListener('drop', async (e) => {
+        e.preventDefault(); setDrag(false);
+        const dropped = e.dataTransfer ? e.dataTransfer.files : null;
+        if (dropped && dropped.length) await addXrayFiles(dropped);
+      });
+    }
     async function delXray(xid) {
       const ok = await modal({ title: 'Delete x-ray?', body: 'This permanently removes the image from the record.', confirmText: 'Delete', cancelText: 'Cancel', danger: true });
       if (!ok) return;
@@ -394,12 +479,11 @@ export function renderProvider(ctx, params = {}) {
     function collectTreatment() {
       const extractions = Array.from(extractRows.children).map((r) => r._get()).filter((x) => x.tooth);
       if (extOther.value.trim() || extOtherTooth.value.trim()) extractions.push({ tooth: extOtherTooth.value.trim(), types: [], other: extOther.value.trim() });
-      const anesthetic = {};
-      Object.entries(anesInputs).forEach(([k, v]) => {
-        const carps = v.carps.value.trim(), location = v.loc.value.trim();
-        const name = v.nameInput ? v.nameInput.value.trim() : '';
-        if (carps || location || name) anesthetic[k] = { carps, location, ...(name ? { name } : {}) };
-      });
+      // D4: anesthetic saved as an ARRAY of per-administration entries.
+      const anesthetic = Array.from(anesRows.children)
+        .map((r) => r._get())
+        .filter((a) => a.carps || a.location || a.tooth || a.name)
+        .map((a) => ({ agent: a.agent, carps: a.carps, location: a.location, tooth: a.tooth, ...(a.name ? { name: a.name } : {}) }));
       return {
         fillings: Array.from(fillingRows.children).map((r) => r._get()).filter((x) => x.tooth),
         extractions,
@@ -446,6 +530,18 @@ export function renderProvider(ctx, params = {}) {
       } catch (e) { toast(e.message, 'error'); }
     }
 
+    // B3: a patient sent to the dentist who only needs a cleaning can be handed
+    // to the hygienist queue without leaving this screen.
+    async function transferToHygienist() {
+      const ok = await modal({ title: 'Transfer to hygienist?', body: 'This moves the patient to the hygienist queue for cleaning. Continue?', confirmText: 'Transfer', cancelText: 'Cancel' });
+      if (!ok) return;
+      try {
+        await api.routePatient(id, 'hygienist');
+        toast('Sent to the hygienist queue', 'success');
+        ctx.navigate('provider');
+      } catch (e) { toast(e.message, 'error'); }
+    }
+
     /* ---------- render ---------- */
     const panel = (ic, title, ...kids) => el('div', { class: 'card' }, [
       el('div', { class: 'card-title' }, [icon(ic, { size: 15 }), title]), ...kids,
@@ -460,7 +556,10 @@ export function renderProvider(ctx, params = {}) {
           el('h1', {}, [`${p.first_name} ${p.last_name}`]),
           el('p', { class: 'view-sub' }, [`${p.age != null ? p.age + ' yrs · ' : ''}${p.gender || ''} · ${p.language === 'es' ? 'Español' : 'English'} · Complaint: ${(tr.complaint) || p.dental_history.reason || '—'}`]),
         ]),
-        locked ? el('span', { class: 'pill pill--neutral' }, [icon('lock', { size: 12 }), 'Locked']) : statusPill(p.status),
+        el('div', { style: 'display:flex;align-items:center;gap:var(--space-3)' }, [
+          locked ? null : softBtn('sparkle', 'Transfer to hygienist', transferToHygienist),
+          locked ? el('span', { class: 'pill pill--neutral' }, [icon('lock', { size: 12 }), 'Locked']) : statusPill(p.status),
+        ]),
       ]),
 
       incompleteBanner(p, {
@@ -468,13 +567,15 @@ export function renderProvider(ctx, params = {}) {
         onDelete: async () => { try { await api.deletePatient(id); toast('Empty record deleted', 'success'); ctx.navigate('provider'); } catch (e) { toast(e.message, 'error'); } },
         onNewCheckin: () => ctx.navigate('kiosk'),
       }),
-      // F12: blood thinners get their own prominent danger banner above other flags.
-      thinnerFlags.length ? el('div', { class: 'banner banner--alert' }, [
+      // F12: blood thinners get their own prominent danger banner above other
+      // flags. Driven by the EMT-confirmed answer combined with medication
+      // detection (bloodThinnerStatus), not the medication list alone.
+      thinnerStatus.onThinner ? el('div', { class: 'banner banner--alert' }, [
         icon('alert', { size: 16 }),
         el('div', {}, [
           el('strong', {}, ['BLOOD THINNER — confirm before extraction']),
-          el('div', { class: 'chip-row', style: 'margin-top:6px' }, thinnerFlags.map((f) =>
-            el('span', { class: 'pill pill--danger' }, [icon('alert', { size: 12 }), f.replace(/^Blood thinner:\s*/, '')]))),
+          thinnerStatus.names.length ? el('div', { class: 'chip-row', style: 'margin-top:6px' }, thinnerStatus.names.map((n) =>
+            el('span', { class: 'pill pill--danger' }, [icon('alert', { size: 12 }), n]))) : null,
         ]),
       ]) : null,
       // EMT station handoff — vitals, blood-thinner answer, who routed the patient.
@@ -484,6 +585,9 @@ export function renderProvider(ctx, params = {}) {
 
       // F20: accountability — who triaged / took vitals / signed off, with timestamps.
       accountabilityCard(p, tr, tx),
+
+      // D2: shared tooth-number quick-pick source (invisible; referenced by inputs).
+      teethDatalist,
 
       // Full patient history — collapsible reference data, CLOSED by default to
       // keep actionable treatment leading the chart.
@@ -523,7 +627,10 @@ export function renderProvider(ctx, params = {}) {
         ])),
 
       // Anesthetic supports the extractions/fillings above — kept adjacent.
-      panel('syringe', 'Anesthetic administered', anesGrid),
+      panel('syringe', 'Anesthetic administered',
+        el('p', { class: 'subtle small', style: 'margin:0 0 8px' }, ['Record each administration — agent, carpules, tooth and location. Add a row per site (e.g. #14 buccal, #30 lingual).']),
+        anesRows,
+        locked ? null : softBtn('plus', 'Add anesthetic', () => addAnes({ agent: 'lidocaine' }))),
 
       // DEMOTED: cleaning belongs to the hygienist. Rendered inside a lightly
       // styled <details> that is CLOSED by default, so it never competes with
@@ -540,8 +647,12 @@ export function renderProvider(ctx, params = {}) {
         el('div', { style: 'padding:0 var(--space-4) var(--space-4)' }, [bulkCleanControl(), cleaning]),
       ]),
 
-      // X-rays — provider can add/view (user priority)
-      panel('xray', 'X-rays', gallery, fileInput),
+      // X-rays — provider can add/view (user priority). E1/E2: prominent capture
+      // target with click OR drag-and-drop; attachments show immediately below and
+      // are included in the summary PDF.
+      panel('xray', 'X-rays',
+        el('p', { class: 'subtle small', style: 'margin:0 0 8px' }, ['Capture or attach x-ray images — click the tile or drag image files onto the gallery. Attached x-rays appear below immediately and are included in the summary PDF.']),
+        gallery, fileInput),
 
       panel('clipboard', 'Notes',
         el('label', { class: 'field' }, [el('span', { class: 'field-label' }, ['Other procedure']), otherProc.node]),
@@ -647,16 +758,6 @@ function primaryBtn(name, label, onClick) { return el('button', { class: 'btn bt
 function backBtn(onClick) { return el('button', { class: 'btn btn--ghost btn--sm', onClick }, [icon('back', { size: 15 }), t('common.back')]); }
 function chevronBtn(label, onClick) { return el('button', { class: 'btn btn--primary btn--sm', onClick }, [label, icon('chevron', { size: 15 })]); }
 function flagDot(n) { return el('span', { class: 'flag-dot' }, [icon('flag', { size: 13 }), String(n)]); }
-
-function legacyAnesthetic(arr) {
-  // Convert old array-of-rows shape into the keyed shape.
-  const out = {};
-  (arr || []).forEach((a) => {
-    const key = /lido/i.test(a.agent) ? 'lidocaine' : /artic/i.test(a.agent) ? 'articaine' : 'other';
-    out[key] = { carps: a.carps, location: a.location };
-  });
-  return out;
-}
 
 // Seed the odontogram from existing treatment + triage so the mouth reflects
 // prior work and per-tooth notes round-trip.

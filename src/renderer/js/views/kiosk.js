@@ -23,9 +23,13 @@ export function renderKiosk(ctx) {
   function computeSteps() {
     const list = [stepDemographics, stepMedical, stepDental, stepGeneralConsent];
     if (data.dental_history.may_need_extraction === 'yes') list.push(stepSurgeryConsent);
+    list.push(stepRoute);
     list.push(stepReview);
     return list;
   }
+
+  // Localised string helper: pick the current language, fall back to English.
+  const L = (map) => map[getLang()] || map.en;
 
   // Pre-start language gate: the patient picks a language BEFORE any form chrome
   // renders, so the whole wizard appears in their language (no English flash).
@@ -171,44 +175,81 @@ export function renderKiosk(ctx) {
 
   function stepMedical() {
     const m = data.medical_history;
-
-    // F5/F6: self-reported vitals at the top of the medical step (parsed to ints on collect).
-    const sys = textField(t('intake.bpSys'), { value: m.bp_systolic != null ? String(m.bp_systolic) : '', type: 'number' });
-    const dia = textField(t('intake.bpDia'), { value: m.bp_diastolic != null ? String(m.bp_diastolic) : '', type: 'number' });
-    const hr = textField(t('intake.hr'), { value: m.heart_rate != null ? String(m.heart_rate) : '', type: 'number' });
-    const vitalsBlock = el('div', { class: 'field' }, [
-      el('span', { class: 'field-label' }, [t('intake.vitalsTitle')]),
-      el('div', { class: 'form-grid' }, [sys.node, dia.node, hr.node]),
-    ]);
+    // A2: vitals are no longer collected at check-in — the EMT records them.
 
     const underTx = yesNo(t('intake.underTreatment'), { value: m.under_treatment, yesText: t('common.yes'), noText: t('common.no') });
     const hosp = yesNo(t('intake.hospitalized'), { value: m.hospitalized, yesText: t('common.yes'), noText: t('common.no') });
     const tobacco = yesNo(t('intake.tobacco'), { value: m.tobacco, yesText: t('common.yes'), noText: t('common.no') });
     const pregnancy = yesNo(t('intake.pregnancy'), { value: m.pregnancy, yesText: t('common.yes'), noText: t('common.no') });
 
-    // F7: allergy chips + an "other" chip that reveals a free-text field.
-    const allergyGrid = chipGrid(t('intake.allergiesTitle'),
-      [...allergies().map((a) => ({ key: a.key, label: a.label, flag: true })), { key: 'other', label: t('common.other') }],
+    const noneLabel = L({ en: 'None of the above', es: 'Ninguna de las anteriores', ru: 'Ничего из перечисленного' });
+
+    // A3: makes "reviewed but nothing to report" explicit. A mutually-exclusive
+    // 'none' chip: choosing it clears the real chips, and picking any real chip
+    // clears 'none'. Reflected in the *_none flags on collect.
+    function wireNone(gridComp, items, noneKey) {
+      const btns = Array.from(gridComp.node.querySelectorAll('.chip-select'));
+      const byKey = new Map(items.map((it, i) => [it.key, btns[i]]));
+      const apply = (desired) => {
+        gridComp.set(desired);
+        const want = new Set(desired);
+        for (const [key, btn] of byKey) btn.classList.toggle('chip-select--on', want.has(key));
+      };
+      gridComp.node.addEventListener('click', (e) => {
+        const btn = e.target.closest('.chip-select');
+        if (!btn) return;
+        const cur = new Set(gridComp.get());
+        if (btn === byKey.get(noneKey)) {
+          if (cur.has(noneKey)) apply([noneKey]); // just picked 'none' → clear the rest
+        } else if (cur.has(noneKey)) {
+          cur.delete(noneKey); // picked a real chip → drop 'none'
+          apply(Array.from(cur));
+        }
+      });
+    }
+
+    // F7 + A3: allergy chips + an "other" chip (free-text) + a "None of the above" chip.
+    const allergyItems = [
+      ...allergies().map((a) => ({ key: a.key, label: a.label, flag: true })),
+      { key: 'other', label: t('common.other') },
+      { key: 'none', label: noneLabel },
+    ];
+    const allergyGrid = chipGrid(t('intake.allergiesTitle'), allergyItems,
       { selected: m.allergies || [], hint: t('intake.allergiesHint') });
     const allergyOther = textField(t('intake.allergyOther'), { value: m.allergies_other });
     const allergyOtherWrap = el('div', { class: 'span-2' }, [allergyOther.node]);
     const syncAllergyOther = () => { allergyOtherWrap.style.display = allergyGrid.get().includes('other') ? '' : 'none'; };
+    wireNone(allergyGrid, allergyItems, 'none');
     allergyGrid.node.addEventListener('click', syncAllergyOther);
     syncAllergyOther();
 
-    // F8: condition chips + an "other" chip that reveals a free-text field.
-    const condGrid = chipGrid(t('intake.conditionsTitle'),
-      [...conditions().map((c) => ({ key: c.key, label: c.label, flag: c.flag })), { key: 'other', label: t('common.other') }],
+    // F8 + A3: condition chips + an "other" chip (free-text) + a "None of the above" chip.
+    const condItems = [
+      ...conditions().map((c) => ({ key: c.key, label: c.label, flag: c.flag })),
+      { key: 'other', label: t('common.other') },
+      { key: 'none', label: noneLabel },
+    ];
+    const condGrid = chipGrid(t('intake.conditionsTitle'), condItems,
       { selected: m.conditions || [], hint: t('intake.conditionsHint') });
     const condOther = textField(t('intake.conditionOther'), { value: m.conditions_other });
     const condOtherWrap = el('div', { class: 'span-2' }, [condOther.node]);
     const syncCondOther = () => { condOtherWrap.style.display = condGrid.get().includes('other') ? '' : 'none'; };
+    wireNone(condGrid, condItems, 'none');
     condGrid.node.addEventListener('click', syncCondOther);
     syncCondOther();
 
     // Medication table
     const medRows = el('div', { class: 'med-rows' });
+    // A3: "No medications" — mutually exclusive with the med rows.
+    const noMeds = el('input', { class: 'big-check', type: 'checkbox' });
+    const addBtn = el('button', { class: 'btn btn--ghost btn--sm', type: 'button', onClick: () => addMedRow() }, ['+ ' + t('intake.addMed')]);
+    const refreshMedsDisabled = () => {
+      const disabled = noMeds.checked;
+      addBtn.disabled = disabled;
+      medRows.querySelectorAll('input, button').forEach((x) => { x.disabled = disabled; });
+    };
     function addMedRow(med = {}) {
+      if (noMeds.checked) { noMeds.checked = false; refreshMedsDisabled(); } // adding a med clears "none"
       const name = el('input', { class: 'input', placeholder: t('intake.medName'), value: med.name || '' });
       const dose = el('input', { class: 'input', placeholder: t('intake.medDose'), value: med.dose || '' });
       const reason = el('input', { class: 'input', placeholder: t('intake.medReason'), value: med.reason || '' });
@@ -218,9 +259,13 @@ export function renderKiosk(ctx) {
       medRows.append(row);
     }
     (m.medications || []).forEach(addMedRow);
+    noMeds.checked = !!m.medications_none;
+    if (noMeds.checked) clear(medRows);
+    noMeds.addEventListener('change', () => { if (noMeds.checked) clear(medRows); refreshMedsDisabled(); });
+    refreshMedsDisabled();
+    const noMedsLabel = L({ en: 'No medications', es: 'Sin medicamentos', ru: 'Нет лекарств' });
 
     const node = el('div', {}, [
-      vitalsBlock,
       el('div', { class: 'form-grid' }, [underTx.node, hosp.node, tobacco.node, pregnancy.node]),
       el('div', { class: 'span-2' }, [allergyGrid.node]),
       el('div', { class: 'form-grid' }, [allergyOtherWrap]),
@@ -228,18 +273,11 @@ export function renderKiosk(ctx) {
       el('div', { class: 'form-grid' }, [condOtherWrap]),
       el('div', { class: 'field' }, [
         el('span', { class: 'field-label' }, [t('intake.medsTitle')]),
+        el('label', { class: 'agree-row' }, [noMeds, el('span', {}, [noMedsLabel])]),
         medRows,
-        el('button', { class: 'btn btn--ghost btn--sm', type: 'button', onClick: () => addMedRow() }, ['+ ' + t('intake.addMed')]),
+        addBtn,
       ]),
     ]);
-
-    // Parse a numeric input to an int, or undefined when blank/invalid (so we omit it).
-    const intOrOmit = (s) => {
-      const v = (s || '').trim();
-      if (!v) return undefined;
-      const n = parseInt(v, 10);
-      return Number.isFinite(n) ? n : undefined;
-    };
 
     return {
       title: t('intake.s_medical'),
@@ -252,13 +290,12 @@ export function renderKiosk(ctx) {
           allergies: allergySel, conditions: condSel,
           allergies_other: allergySel.includes('other') ? allergyOther.get() : '',
           conditions_other: condSel.includes('other') ? condOther.get() : '',
-          medications: Array.from(medRows.children).map((r) => r._get()).filter((x) => x.name),
+          medications: noMeds.checked ? [] : Array.from(medRows.children).map((r) => r._get()).filter((x) => x.name),
         });
-        // F5/F6: write intake vitals as ints; omit (delete) when blank.
-        const sysN = intOrOmit(sys.get()), diaN = intOrOmit(dia.get()), hrN = intOrOmit(hr.get());
-        if (sysN !== undefined) m.bp_systolic = sysN; else delete m.bp_systolic;
-        if (diaN !== undefined) m.bp_diastolic = diaN; else delete m.bp_diastolic;
-        if (hrN !== undefined) m.heart_rate = hrN; else delete m.heart_rate;
+        // A3: record that a section was actively reviewed as "none".
+        if (allergySel.includes('none')) m.allergies_none = true; else delete m.allergies_none;
+        if (condSel.includes('none')) m.conditions_none = true; else delete m.conditions_none;
+        if (noMeds.checked) m.medications_none = true; else delete m.medications_none;
         return true;
       },
     };
@@ -350,12 +387,19 @@ export function renderKiosk(ctx) {
       }),
     ]);
 
+    const sigHelp = L({
+      en: 'Signature optional — you may sign with a stylus/touchscreen or leave blank.',
+      es: 'Firma opcional — puede firmar con un lápiz óptico/pantalla táctil o dejarlo en blanco.',
+      ru: 'Подпись необязательна — вы можете расписаться стилусом/на сенсорном экране или оставить поле пустым.',
+    });
+
     const node = el('div', { class: 'consent-screen' }, [
       minor ? el('div', { class: 'minor-banner' }, [icon('alert', { size: 16 }), ' ' + t('intake.minorNotice')]) : null,
       sections,
       el('label', { class: 'agree-row' }, [agree, el('span', {}, [t('consent.agree')])]),
       el('div', { class: 'form-grid' }, [signer.node, rel.node]),
       sigPad.node,
+      el('p', { class: 'field-hint' }, [sigHelp]),
     ]);
 
     return {
@@ -364,10 +408,10 @@ export function renderKiosk(ctx) {
       collect: () => {
         if (!agree.checked) { toast(t('consent.agree'), 'error'); return false; }
         if (!signer.get()) { toast(t('common.required') + ': ' + t('intake.signerName'), 'error'); return false; }
-        if (sigPad.isEmpty()) { toast(t('common.signHere'), 'error'); return false; }
+        // A5: signature is optional — a missing signature does not block submission.
         upsertConsent('general', {
           signer_name: signer.get(), relationship: rel.get(),
-          signature_png: sigPad.getDataUrl(),
+          signature_png: sigPad.isEmpty() ? null : sigPad.getDataUrl(),
           version: `general-oregon-${getLang()}-v1+covid`,
         });
         return true;
@@ -387,6 +431,12 @@ export function renderKiosk(ctx) {
       ru: 'Номер(а) зуба: заполняется врачом у кресла.',
     }[getLang()] || 'Tooth number(s): to be completed at chairside by the provider.';
 
+    const sigHelp = L({
+      en: 'Signature optional — you may sign with a stylus/touchscreen or leave blank.',
+      es: 'Firma opcional — puede firmar con un lápiz óptico/pantalla táctil o dejarlo en blanco.',
+      ru: 'Подпись необязательна — вы можете расписаться стилусом/на сенсорном экране или оставить поле пустым.',
+    });
+
     const node = el('div', { class: 'consent-screen' }, [
       consentSection({
         title: t('consent.surgeryTitle'),
@@ -398,6 +448,7 @@ export function renderKiosk(ctx) {
       el('label', { class: 'agree-row' }, [agree, el('span', {}, [t('consent.agree')])]),
       signer.node,
       sigPad.node,
+      el('p', { class: 'field-hint' }, [sigHelp]),
     ]);
 
     return {
@@ -405,12 +456,73 @@ export function renderKiosk(ctx) {
       node,
       collect: () => {
         if (!agree.checked) { toast(t('consent.agree'), 'error'); return false; }
-        if (sigPad.isEmpty()) { toast(t('common.signHere'), 'error'); return false; }
+        // A5: signature is optional — a missing signature does not block submission.
         upsertConsent('oral_surgery', {
           signer_name: signer.get() || signerFromGeneral(),
-          signature_png: sigPad.getDataUrl(),
+          signature_png: sigPad.isEmpty() ? null : sigPad.getDataUrl(),
           version: `oral_surgery-${getLang()}-v1`,
         });
+        return true;
+      },
+    };
+  }
+
+  // A4: provider choice — the patient picks who they want to see today. Stored
+  // as data.route ('dentist' | 'hygienist'); required before submit.
+  function stepRoute() {
+    const question = L({
+      en: 'Who would you like to see today?',
+      es: '¿A quién le gustaría ver hoy?',
+      ru: 'Кого вы хотели бы посетить сегодня?',
+    });
+    const options = [
+      {
+        key: 'dentist', iconName: 'tooth',
+        title: L({ en: 'Dentist', es: 'Dentista', ru: 'Стоматолог' }),
+        sub: L({ en: 'Fillings, extractions', es: 'Empastes, extracciones', ru: 'Пломбы, удаление зубов' }),
+      },
+      {
+        key: 'hygienist', iconName: 'sparkle',
+        title: L({ en: 'Hygienist', es: 'Higienista', ru: 'Гигиенист' }),
+        sub: L({ en: 'Cleaning', es: 'Limpieza', ru: 'Чистка' }),
+      },
+    ];
+    const cards = new Map();
+    const grid = el('div', { class: 'lang-grid route-grid' }, options.map((o) => {
+      const card = el('button', {
+        type: 'button',
+        class: 'lang-card route-card' + (data.route === o.key ? ' lang-card--on' : ''),
+        onClick: () => {
+          data.route = o.key;
+          cards.forEach((c) => c.classList.remove('lang-card--on'));
+          card.classList.add('lang-card--on');
+        },
+      }, [
+        icon(o.iconName, { size: 40 }),
+        el('span', { class: 'lang-native' }, [o.title]),
+        el('span', { class: 'lang-en' }, [o.sub]),
+      ]);
+      cards.set(o.key, card);
+      return card;
+    }));
+
+    const node = el('div', { class: 'route-screen' }, [
+      el('h3', {}, [question]),
+      grid,
+    ]);
+
+    return {
+      title: L({ en: 'Who to see', es: 'A quién ver', ru: 'К кому обратиться' }),
+      node,
+      collect: () => {
+        if (data.route !== 'dentist' && data.route !== 'hygienist') {
+          toast(L({
+            en: 'Please choose who you would like to see.',
+            es: 'Por favor elija a quién desea ver.',
+            ru: 'Пожалуйста, выберите, к кому вы хотите обратиться.',
+          }), 'error');
+          return false;
+        }
         return true;
       },
     };
@@ -433,6 +545,12 @@ export function renderKiosk(ctx) {
         row(t('intake.allergiesTitle'), allergyLabels.join(', ')),
         row(t('intake.conditionsTitle'), condLabels.join(', ')),
         row(t('intake.reason'), dh.reason),
+        row(
+          L({ en: 'Who to see', es: 'A quién ver', ru: 'К кому обратиться' }),
+          data.route === 'dentist' ? L({ en: 'Dentist', es: 'Dentista', ru: 'Стоматолог' })
+            : data.route === 'hygienist' ? L({ en: 'Hygienist', es: 'Higienista', ru: 'Гигиенист' })
+            : ''
+        ),
         row(t('intake.s_consent'), data.consents.map((c) => c.type === 'general' ? 'General — signed' : 'Oral Surgery — signed').join(' · ')),
       ]),
     ]);
@@ -458,6 +576,15 @@ export function renderKiosk(ctx) {
     // "Submit" tap bypasses forward-nav collect()).
     const ok = current && current.collect ? current.collect() : true;
     if (ok === false) return;
+    // A4: never submit without a provider choice recorded.
+    if (data.route !== 'dentist' && data.route !== 'hygienist') {
+      toast(L({
+        en: 'Please choose who you would like to see.',
+        es: 'Por favor elija a quién desea ver.',
+        ru: 'Пожалуйста, выберите, к кому вы хотите обратиться.',
+      }), 'error');
+      return;
+    }
     try {
       const patient = await api.createPatient(data);
       showThankYou(patient);

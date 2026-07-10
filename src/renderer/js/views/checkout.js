@@ -95,6 +95,12 @@ export function renderCheckout(ctx, params = {}) {
             el('div', { class: 'card-title' }, [icon('checkCircle', { size: 15 }), 'Actions']),
             el('div', { class: 'action-stack' }, [
               el('button', { class: 'btn btn--ghost btn--block', onClick: async () => { try { const r = await api.pdfGenerate(id, 'summary'); if (r && r.saved) toast('Saved: ' + r.path, 'success'); } catch (e) { toast(e.message, 'error'); } } }, [icon('save', { size: 16 }), 'Patient summary PDF']),
+              p.email
+                ? el('button', { class: 'btn btn--ghost btn--block', onClick: () => emailSummary(p) }, [icon('mail', { size: 16 }), 'Email summary to patient'])
+                : el('div', {}, [
+                    el('button', { class: 'btn btn--ghost btn--block', disabled: 'disabled' }, [icon('mail', { size: 16 }), 'Email summary to patient']),
+                    el('p', { class: 'view-sub', style: 'margin-top:6px' }, ['No email on file.']),
+                  ]),
               p.status === 'dismissed'
                 ? el('div', { class: 'pill pill--neutral' }, [`Dismissed by ${p.dismissed_by_name || '—'} · ${fmtWhen(p.dismissed_at)}`])
                 : el('button', { class: 'btn btn--primary btn--block', disabled: notesComplete ? null : 'disabled', onClick: () => dismiss(p) }, [icon('checkCircle', { size: 16 }), 'Verify & dismiss patient']),
@@ -109,6 +115,25 @@ export function renderCheckout(ctx, params = {}) {
     const ok = await modal({ title: 'Dismiss patient?', body: `Confirm that ${p.first_name} ${p.last_name}'s treatment and notes are complete, and dismiss them.`, confirmText: 'Verify & dismiss', cancelText: 'Cancel' });
     if (!ok) return;
     try { await api.dismissPatient(p.id); toast('Patient dismissed', 'success'); queue(); } catch (e) { toast(e.message, 'error'); }
+  }
+
+  // Email the visit summary to the patient. mailto cannot auto-attach a file
+  // cross-platform, so we save the summary PDF first and the user attaches it in
+  // their email program — same offline flow as records.js emailRecord.
+  async function emailSummary(p) {
+    if (!p.email) return;
+    const ok = await modal({
+      title: 'Email summary to patient', cancelText: 'Cancel', confirmText: 'Open email',
+      body: `This saves the summary PDF and opens your email program addressed to <b>${p.email}</b>. Attach the saved PDF before sending.`,
+    });
+    if (!ok) return;
+    try {
+      const r = await api.pdfGenerate(p.id, 'summary');
+      if (r && r.saved) {
+        await api.openExternal(`mailto:${encodeURIComponent(p.email)}?subject=${encodeURIComponent('Your Caring Hands visit summary')}&body=${encodeURIComponent('Your visit summary from Caring Hands Worldwide is attached.')}`);
+        toast('Summary saved — attach it in your email program.', 'success');
+      }
+    } catch (e) { toast(e.message, 'error'); }
   }
 
   function kv(label, val) { return el('div', { class: 'kv' }, [el('span', { class: 'kv-label' }, [label]), el('span', { class: 'kv-val' }, [val || '—'])]); }

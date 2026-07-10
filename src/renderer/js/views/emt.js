@@ -7,20 +7,22 @@ import { bloodThinnerStatus } from '../medFlags.js';
 import { statusPill } from './dashboard.js';
 
 // Route metadata shared by the queue pills, the next-step card and the toasts.
+// 'both' is retained only so legacy records still render a sensible label — the
+// EMT no longer routes to both (check-in is either/or), so it is never offered.
 const ROUTES = {
   dentist: {
     label: 'Dentist',
     choice: 'Dentist (fillings / extractions)',
     pill: 'pill--info',
     ic: 'tooth',
-    toast: 'Sent to the dentist queue',
+    toast: 'Signed off — sent to the dentist queue',
   },
   hygienist: {
     label: 'Hygienist',
     choice: 'Hygienist (cleaning)',
     pill: 'pill--purple',
     ic: 'sparkle',
-    toast: 'Sent to the hygienist queue',
+    toast: 'Signed off — sent to the hygienist queue',
   },
   both: {
     label: 'Dentist + Hygienist',
@@ -30,6 +32,19 @@ const ROUTES = {
     toast: 'Sent to the dentist and hygienist queues',
   },
 };
+
+// The "other" provider for a one-tap transfer. 'both' has no single opposite.
+const OTHER = { dentist: 'hygienist', hygienist: 'dentist' };
+
+// v1.2.0 (C1): the short yes/no medical review the EMT runs through with the
+// patient. Keys match the emt_review object persisted on the triage row.
+const REVIEW_QS = [
+  ['pregnant', 'Pregnant?'],
+  ['recent_surgery', 'Recent surgery/hospitalization?'],
+  ['diabetic', 'Diabetic?'],
+  ['on_blood_thinners', 'On blood thinners?'],
+  ['allergies_meds', 'Any medication allergies?'],
+];
 
 function routePill(route, prefix = '') {
   const r = ROUTES[route];
@@ -43,8 +58,8 @@ function fmtWhen(w) {
   return isNaN(d.getTime()) ? String(w) : d.toLocaleString();
 }
 
-// EMT / Nurse view (F11): record vitals, confirm blood thinners, then route
-// each patient to the dentist and/or hygienist queue (replaces triage routing).
+// EMT / Nurse view (F11): record vitals, run a quick yes/no review, confirm
+// blood thinners, then sign the patient off to the dentist or hygienist queue.
 export function renderEmt(ctx, params = {}) {
   const root = el('div', { class: 'view' });
   if (params.id) detail(params.id); else queue();
@@ -53,10 +68,10 @@ export function renderEmt(ctx, params = {}) {
   async function queue() {
     const patients = await api.listPatients({});
     const live = patients.filter((p) => p.status !== 'dismissed');
-    // Work order: needs vitals first, then vitals done but un-routed, then the rest.
+    // Work order: needs vitals first, then vitals done but not signed off, then the rest.
     const rank = (p) => {
       if (p.status === 'checked_in' && !p.has_vitals) return 0;
-      if (p.has_vitals && !p.route) return 1;
+      if (p.has_vitals && !p.emt_signed_off) return 1;
       return 2;
     };
     live.sort((a, b) => rank(a) - rank(b));
@@ -73,10 +88,18 @@ export function renderEmt(ctx, params = {}) {
         : el('span', { class: 'subtle small' }, ['Needs vitals'])]),
       el('td', {}, [routePill(p.route)]),
       el('td', {}, [statusPill(p.status)]),
-      el('td', {}, [el('button', {
-        class: 'btn btn--primary btn--sm',
-        onClick: (e) => { e.stopPropagation(); detail(p.id); },
-      }, ['Open', icon('chevron', { size: 15 })])]),
+      el('td', {}, [el('div', { style: 'display:flex;gap:var(--space-1);justify-content:flex-end;align-items:center' }, [
+        // C3: export a summary PDF straight from the list, without opening the row.
+        el('button', {
+          class: 'btn btn--ghost btn--sm',
+          title: 'Patient summary PDF',
+          onClick: (e) => { e.stopPropagation(); exportSummary(p.id); },
+        }, [icon('records', { size: 15 })]),
+        el('button', {
+          class: 'btn btn--primary btn--sm',
+          onClick: (e) => { e.stopPropagation(); detail(p.id); },
+        }, ['Open', icon('chevron', { size: 15 })]),
+      ])]),
     ]));
     clear(root);
     root.append(
@@ -84,7 +107,7 @@ export function renderEmt(ctx, params = {}) {
         el('div', {}, [
           el('h1', {}, ['Vitals & Routing']),
           el('p', { class: 'view-sub' }, [
-            `Station 2 — record vitals, then send each patient to the dentist or hygienist · ${live.length} patient(s)`,
+            `Station 2 — record vitals, then sign each patient off to the dentist or hygienist · ${live.length} patient(s)`,
           ]),
         ]),
         el('button', { class: 'btn btn--ghost btn--sm', onClick: queue }, [icon('refresh', { size: 15 }), 'Refresh']),
@@ -100,42 +123,25 @@ export function renderEmt(ctx, params = {}) {
     );
   }
 
-  // Persist a routing choice, toast the destination, then re-render the detail.
+  // C3: generate a summary PDF for a patient (used from the list rows).
+  async function exportSummary(id) {
+    try {
+      const res = await api.pdfGenerate(id, 'summary');
+      if (res && res.saved) toast(`Saved: ${res.path}`, 'success');
+    } catch (e) {
+      toast(e.message, 'error');
+    }
+  }
+
+  // Sign-off: route the patient to a clinical queue, toast, then re-render.
   async function doRoute(id, route) {
     try {
       await api.routePatient(id, route);
-      toast(ROUTES[route].toast, 'success');
+      toast((ROUTES[route] && ROUTES[route].toast) || 'Patient routed', 'success');
     } catch (e) {
       toast(e.message, 'error');
     }
     detail(id);
-  }
-
-  // Routing prompt — a modal whose body buttons pick the destination; the
-  // modal's own confirm button doubles as "Decide later" (just re-renders).
-  async function chooseRoute(id) {
-    let picked = null;
-    const pickBtn = (route) => el('button', {
-      class: 'btn btn--primary btn--block',
-      onClick: (e) => {
-        picked = route;
-        // Resolve the modal promise via its own confirm button.
-        const overlay = e.currentTarget.closest('.modal-overlay');
-        const closeBtn = overlay ? overlay.querySelector('.modal-actions button:last-child') : null;
-        if (closeBtn) closeBtn.click();
-      },
-    }, [icon(ROUTES[route].ic, { size: 16 }), ROUTES[route].choice]);
-    await modal({
-      title: 'Where does this patient go next?',
-      body: el('div', { style: 'display:flex;flex-direction:column;gap:var(--space-2)' }, [
-        pickBtn('dentist'),
-        pickBtn('hygienist'),
-        pickBtn('both'),
-      ]),
-      confirmText: 'Decide later',
-    });
-    if (picked) await doRoute(id, picked);
-    else detail(id);
   }
 
   async function detail(id) {
@@ -148,13 +154,13 @@ export function renderEmt(ctx, params = {}) {
     const dia = el('input', { class: 'input', type: 'number', min: '0', max: '200', placeholder: t('intake.bpDia'), value: tr.bp_diastolic != null ? tr.bp_diastolic : (m.bp_diastolic || '') });
     const hr = el('input', { class: 'input', type: 'number', min: '0', max: '300', placeholder: t('intake.hr'), value: tr.heart_rate != null ? tr.heart_rate : (m.heart_rate || '') });
 
-    // Current vitals to carry through to the blood-thinner save (avoids clobbering).
+    // Current vitals to carry through to secondary saves (avoids clobbering).
     function currentVitals() {
       return { bp_systolic: sys.value.trim(), bp_diastolic: dia.value.trim(), heart_rate: hr.value.trim() };
     }
 
-    // After vitals save, ask the patient about blood thinners, persist the
-    // answer, then proceed to the routing prompt (which re-renders).
+    // After vitals save, ask the patient about blood thinners and persist the
+    // answer, then re-render so the sign-off action reflects the update.
     async function askBloodThinner() {
       const yes = await modal({
         title: 'Blood thinners?',
@@ -193,7 +199,7 @@ export function renderEmt(ctx, params = {}) {
         toast(e.message, 'error');
         return;
       }
-      await chooseRoute(id);
+      detail(id);
     }
 
     async function save() {
@@ -202,6 +208,32 @@ export function renderEmt(ctx, params = {}) {
         toast('Vitals recorded', 'success');
         await askBloodThinner();
       } catch (e) { toast(e.message, 'error'); }
+    }
+
+    // C1: persist the yes/no review (attaches to the record + PDF) then re-render.
+    const reviewState = { ...(tr.emt_review || {}) };
+    async function saveReview() {
+      try {
+        await api.saveVitals(id, { ...currentVitals(), emt_review: { ...reviewState } });
+        toast('Review saved', 'success');
+        detail(id);
+      } catch (e) { toast(e.message, 'error'); }
+    }
+
+    // Two-button Yes/No toggle bound to reviewState[key]; restyles in place.
+    function reviewToggle(key) {
+      const btn = (val, label) => el('button', {
+        class: `btn btn--sm ${reviewState[key] === val ? 'btn--primary' : 'btn--ghost'}`,
+        dataset: { val },
+        onClick: (e) => {
+          reviewState[key] = val;
+          const group = e.currentTarget.parentElement;
+          Array.from(group.children).forEach((b) => {
+            b.className = `btn btn--sm ${b.dataset.val === reviewState[key] ? 'btn--primary' : 'btn--ghost'}`;
+          });
+        },
+      }, [label]);
+      return el('div', { style: 'display:flex;gap:var(--space-1);flex:0 0 auto' }, [btn('yes', 'Yes'), btn('no', 'No')]);
     }
 
     // Human-readable summary of the currently recorded blood-thinner answer.
@@ -224,32 +256,79 @@ export function renderEmt(ctx, params = {}) {
       ? el('p', { class: 'subtle small' }, [`Last recorded by ${p.vitals_by_name || '—'} · ${new Date(tr.vitals_at).toLocaleString()}`])
       : null;
 
-    // Next-step card — always visible; routing works without re-entering vitals.
+    // EMT review card (C1).
+    const reviewCard = el('div', { class: 'card', style: 'margin-top:var(--space-4)' }, [
+      el('div', { class: 'card-title' }, [icon('clipboard', { size: 15 }), 'EMT review']),
+      el('p', { class: 'subtle small' }, ['Ask the patient and record each answer.']),
+      el('div', { style: 'display:flex;flex-direction:column;gap:var(--space-2);margin-top:var(--space-2)' },
+        REVIEW_QS.map(([key, label]) => el('div', {
+          style: 'display:flex;align-items:center;justify-content:space-between;gap:var(--space-3)',
+        }, [
+          el('span', { class: 'field-label' }, [label]),
+          reviewToggle(key),
+        ]))),
+      el('button', {
+        class: 'btn btn--primary btn--block',
+        style: 'margin-top:var(--space-3)',
+        onClick: saveReview,
+      }, [icon('save', { size: 16 }), 'Save review']),
+    ]);
+
+    // Next-step card (B2): sign-off defaults to the provider the patient picked
+    // at check-in (tr.route). Routing is the sign-off — it moves them onward.
     const inlineRouteBtn = (route) => el('button', {
       class: 'btn btn--primary btn--sm',
       onClick: () => doRoute(id, route),
     }, [icon(ROUTES[route].ic, { size: 15 }), ROUTES[route].choice]);
 
+    let nextStepBody;
+    if (tr.emt_signed_off && tr.route && ROUTES[tr.route]) {
+      const other = OTHER[tr.route];
+      nextStepBody = el('div', {}, [
+        el('div', { style: 'display:flex;align-items:center;gap:var(--space-2);flex-wrap:wrap' }, [
+          icon('checkCircle', { size: 16 }),
+          el('strong', {}, [`Signed off · sent to ${ROUTES[tr.route].label}`]),
+        ]),
+        el('p', { class: 'subtle small', style: 'margin-top:var(--space-2)' }, [
+          `by ${p.routed_by_name || '—'}${tr.routed_at ? ' · ' + fmtWhen(tr.routed_at) : ''}`,
+        ]),
+        other ? el('button', {
+          class: 'btn btn--ghost btn--sm',
+          style: 'margin-top:var(--space-3)',
+          onClick: () => doRoute(id, other),
+        }, [icon(ROUTES[other].ic, { size: 15 }), `Transfer to ${ROUTES[other].label} instead`]) : null,
+      ]);
+    } else if (tr.route && ROUTES[tr.route]) {
+      const other = OTHER[tr.route];
+      nextStepBody = el('div', {}, [
+        el('div', { style: 'display:flex;align-items:center;gap:var(--space-2);flex-wrap:wrap' }, [
+          el('span', { class: 'subtle small' }, ['Patient asked to see:']),
+          routePill(tr.route),
+        ]),
+        el('button', {
+          class: 'btn btn--primary btn--block',
+          style: 'margin-top:var(--space-3)',
+          onClick: () => doRoute(id, tr.route),
+        }, [icon(ROUTES[tr.route].ic, { size: 16 }), `Sign off & send to ${ROUTES[tr.route].label}`]),
+        other ? el('button', {
+          class: 'btn btn--ghost btn--sm btn--block',
+          style: 'margin-top:var(--space-2)',
+          onClick: () => doRoute(id, other),
+        }, [`Send to the ${ROUTES[other].label} instead`]) : null,
+      ]);
+    } else {
+      nextStepBody = el('div', {}, [
+        el('p', { class: 'subtle small' }, ['No provider on record — sign off to the dentist or hygienist:']),
+        el('div', { style: 'display:flex;gap:var(--space-2);flex-wrap:wrap;margin-top:var(--space-2)' }, [
+          inlineRouteBtn('dentist'),
+          inlineRouteBtn('hygienist'),
+        ]),
+      ]);
+    }
+
     const nextStep = el('div', { class: 'card', style: 'margin-top:var(--space-4)' }, [
       el('div', { class: 'card-title' }, [icon('checkCircle', { size: 15 }), 'Next step']),
-      tr.route && ROUTES[tr.route]
-        ? el('div', {}, [
-            el('div', { style: 'display:flex;align-items:center;gap:var(--space-2);flex-wrap:wrap' }, [
-              routePill(tr.route, 'Routed to: '),
-              el('button', { class: 'btn btn--ghost btn--sm', onClick: () => chooseRoute(id) }, ['Change']),
-            ]),
-            el('p', { class: 'subtle small', style: 'margin-top:var(--space-2)' }, [
-              `by ${p.routed_by_name || '—'}${tr.routed_at ? ' · ' + fmtWhen(tr.routed_at) : ''}`,
-            ]),
-          ])
-        : el('div', {}, [
-            el('p', { class: 'subtle small' }, ['Not routed yet — where does this patient go next?']),
-            el('div', { style: 'display:flex;gap:var(--space-2);flex-wrap:wrap;margin-top:var(--space-2)' }, [
-              inlineRouteBtn('dentist'),
-              inlineRouteBtn('hygienist'),
-              inlineRouteBtn('both'),
-            ]),
-          ]),
+      nextStepBody,
     ]);
 
     clear(root);
@@ -280,6 +359,8 @@ export function renderEmt(ctx, params = {}) {
         el('p', { class: 'subtle small' }, [bloodThinnerAnswer()]),
         el('button', { class: 'btn btn--primary btn--block', style: 'margin-top:var(--space-3)', onClick: save }, [icon('save', { size: 16 }), 'Save vitals']),
       ]),
+
+      reviewCard,
 
       nextStep,
     ]));
