@@ -47,25 +47,26 @@ jobs:
       - name: Publish downloadable release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.1.0-build.${{ github.run_number }}
-          name: Caring Hands v1.1.0 (build ${{ github.run_number }})
+          tag_name: v1.1.1-build.${{ github.run_number }}
+          name: Caring Hands v1.1.1 (build ${{ github.run_number }})
           prerelease: false
           make_latest: true
           body: |
-            ## Caring Hands Worldwide — Practice Management Software (v1.1.0)
+            ## Caring Hands Worldwide — Practice Management Software (v1.1.1)
 
             Offline-first dental clinic app for Windows. **Download the installer once — it auto-updates from here on.**
 
-            **New in v1.1.0 — optional Cloud Sync: one shared queue across every station**
-            - **Cloud sync (optional)** — connect your stations to your clinic's own Cloudflare cloud and the patient queue moves through in real time: a patient checked in at the front desk appears at the EMT, dentist, and hygienist screens on other devices within seconds.
-            - **Still fully offline-first** — cloud is **off by default**. The app works exactly as before with zero internet; if the network drops mid-clinic it keeps running locally and re-syncs automatically when it reconnects (most-recent edit wins).
-            - **Your cloud, your data** — runs on your own Cloudflare account (generous free tier). One shared clinic key connects the stations; staff accounts stay on each device. See `docs/CLOUD_SETUP.md` for the 5-command setup.
-            - **Admin → Cloud** — a new settings tab to paste your Cloud URL + key, test the connection, and turn sync on, with a live "Synced" status indicator.
+            **New in v1.1.1 — Cloud Sync connection fix**
+            - **Cloud URL now "just works"** — you can paste your Cloudflare address with or without `https://` (e.g. `caring-hands-sync.you.workers.dev`) and the app adds it for you. Trailing slashes or an accidental `/health` on the end are handled too. This fixes the "Failed to parse URL" error on **Test connection**.
+            - **Zero-install cloud setup** — the sync server creates its own database on first use, so setup is done entirely in the Cloudflare dashboard (no Node.js, no command line). See `docs/CLOUD_SETUP.md`.
+
+            **From v1.1.0 — optional Cloud Sync: one shared queue across every station**
+            - Connect your stations to your clinic's own Cloudflare cloud and the patient queue moves through in real time across devices. Still fully offline-first (off by default; works with zero internet and re-syncs on reconnect). Your cloud, your data; one shared clinic key; staff accounts stay per device. Admin → Cloud to connect.
 
             Includes everything from v1.0.2–1.0.9 (triage-free EMT→dentist/hygienist flow, brand refresh, per-event staff, blood-thinner check, Oregon consent, patient summary PDF, USB workflow, accountability, Russian, in-app auto-update).
 
-            - **Caring-Hands-Setup-1.1.0.exe** — installer (recommended; required for auto-update).
-            - **Caring-Hands-Portable-1.1.0.exe** — portable (no auto-update).
+            - **Caring-Hands-Setup-1.1.1.exe** — installer (recommended; required for auto-update).
+            - **Caring-Hands-Portable-1.1.1.exe** — portable (no auto-update).
 
             First sign-in: `admin / admin` — then create your staff accounts. All clinical data stays on the device unless you enable Cloud Sync.
           files: |

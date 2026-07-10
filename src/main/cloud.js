@@ -16,7 +16,16 @@ let running = false;      // a sync cycle is in flight
 let getWindow = () => null;
 let lastResult = { pushed: 0, pulled: 0, applied: 0 };
 
-function trimUrl(u) { return String(u || '').trim().replace(/\/+$/, ''); }
+// Normalize whatever the admin pasted into a usable base URL. Handles the common
+// mistakes: no scheme (workers.dev address pasted bare), a trailing slash, or an
+// accidentally-included path like /health or /v1/pull. Returns the bare origin
+// (e.g. https://caring-hands-sync.acme.workers.dev).
+function trimUrl(u) {
+  let s = String(u || '').trim();
+  if (!s) return '';
+  if (!/^https?:\/\//i.test(s)) s = 'https://' + s; // add https:// when missing
+  try { return new URL(s).origin; } catch { return s.replace(/\/+$/, ''); }
+}
 
 async function httpJson(method, url, key, body) {
   const controller = new AbortController();
@@ -151,4 +160,4 @@ function start(windowGetter) {
 }
 function stop() { if (timer) { clearInterval(timer); timer = null; } }
 
-module.exports = { start, stop, syncOnce, testConnection, status, applyConfig };
+module.exports = { start, stop, syncOnce, testConnection, status, applyConfig, normalizeUrl: trimUrl };
