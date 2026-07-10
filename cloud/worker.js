@@ -56,6 +56,17 @@ export default {
     const path = url.pathname;
 
     try {
+      // Friendly landing at the root so visiting the bare URL isn't alarming.
+      // (The app never calls this — it uses /health and /v1/*.)
+      if (path === '/' || path === '') {
+        return json({
+          ok: true,
+          service: SERVICE,
+          version: VERSION,
+          message: 'Caring Hands sync server is running. There is no web page here — connect from the app under Admin -> Cloud. Health check: /health',
+        });
+      }
+
       // Health check — no auth (used by the app's "Test connection").
       if (path === '/health') {
         if (request.method !== 'GET') return methodNotAllowed();
