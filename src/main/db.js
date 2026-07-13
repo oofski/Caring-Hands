@@ -839,8 +839,11 @@ function updateConsentTeeth(actor, consentId, toothNumbers) {
 function dismissPatient(actor, id) {
   const p = db.prepare('SELECT * FROM patients WHERE id = ?').get(id);
   if (!p) throw new Error('Patient not found.');
-  const t = db.prepare('SELECT locked FROM treatments WHERE patient_id = ?').get(id);
-  if (!t || !t.locked) throw new Error('Patient has not been signed off by the provider yet.');
+  // v1.2.1: patients move through the stations freely — check-out no longer
+  // requires the provider to have signed off and LOCKED the record. We only
+  // guard the obvious cases so nobody is dismissed before they've been seen.
+  if (p.status === 'dismissed') throw new Error('Patient is already checked out.');
+  if (p.status === 'checked_in') throw new Error('Patient still needs vitals from the EMT/nurse before check-out.');
   db.prepare("UPDATE patients SET status='dismissed', dismissed_by=?, dismissed_at=?, updated_at=? WHERE id=?")
     .run(actor ? actor.id : null, now(), now(), id);
   audit(actor, 'dismiss', 'patient', id, `${p.first_name} ${p.last_name}`.trim());
@@ -1006,6 +1009,13 @@ function saveTreatment(actor, patientId, data, finalize) {
   const existing = db.prepare('SELECT * FROM treatments WHERE patient_id = ?').get(patientId);
   if (existing && existing.locked) throw new Error('This record is locked and signed off.');
   const d = data || {};
+  // v1.2.1: decouple "complete" from "lock". Patients move through the stations
+  // without being forced to sign off and lock a record. finalize can be:
+  //   falsy      -> save progress (status in_treatment), record stays editable
+  //   'complete' -> mark the visit done (status completed) but NOT locked/editable
+  //   'lock'/true-> mark done AND lock the record read-only (optional sign-off)
+  const lock = finalize === true || finalize === 'lock';
+  const complete = lock || finalize === 'complete';
   if (existing) {
     db.prepare(
       `UPDATE treatments SET fillings=?, extractions=?, cleaning=?, anesthetic=?,
@@ -1021,9 +1031,9 @@ function saveTreatment(actor, patientId, data, finalize) {
       d.clinical_notes || null,
       d.provider_name || null,
       d.provider_signature || null,
-      finalize ? 1 : 0,
-      finalize ? (actor ? actor.id : null) : null,
-      finalize ? now() : null,
+      lock ? 1 : 0,
+      complete ? (actor ? actor.id : null) : null,
+      complete ? now() : null,
       patientId
     );
   } else {
@@ -1035,18 +1045,18 @@ function saveTreatment(actor, patientId, data, finalize) {
       patientId, JSON.stringify(d.fillings || []), JSON.stringify(d.extractions || []),
       JSON.stringify(d.cleaning || {}), JSON.stringify(d.anesthetic || []),
       d.other_procedures || null, d.clinical_notes || null, d.provider_name || null,
-      d.provider_signature || null, finalize ? 1 : 0,
-      finalize ? (actor ? actor.id : null) : null, finalize ? now() : null
+      d.provider_signature || null, lock ? 1 : 0,
+      complete ? (actor ? actor.id : null) : null, complete ? now() : null
     );
   }
-  if (finalize) {
+  if (complete) {
     db.prepare('UPDATE patients SET status = ?, updated_at = ? WHERE id = ?').run('completed', now(), patientId);
     db.prepare("UPDATE triage SET status = 'completed' WHERE patient_id = ?").run(patientId);
   } else {
     db.prepare('UPDATE patients SET status = ?, updated_at = ? WHERE id = ?').run('in_treatment', now(), patientId);
     db.prepare("UPDATE triage SET status = 'in_treatment' WHERE patient_id = ? AND status != 'completed'").run(patientId);
   }
-  audit(actor, finalize ? 'sign_off' : 'treatment', 'patient', patientId, null);
+  audit(actor, lock ? 'sign_off' : complete ? 'complete' : 'treatment', 'patient', patientId, null);
   return getPatient(patientId);
 }
 

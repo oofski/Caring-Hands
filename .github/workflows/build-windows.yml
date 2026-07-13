@@ -47,28 +47,27 @@ jobs:
       - name: Publish downloadable release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.2.0-build.${{ github.run_number }}
-          name: Caring Hands v1.2.0 (build ${{ github.run_number }})
+          tag_name: v1.2.1-build.${{ github.run_number }}
+          name: Caring Hands v1.2.1 (build ${{ github.run_number }})
           prerelease: false
           make_latest: true
           body: |
-            ## Caring Hands Worldwide — Practice Management Software (v1.2.0)
+            ## Caring Hands Worldwide — Practice Management Software (v1.2.1)
 
             Offline-first dental clinic app for Windows. **Download the installer once — it auto-updates from here on.**
 
-            **New in v1.2.0 — clinical workflow upgrades from clinic feedback**
-            - **Check-in** — patients no longer enter vitals (the nurse does). Allergies, conditions, and medications now have a **"None of the above"** so a reviewed section is never mistaken for a skipped one. At the end the patient picks **who they want to see today — Dentist or Hygienist**. Signature is now optional (stylus/touch or leave blank).
-            - **Stage-gated queue** — after check-in a patient shows up **only at the EMT/nurse station**. Once the nurse takes vitals and signs off, they move into the **right clinical queue** (dentist or hygienist) based on the check-in choice. A patient can be **transferred** dentist↔hygienist if needed.
-            - **EMT/Nurse** — a yes/no medical-review checklist, and a **fix so vitals + the review reliably attach to the patient's record and PDF** (they were being dropped from the summary before). Export a patient's summary PDF straight from the list.
-            - **Provider charting** — **quick-pick tooth numbers** (no more typing), **lidocaine tracked by carpules + tooth number**, separate fillings/extractions notes, and quadrant charting. Blood-thinner alert now reflects the nurse's answer. Record locks on sign-off.
-            - **X-ray** — attach an x-ray image to the record at the doctor's station by picking a file **or dragging it onto the chart**; it's included in the summary.
-            - **Hygienist** — the tooth chart is **fixed** (full-size, no longer squeezed into the corner).
-            - **Check-out** — printable patient summary, plus an **email-the-summary** option for patients who give an email, and verify-and-dismiss.
+            **New in v1.2.1 — patients just move through, no forced sign-off/lock**
+            - **No more mandatory "sign off & lock" between stations.** The provider (and hygienist) now have a simple **"Mark visit complete"** button that sends the patient to check-out — the record stays editable, nothing is frozen. Locking is still available as an **optional** "Sign off & lock" if you want a finalized, read-only record, but it's never required.
+            - **Check-out no longer waits on a lock.** A patient can be verified and dismissed once their visit is marked complete (or even while still in progress) — no "provider must lock the record first" blocker. The only guard left: a patient can't be checked out before the EMT/nurse has seen them.
 
-            Includes everything from v1.0.2–1.1.1 (optional Cloud Sync, triage-free flow, brand refresh, per-event staff, Oregon consent, USB workflow, accountability, Russian, in-app auto-update).
+            **From v1.2.0 — clinical workflow upgrades from clinic feedback**
+            - Check-in: no patient-entered vitals, "None of the above" for allergies/conditions/meds, patient picks Dentist or Hygienist, optional signature.
+            - Stage-gated queue (EMT → dentist/hygienist), transfer between them, yes/no EMT review, vitals reliably attached to the record/PDF, quick-pick tooth numbers, lidocaine by carpules + tooth, x-ray attach by file or drag-drop, fixed hygienist tooth chart, and check-out email-the-summary.
 
-            - **Caring-Hands-Setup-1.2.0.exe** — installer (recommended; required for auto-update).
-            - **Caring-Hands-Portable-1.2.0.exe** — portable (no auto-update).
+            Includes everything from v1.0.2–1.1.1 (optional Cloud Sync, triage-free flow, per-event staff, Oregon consent, USB workflow, accountability, Russian, in-app auto-update).
+
+            - **Caring-Hands-Setup-1.2.1.exe** — installer (recommended; required for auto-update).
+            - **Caring-Hands-Portable-1.2.1.exe** — portable (no auto-update).
 
             First sign-in: `admin / admin` — then create your staff accounts. All clinical data stays on the device unless you enable Cloud Sync.
           files: |

@@ -162,8 +162,10 @@ function register(getMainWindow) {
 
   /* ---- Triage & treatment ---- */
   handle('triage:save', ({ patientId, data }) => db.saveTriage(currentUser, patientId, data));
+  // finalize may be false, 'complete' (mark done, no lock), or 'lock'/true — pass
+  // it through so v1.2.1's "complete without lock" mode reaches the data layer.
   handle('treatment:save', ({ patientId, data, finalize }) =>
-    db.saveTreatment(currentUser, patientId, data, !!finalize));
+    db.saveTreatment(currentUser, patientId, data, finalize));
 
   /* ---- v1.0.6: vitals, consent teeth, dismissal, per-patient audit ---- */
   handle('vitals:save', ({ patientId, data }) => db.saveVitals(currentUser, patientId, data));

@@ -514,19 +514,23 @@ export function renderProvider(ctx, params = {}) {
       };
     }
 
-    async function save(finalize) {
+    // v1.2.1: mode is false (save progress), 'complete' (mark the visit done and
+    // send the patient onward — record STAYS editable), or 'lock' (optional
+    // finalize that locks the record read-only). Nobody has to lock to move a
+    // patient through to check-out.
+    async function save(mode) {
       const payload = collectTreatment();
-      if (finalize) {
-        if (!payload.provider_name) { toast('Printed provider name is required to sign off.', 'error'); return; }
-        if (!payload.provider_signature) { toast('Provider signature is required to sign off.', 'error'); return; }
-        const ok = await modal({ title: 'Finalize & lock record?', body: 'Signing off locks this clinical record so it can no longer be edited. Continue?', confirmText: 'Sign off & lock', cancelText: 'Cancel' });
+      if (mode === 'lock') {
+        if (!payload.provider_name) { toast('Printed provider name is required to lock the record.', 'error'); return; }
+        if (!payload.provider_signature) { toast('Provider signature is required to lock the record.', 'error'); return; }
+        const ok = await modal({ title: 'Lock this record?', body: 'Locking finalizes this record so it can no longer be edited. This is optional — the patient moves to check-out without it. Continue?', confirmText: 'Sign off & lock', cancelText: 'Cancel' });
         if (!ok) return;
       }
       try {
         await api.saveTriage(id, collectTriage());
-        await api.saveTreatment(id, payload, finalize);
-        toast(finalize ? 'Record signed off and locked' : 'Progress saved', 'success');
-        if (finalize) ctx.navigate('provider'); else detail(id);
+        await api.saveTreatment(id, payload, mode);
+        toast(mode === 'lock' ? 'Record signed off and locked' : mode === 'complete' ? 'Visit complete — sent to check-out' : 'Progress saved', 'success');
+        if (mode) ctx.navigate('provider'); else detail(id);
       } catch (e) { toast(e.message, 'error'); }
     }
 
@@ -680,7 +684,9 @@ export function renderProvider(ctx, params = {}) {
           ? exportButtons(ctx, id)
           : el('div', { class: 'action-stack', style: 'margin-top:12px' }, [
               ghostBtn('save', 'Save progress', () => save(false)),
-              primaryBtn('checkCircle', 'Sign off & lock', () => save(true)),
+              primaryBtn('checkCircle', 'Mark visit complete', () => save('complete')),
+              // Locking is optional — a finalized, read-only record if you want one.
+              el('button', { class: 'btn btn--ghost btn--block', type: 'button', onClick: () => save('lock') }, [icon('lock', { size: 16 }), 'Sign off & lock (optional)']),
               // F17: patient summary PDF available before sign-off (doctor/admin only).
               store.can('admin', 'doctor')
                 ? el('button', { class: 'btn btn--ghost btn--block', type: 'button', onClick: async () => {

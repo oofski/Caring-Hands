@@ -126,18 +126,20 @@ export function renderHygienist(ctx, params = {}) {
       };
     }
 
-    async function save(finalize) {
+    // v1.2.1: mode is false (save), 'complete' (mark the cleaning done and send
+    // the patient onward — stays editable), or 'lock' (optional read-only finalize).
+    async function save(mode) {
       const payload = buildPayload();
-      if (finalize) {
-        if (!payload.provider_name) { toast('Printed name is required to complete a cleaning.', 'error'); return; }
-        if (!payload.provider_signature) { toast('Signature is required to complete a cleaning.', 'error'); return; }
-        const ok = await modal({ title: 'Complete cleaning & sign off?', body: 'This locks the record. Only do this when no fillings or extractions are needed. Continue?', confirmText: 'Complete & lock', cancelText: 'Cancel' });
+      if (mode === 'lock') {
+        if (!payload.provider_name) { toast('Printed name is required to lock the record.', 'error'); return; }
+        if (!payload.provider_signature) { toast('Signature is required to lock the record.', 'error'); return; }
+        const ok = await modal({ title: 'Lock this record?', body: 'Locking finalizes the record so it can no longer be edited. Optional — the patient moves to check-out without it. Continue?', confirmText: 'Sign off & lock', cancelText: 'Cancel' });
         if (!ok) return;
       }
       try {
-        await api.saveTreatment(id, payload, !!finalize);
-        toast(finalize ? 'Cleaning completed' : 'Cleaning saved', 'success');
-        detail(id);
+        await api.saveTreatment(id, payload, mode);
+        toast(mode === 'lock' ? 'Cleaning signed off and locked' : mode === 'complete' ? 'Cleaning complete — sent to check-out' : 'Cleaning saved', 'success');
+        if (mode) queue(); else detail(id);
       } catch (e) { toast(e.message, 'error'); }
     }
 
@@ -208,7 +210,8 @@ export function renderHygienist(ctx, params = {}) {
             tx.completed_at ? el('p', { class: 'subtle small', style: 'margin-top:6px' }, [`Completed by ${p.completed_by_name || tx.provider_name || '—'} · ${fmtWhen(tx.completed_at)}`]) : null,
             locked ? null : el('div', { class: 'action-stack', style: 'margin-top:10px' }, [
               el('button', { class: 'btn btn--ghost btn--block', onClick: () => save(false) }, [icon('save', { size: 16 }), 'Save cleaning']),
-              el('button', { class: 'btn btn--primary btn--block', title: alsoDoctor ? 'Doctor work is pending — normally the provider signs off' : '', onClick: () => save(true) }, [icon('checkCircle', { size: 16 }), 'Complete cleaning & sign off']),
+              el('button', { class: 'btn btn--primary btn--block', title: alsoDoctor ? 'Doctor work is pending — normally the provider finishes' : '', onClick: () => save('complete') }, [icon('checkCircle', { size: 16 }), 'Mark cleaning complete']),
+              el('button', { class: 'btn btn--ghost btn--block', onClick: () => save('lock') }, [icon('lock', { size: 16 }), 'Sign off & lock (optional)']),
             ]),
           ]),
         ]),

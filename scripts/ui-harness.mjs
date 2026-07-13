@@ -346,11 +346,41 @@ async function main() {
   log(!pr.ok && /permission/i.test(pr.error || ''), 'HYGIENIST blocked from routing (guard): ' + (pr.ok ? 'NOT BLOCKED' : 'blocked'));
   pr = await window.api.usersList();
   log(!pr.ok, 'EMT blocked from staff list (guard): ' + (pr.ok ? 'NOT BLOCKED' : 'blocked'));
-  // checkout dismiss: needs a signed-off treatment
+  // checkout dismiss: a locked (signed-off) patient can be dismissed
   currentUser = db.login('admin', 'admin'); db.saveTreatment(currentUser, vp.id, { provider_name: 'Dr', provider_signature: 'data:,s' }, true);
   await window.api.authLogin({ username: 'cox', password: 'x' });
   pr = await window.api.patientsDismiss(vp.id);
   log(pr.ok && pr.data.status === 'dismissed', 'CHECKOUT can dismiss a signed-off patient: ' + (pr.ok ? 'allowed' : pr.error));
+
+  // ---- v1.2.1: patients move through WITHOUT a forced sign-off/lock ----
+  currentUser = db.login('admin', 'admin');
+  const flowP = db.createPatient(currentUser, { first_name: 'Flow', last_name: 'Through', demographics: {}, medical_history: {}, dental_history: {}, route: 'dentist' });
+  db.saveVitals(currentUser, flowP.id, { bp_systolic: '120', bp_diastolic: '80', heart_rate: '70' });
+  db.routePatient(currentUser, flowP.id, 'dentist');
+  // provider marks the visit COMPLETE without locking (mode 'complete')
+  let mc = db.saveTreatment(currentUser, flowP.id, { fillings: [{ tooth: '14' }], provider_name: 'Dr A' }, 'complete');
+  log(mc.status === 'completed' && !mc.treatment.locked, 'v1.2.1: "Mark visit complete" completes the visit WITHOUT locking (record stays editable)');
+  // the still-unlocked record can still be edited (no lock throw)
+  let ed = db.saveTreatment(currentUser, flowP.id, { fillings: [{ tooth: '14' }, { tooth: '19' }], provider_name: 'Dr A' }, 'complete');
+  log(ed.treatment.fillings.length === 2, 'v1.2.1: a completed-but-unlocked record is still editable between stations');
+  // checkout can dismiss the completed (unlocked) patient — no lock required
+  await window.api.authLogin({ username: 'cox', password: 'x' });
+  pr = await window.api.patientsDismiss(flowP.id);
+  log(pr.ok && pr.data.status === 'dismissed', 'v1.2.1: CHECKOUT dismisses a completed patient with NO lock required: ' + (pr.ok ? 'allowed' : pr.error));
+  // v1.2.1: the optional lock still works and makes the record read-only
+  currentUser = db.login('admin', 'admin');
+  const lockP = db.createPatient(currentUser, { first_name: 'Lock', last_name: 'Opt', demographics: {}, medical_history: {}, dental_history: {}, route: 'dentist' });
+  db.saveVitals(currentUser, lockP.id, { bp_systolic: '118', bp_diastolic: '76', heart_rate: '66' });
+  db.routePatient(currentUser, lockP.id, 'dentist');
+  let lk = db.saveTreatment(currentUser, lockP.id, { provider_name: 'Dr B', provider_signature: 'data:,s' }, 'lock');
+  let lockedThrew = false; try { db.saveTreatment(currentUser, lockP.id, { provider_name: 'Dr B' }, 'complete'); } catch (e) { lockedThrew = /locked/i.test(e.message); }
+  log(lk.treatment.locked && lockedThrew, 'v1.2.1: optional lock still finalizes a read-only record when chosen');
+  // guard: a patient still at check-in (not seen by EMT) cannot be dismissed
+  currentUser = db.login('admin', 'admin');
+  const rawP = db.createPatient(currentUser, { first_name: 'Not', last_name: 'Seen', demographics: {}, medical_history: {}, dental_history: {} });
+  await window.api.authLogin({ username: 'cox', password: 'x' });
+  pr = await window.api.patientsDismiss(rawP.id);
+  log(!pr.ok && /EMT|nurse|vitals/i.test(pr.error || ''), 'v1.2.1: a checked-in (unseen) patient still cannot be dismissed: ' + (pr.ok ? 'NOT BLOCKED' : 'blocked'));
 
   // ---- v1.0.7: HYGIENIST role + event-scoped staff ----
   currentUser = db.login('admin', 'admin');

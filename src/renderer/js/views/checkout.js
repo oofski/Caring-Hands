@@ -63,7 +63,11 @@ export function renderCheckout(ctx, params = {}) {
   async function detail(id) {
     const p = await api.getPatient(id);
     const tx = p.treatment || {};
-    const notesComplete = !!tx.locked;
+    // v1.2.1: locking is optional now — a patient can be checked out once their
+    // visit is complete (or even in progress), no forced sign-off/lock required.
+    const locked = !!tx.locked;
+    const visitComplete = p.status === 'completed' || locked;
+    const canDismiss = p.status !== 'dismissed' && p.status !== 'checked_in';
 
     clear(root);
     root.append(
@@ -77,13 +81,15 @@ export function renderCheckout(ctx, params = {}) {
       ]),
       el('div', { class: 'split' }, [
         el('div', { class: 'col col--wide' }, [
-          el('div', { class: `card ${notesComplete ? '' : 'card--alert'}` }, [
-            el('div', { class: 'card-title' }, [icon('clipboard', { size: 15 }), 'Provider sign-off verification']),
-            notesComplete
-              ? el('div', { class: 'pill pill--success' }, [el('span', { class: 'pill-dot' }), 'Provider has signed off — record locked'])
-              : el('div', { class: 'pill pill--warning' }, [el('span', { class: 'pill-dot' }), 'NOT signed off — provider must complete & lock the record first']),
+          el('div', { class: `card ${visitComplete ? '' : 'card--alert'}` }, [
+            el('div', { class: 'card-title' }, [icon('clipboard', { size: 15 }), 'Visit review']),
+            locked
+              ? el('div', { class: 'pill pill--success' }, [el('span', { class: 'pill-dot' }), 'Provider signed off — record locked'])
+              : visitComplete
+                ? el('div', { class: 'pill pill--success' }, [el('span', { class: 'pill-dot' }), 'Visit marked complete'])
+                : el('div', { class: 'pill pill--warning' }, [el('span', { class: 'pill-dot' }), 'Visit still in progress — you can still check the patient out']),
             el('div', { class: 'kv-grid', style: 'margin-top:12px' }, [
-              kv('Provider', tx.provider_name), kv('Signed off', notesComplete ? fmtWhen(tx.completed_at) : '—'),
+              kv('Provider', tx.provider_name), kv('Completed', tx.completed_at ? fmtWhen(tx.completed_at) : '—'),
               kv('Completed by', p.completed_by_name), kv('Dental notes', tx.clinical_notes ? 'Present' : '—'),
             ]),
             tx.clinical_notes ? el('div', { class: 'box', style: 'margin-top:8px' }, [el('span', { class: 'field-label' }, ['Dental notes']), el('p', {}, [tx.clinical_notes])]) : null,
@@ -103,7 +109,7 @@ export function renderCheckout(ctx, params = {}) {
                   ]),
               p.status === 'dismissed'
                 ? el('div', { class: 'pill pill--neutral' }, [`Dismissed by ${p.dismissed_by_name || '—'} · ${fmtWhen(p.dismissed_at)}`])
-                : el('button', { class: 'btn btn--primary btn--block', disabled: notesComplete ? null : 'disabled', onClick: () => dismiss(p) }, [icon('checkCircle', { size: 16 }), 'Verify & dismiss patient']),
+                : el('button', { class: 'btn btn--primary btn--block', disabled: canDismiss ? null : 'disabled', onClick: () => dismiss(p) }, [icon('checkCircle', { size: 16 }), 'Verify & dismiss patient']),
             ]),
           ]),
         ]),
