@@ -161,7 +161,7 @@ async function main() {
   // Boot the real app
   await import('../src/renderer/js/app.js');
   await tick();
-  log(!!$('.login-screen'), 'app boots to login screen');
+  log(!!$('.auth-split') && !!$('.auth-form'), 'app boots to the two-panel sign-in screen');
 
   // ---- Drive the kiosk wizard (unauthenticated, like a real kiosk) ----
   currentUser = null;

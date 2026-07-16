@@ -4,15 +4,32 @@ import { api } from '../api.js';
 import { store } from '../store.js';
 import { icon } from '../icons.js';
 
+// Remembers only the last Company ID / username on this device (never the
+// password) so a returning staff member doesn't have to retype it. Cleared when
+// "Remember me" is unchecked at sign-in.
+const REMEMBER_KEY = 'ch.login.remember';
+
 export function renderLogin(ctx) {
-  const username = el('input', { class: 'input', placeholder: t('login.username'), autofocus: true });
+  let saved = {};
+  try { saved = JSON.parse(window.localStorage.getItem(REMEMBER_KEY) || '{}'); } catch (_) { saved = {}; }
+
+  const username = el('input', { class: 'input', placeholder: t('login.username'), value: saved.user || '' });
   const password = el('input', { class: 'input', type: 'password', placeholder: t('login.password') });
+  const remember = el('input', { type: 'checkbox', class: 'auth-check', id: 'auth-remember' });
+  remember.checked = !!saved.user;
   const error = el('div', { class: 'login-error', style: 'display:none' });
 
   async function submit() {
     error.style.display = 'none';
     try {
       const user = await api.login(username.value, password.value);
+      try {
+        if (remember.checked && username.value.trim()) {
+          window.localStorage.setItem(REMEMBER_KEY, JSON.stringify({ user: username.value.trim() }));
+        } else {
+          window.localStorage.removeItem(REMEMBER_KEY);
+        }
+      } catch (_) { /* storage unavailable — sign-in still succeeds */ }
       store.setUser(user);
       const ev = await api.activeEvent();
       store.setEvent(ev);
@@ -28,35 +45,51 @@ export function renderLogin(ctx) {
     inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); })
   );
 
-  const card = el('div', { class: 'login-card' }, [
-    el('img', { class: 'login-logo', src: '../../assets/logo.svg', alt: 'Caring Hands Worldwide' }),
-    el('div', {
-      style: 'text-align:center; font-size:var(--fs-2xs); letter-spacing:var(--tracking-eyebrow); text-transform:uppercase; font-weight:var(--fw-semibold); color:var(--accent-text); margin-bottom:var(--space-2);',
-    }, ['Helping hands for healthy living']),
-    el('h1', { class: 'login-title' }, [t('login.title')]),
-    el('p', { class: 'login-sub' }, [t('login.subtitle')]),
-    el('label', { class: 'field' }, [el('span', { class: 'field-label' }, [t('login.username')]), username]),
-    el('label', { class: 'field' }, [el('span', { class: 'field-label' }, [t('login.password')]), password]),
-    error,
-    el('button', { class: 'btn btn--primary btn--block', onClick: submit }, [t('login.button')]),
-    el('div', { class: 'login-divider' }, [el('span', {}, ['or'])]),
-    el('button', {
-      class: 'btn btn--kiosk btn--block',
-      onClick: () => ctx.navigate('kiosk'),
-    }, [
-      el('span', { class: 'kiosk-icon' }, [icon('clipboard', { size: 22 })]),
-      el('span', {}, [
-        el('strong', {}, [t('login.kiosk')]),
-        el('small', {}, [t('login.kioskHint')]),
+  const feature = (ic, title) => el('div', { class: 'auth-feature' }, [
+    el('div', { class: 'auth-feature-ic' }, [icon(ic, { size: 18 })]),
+    el('strong', {}, [title]),
+  ]);
+
+  // Left: branded hero panel (Caring Hands teal — not the reference blue).
+  const hero = el('div', { class: 'auth-hero' }, [
+    el('div', { class: 'auth-brand' }, [
+      el('div', { class: 'auth-brand-badge' }, ['CH']),
+      el('div', { class: 'auth-brand-name' }, [
+        el('strong', {}, ['Caring Hands']),
+        el('span', {}, ['Worldwide']),
       ]),
+    ]),
+    el('div', { class: 'auth-hero-body' }, [
+      el('div', { class: 'auth-eyebrow' }, ['Helping hands for healthy living']),
+      el('h1', { class: 'auth-headline' }, ['The operations backbone for your dental clinic.']),
+    ]),
+    el('div', { class: 'auth-features' }, [
+      feature('lock', 'Roles & permissions'),
+      feature('users', 'Your whole clinic team'),
+      feature('database', 'Offline-first — data stays on the device'),
     ]),
   ]);
 
-  return el('div', { class: 'login-screen' }, [
-    el('div', { class: 'login-bg' }),
-    card,
-    el('div', { class: 'login-footer' }, [
-      'Caring Hands Worldwide · Offline-first · No cloud · Data stays on this device',
+  // Right: the sign-in form.
+  const panel = el('div', { class: 'auth-panel' }, [
+    el('div', { class: 'auth-form' }, [
+      el('h2', { class: 'auth-title' }, ['Sign in']),
+      el('label', { class: 'field' }, [el('span', { class: 'field-label' }, [t('login.username')]), username]),
+      el('label', { class: 'field' }, [el('span', { class: 'field-label' }, [t('login.password')]), password]),
+      el('label', { class: 'auth-remember', for: 'auth-remember' }, [remember, el('span', {}, ['Remember me on this device'])]),
+      error,
+      el('button', { class: 'btn btn--primary btn--block', onClick: submit }, [icon('chevron', { size: 16 }), t('login.button')]),
+      el('div', { class: 'login-divider' }, [el('span', {}, ['or'])]),
+      el('button', { class: 'btn btn--kiosk btn--block', onClick: () => ctx.navigate('kiosk') }, [
+        el('span', { class: 'kiosk-icon' }, [icon('clipboard', { size: 22 })]),
+        el('span', {}, [
+          el('strong', {}, [t('login.kiosk')]),
+          el('small', {}, [t('login.kioskHint')]),
+        ]),
+      ]),
+      el('p', { class: 'auth-foot' }, ['New here? Your administrator sets up your account.']),
     ]),
   ]);
+
+  return el('div', { class: 'auth-split' }, [hero, panel]);
 }

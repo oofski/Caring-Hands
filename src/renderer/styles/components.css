@@ -146,6 +146,40 @@
 .login-hint{ text-align:center; color:var(--text-subtle); font-size:var(--fs-xs); margin-top:16px; }
 .login-footer{ position:absolute; bottom:18px; width:100%; text-align:center; color:var(--text-subtle); font-size:var(--fs-xs); z-index:1; }
 
+/* v1.2.2: professional two-panel sign-in (branded hero + form). */
+.auth-split{ height:100vh; display:grid; grid-template-columns:1.05fr 1fr; background:var(--surface); }
+.auth-hero{
+  position:relative; overflow:hidden; color:#fff;
+  padding:clamp(28px, 4vw, 60px);
+  display:flex; flex-direction:column; gap:24px;
+  background:linear-gradient(155deg, var(--teal-deep) 0%, #145561 52%, #0d3f4c 100%);
+}
+.auth-hero::after{ content:''; position:absolute; inset:0; pointer-events:none;
+  background:radial-gradient(120% 80% at 82% 8%, rgba(255,255,255,.12), transparent 60%); }
+.auth-brand{ position:relative; z-index:1; display:flex; align-items:center; gap:12px; }
+.auth-brand-badge{ width:46px; height:46px; border-radius:13px; flex:0 0 auto;
+  background:rgba(255,255,255,.16); border:1px solid rgba(255,255,255,.22);
+  display:flex; align-items:center; justify-content:center; font-weight:var(--fw-bold); font-size:16px; letter-spacing:.02em; }
+.auth-brand-name{ line-height:1.15; }
+.auth-brand-name strong{ display:block; font-size:15px; font-weight:var(--fw-semibold); }
+.auth-brand-name span{ font-size:11px; letter-spacing:.16em; text-transform:uppercase; opacity:.8; }
+.auth-hero-body{ position:relative; z-index:1; flex:1; display:flex; flex-direction:column; justify-content:center; max-width:480px; }
+.auth-eyebrow{ font-size:11px; letter-spacing:.16em; text-transform:uppercase; font-weight:var(--fw-semibold); opacity:.85; margin-bottom:16px; }
+.auth-headline{ margin:0; color:#fff; font-size:clamp(30px, 3.3vw, 46px); line-height:1.08; font-weight:800; letter-spacing:-0.02em; }
+.auth-features{ position:relative; z-index:1; display:flex; flex-direction:column; gap:18px; }
+.auth-feature{ display:flex; align-items:center; gap:14px; }
+.auth-feature-ic{ width:40px; height:40px; border-radius:11px; flex:0 0 auto;
+  background:rgba(255,255,255,.12); border:1px solid rgba(255,255,255,.18);
+  display:flex; align-items:center; justify-content:center; }
+.auth-feature strong{ font-size:15px; font-weight:var(--fw-semibold); }
+.auth-panel{ display:flex; align-items:center; justify-content:center; padding:24px; background:var(--surface); overflow-y:auto; }
+.auth-form{ width:100%; max-width:384px; }
+.auth-title{ margin:0 0 22px; font-size:28px; font-weight:var(--fw-bold); color:var(--text-strong); }
+.auth-remember{ display:flex; align-items:center; gap:9px; margin:2px 0 6px; font-size:var(--fs-sm); color:var(--text-muted); cursor:pointer; user-select:none; }
+.auth-check{ width:17px; height:17px; accent-color:var(--teal); cursor:pointer; flex:0 0 auto; }
+.auth-foot{ text-align:center; color:var(--text-subtle); font-size:var(--fs-xs); margin:18px 0 0; }
+@media (max-width:860px){ .auth-split{ grid-template-columns:1fr; } .auth-hero{ display:none; } }
+
 /* ===== Kiosk intake ===== */
 .kiosk{ height:100vh; display:flex; flex-direction:column; background:var(--surface-canvas); }
 .kiosk-progress{ display:flex; gap:6px; justify-content:center; padding:16px 0 6px; }

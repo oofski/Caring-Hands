@@ -47,16 +47,21 @@ jobs:
       - name: Publish downloadable release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.2.1-build.${{ github.run_number }}
-          name: Caring Hands v1.2.1 (build ${{ github.run_number }})
+          tag_name: v1.2.2-build.${{ github.run_number }}
+          name: Caring Hands v1.2.2 (build ${{ github.run_number }})
           prerelease: false
           make_latest: true
           body: |
-            ## Caring Hands Worldwide — Practice Management Software (v1.2.1)
+            ## Caring Hands Worldwide — Practice Management Software (v1.2.2)
 
             Offline-first dental clinic app for Windows. **Download the installer once — it auto-updates from here on.**
 
-            **New in v1.2.1 — patients just move through, no forced sign-off/lock**
+            **New in v1.2.2 — a professional new sign-in screen**
+            - Redesigned staff **sign-in** as a clean two-panel screen: a branded Caring Hands hero on the left and the sign-in form on the right.
+            - New **"Remember me on this device"** — the app remembers your Company ID / username (never your password) so you don't retype it next time.
+            - Patient **check-in** is still one tap away from the sign-in screen. Nothing about how you sign in changed — same accounts, same passwords.
+
+            **From v1.2.1 — patients just move through, no forced sign-off/lock**
             - **No more mandatory "sign off & lock" between stations.** The provider (and hygienist) now have a simple **"Mark visit complete"** button that sends the patient to check-out — the record stays editable, nothing is frozen. Locking is still available as an **optional** "Sign off & lock" if you want a finalized, read-only record, but it's never required.
             - **Check-out no longer waits on a lock.** A patient can be verified and dismissed once their visit is marked complete (or even while still in progress) — no "provider must lock the record first" blocker. The only guard left: a patient can't be checked out before the EMT/nurse has seen them.
 
