@@ -414,9 +414,19 @@ export function renderAdmin(ctx) {
     ]));
   }
 
-  /* ---- Cloud sync (v1.1.0) ---- */
+  /* ---- Cloud sync (v1.2.3) ----
+     Cloud is now always-on by default: the app ships with the clinic's server +
+     key baked in. This tab is ONE switch — the clinic is Online (default) or, if
+     there's no wifi, Run offline. Advanced users can still override the server,
+     but it's tucked away in a closed drawer most clinics never open. */
   async function cloudTab(body) {
     clear(body);
+
+    // We deliberately do NOT subscribe to onCloudChanged here: an auto-repaint
+    // would wipe the Advanced URL/key the admin is typing. Status refreshes when
+    // the tab is (re)opened and after "Sync now". Drop any leftover listener so
+    // an earlier subscription can't leak or fire against a stale tab.
+    if (cloudUnsub) { try { cloudUnsub(); } catch (_) { /* ignore */ } cloudUnsub = null; }
 
     let st;
     try {
@@ -429,82 +439,60 @@ export function renderAdmin(ctx) {
       return;
     }
 
-    // Note: we deliberately do NOT auto-repaint this tab on live sync events —
-    // that would wipe a URL/key the admin is typing. The status refreshes when
-    // the tab is opened and after "Sync now".
-    if (cloudUnsub) { try { cloudUnsub(); } catch (_) { /* ignore */ } cloudUnsub = null; }
-
     body.append(el('p', { class: 'view-sub', style: 'margin:0 0 var(--space-4);' }, [
-      'Connect this station to your clinic’s cloud so patients flow between devices in real time. Leave it off to run fully offline.',
+      'Your clinic is connected to the cloud so patients sync across every station in real time. Turn this off only if this location has no internet.',
     ]));
 
-    /* --- Connection --- */
-    const urlInput = el('input', {
-      class: 'input', type: 'text', value: st.url || '',
-      placeholder: 'https://caring-hands-sync.<subdomain>.workers.dev',
-    });
-    const keyInput = el('input', {
-      class: 'input', type: 'password',
-      placeholder: st.hasKey ? 'Leave blank to keep current key' : 'Clinic key',
-    });
+    /* --- Cloud status --- */
+    let pill; let statusNote;
+    if (!st.online) {
+      pill = el('span', { class: 'pill pill--neutral' }, ['Offline — running locally']);
+      statusNote = null;
+    } else if (st.lastError) {
+      pill = el('span', { class: 'pill pill--amber' }, [icon('alert', { size: 12 }), 'Reconnecting…']);
+      statusNote = el('span', { class: 'muted small' }, [st.lastError]);
+    } else {
+      pill = el('span', { class: 'pill pill--success' }, [el('span', { class: 'pill-dot' }), 'Online']);
+      statusNote = el('span', { class: 'muted small' }, [st.lastOk ? `Synced ${new Date(st.lastOk).toLocaleTimeString()}` : 'Connecting…']);
+    }
 
-    const connFields = [
-      el('label', { class: 'field span-2' }, [
-        el('span', { class: 'field-label' }, ['Cloud URL']),
-        urlInput,
-      ]),
-      el('label', { class: 'field span-2' }, [
-        el('span', { class: 'field-label' }, ['Clinic key']),
-        keyInput,
-        st.hasKey
-          ? el('span', { class: 'field-hint', style: 'display:inline-flex; align-items:center; gap:6px;' }, [icon('lock', { size: 12 }), 'A key is saved — leave blank to keep it.'])
-          : null,
-      ]),
-    ];
-
-    const testBtn = el('button', { class: 'btn btn--ghost', onClick: async () => {
-      const url = urlInput.value.trim();
-      const key = keyInput.value;
-      if (!url) { toast('Enter the cloud URL first.', 'error'); return; }
-      // A blank key would just 401 on the server — require one so the test is meaningful.
-      if (!key) { toast('Re-enter the clinic key to test the connection.', 'error'); return; }
-      try {
-        const r = await api.cloudTest(url, key);
-        toast(`Connected to sync server v${r.version}`, 'success');
-      } catch (e) { toast(e.message, 'error'); }
-    } }, [icon('checkCircle', { size: 16 }), 'Test connection']);
-
-    const saveBtn = el('button', { class: 'btn btn--primary', onClick: async () => {
-      try {
-        // Only send the key when the user typed one, so a blank field never wipes a saved key.
-        await api.cloudConfig({ url: urlInput.value.trim(), key: keyInput.value ? keyInput.value : undefined });
-        toast('Saved', 'success');
-        paint();
-      } catch (e) { toast(e.message, 'error'); }
-    } }, [icon('save', { size: 16 }), 'Save']);
+    // "Sync now" is only meaningful while online — disable it when running local.
+    const syncNowBtn = el('button', {
+      class: 'btn btn--ghost',
+      disabled: !st.online,
+      onClick: async () => {
+        try {
+          const r = await api.cloudSyncNow();
+          if (r && r.ok) toast(`Synced — pushed ${r.pushed}, pulled ${r.pulled}, applied ${r.applied}`, 'success');
+          else toast((r && r.error) || 'Sync failed', 'error');
+          paint();
+        } catch (e) { toast(e.message, 'error'); }
+      },
+    }, [icon('refresh', { size: 16 }), 'Sync now']);
 
     body.append(el('div', { class: 'card' }, [
-      el('h3', { class: 'card-title' }, [icon('globe', { size: 15 }), 'Connection']),
-      el('p', { class: 'muted', style: 'margin:0 0 var(--space-4);' }, ['Point this station at your clinic’s sync server, then test and save.']),
-      el('div', { class: 'form-grid' }, connFields),
-      el('div', { class: 'action-row', style: 'margin-top:var(--space-2);' }, [testBtn, saveBtn]),
+      el('h3', { class: 'card-title' }, [icon('globe', { size: 15 }), 'Cloud status']),
+      el('div', {
+        class: 'inline-row',
+        style: 'margin:0; align-items:center; justify-content:space-between; gap:var(--space-4); flex-wrap:wrap;',
+      }, [
+        el('div', { style: 'display:flex; flex-direction:column; gap:6px;' }, [
+          el('div', { class: 'inline-row', style: 'margin:0; align-items:center; gap:var(--space-2);' }, [pill, statusNote]),
+          el('div', { class: 'subtle small' }, [`pushed ${st.pushed} · pulled ${st.pulled} · applied ${st.applied}`]),
+        ]),
+        syncNowBtn,
+      ]),
     ]));
 
-    /* --- Sync --- */
-    const canEnable = !!(st.url && st.hasKey);
-    const enableToggle = el('input', {
-      type: 'checkbox', checked: st.enabled,
-      style: 'width:18px; height:18px; accent-color:var(--accent); cursor:pointer; flex:0 0 auto;',
+    /* --- The main switch --- */
+    const onlineToggle = el('input', {
+      type: 'checkbox', checked: st.online,
+      style: 'width:22px; height:22px; accent-color:var(--accent); cursor:pointer; flex:0 0 auto;',
       onChange: async (ev) => {
         const on = ev.target.checked;
-        if (on && !canEnable) {
-          ev.target.checked = false;
-          toast('Save your cloud URL and key first, then enable sync.', 'error');
-          return;
-        }
         try {
-          await api.cloudConfig({ enabled: on });
-          toast(on ? 'Cloud sync enabled' : 'Cloud sync turned off', 'success');
+          await api.cloudConfig({ online: on });
+          toast(on ? 'Cloud sync on — this station is online' : 'Now running offline — will re-sync when you turn it back on', 'success');
           paint();
         } catch (e) {
           ev.target.checked = !on;
@@ -513,61 +501,61 @@ export function renderAdmin(ctx) {
       },
     });
 
-    // Status pill: Off when disabled, else Syncing / Error / Synced / waiting.
-    let pill;
-    if (!st.enabled) {
-      pill = el('span', { class: 'pill pill--neutral' }, ['Off']);
-    } else if (st.running) {
-      pill = el('span', { class: 'pill pill--amber' }, [el('span', { class: 'pill-dot' }), 'Syncing…']);
-    } else if (st.lastError) {
-      pill = el('span', { class: 'pill pill--danger' }, [icon('alert', { size: 12 }), 'Error']);
-    } else if (st.lastOk) {
-      pill = el('span', { class: 'pill pill--success' }, [el('span', { class: 'pill-dot' }), 'Synced']);
-    } else {
-      pill = el('span', { class: 'pill pill--neutral' }, ['Waiting for first sync']);
-    }
-
-    const statusRows = [
-      el('div', { class: 'inline-row', style: 'margin:0; align-items:center; gap:var(--space-2);' }, [
-        pill,
-        st.lastOk ? el('span', { class: 'muted small' }, [`Last sync ${new Date(st.lastOk).toLocaleTimeString()}`]) : null,
-      ]),
-    ];
-    if (st.enabled && st.lastError) {
-      statusRows.push(el('div', { class: 'small', style: 'color:var(--danger);' }, [st.lastError]));
-    }
-    statusRows.push(
-      el('div', { class: 'muted small' }, [`pushed ${st.pushed} · pulled ${st.pulled} · applied ${st.applied}`]),
-      el('div', { class: 'subtle small' }, [`Device ${st.deviceId}`]),
-    );
-
-    const syncNowBtn = el('button', { class: 'btn btn--ghost', onClick: async () => {
-      try {
-        const r = await api.cloudSyncNow();
-        if (r && r.ok) toast(`Synced — pushed ${r.pushed}, pulled ${r.pulled}, applied ${r.applied}`, 'success');
-        else toast((r && r.error) || 'Sync failed', 'error');
-        paint();
-      } catch (e) { toast(e.message, 'error'); }
-    } }, [icon('refresh', { size: 16 }), 'Sync now']);
-
     body.append(el('div', { class: 'card' }, [
-      el('h3', { class: 'card-title' }, [icon('refresh', { size: 15 }), 'Sync']),
       el('label', {
         class: 'inline-row',
-        style: 'margin:0 0 var(--space-4); align-items:center; gap:var(--space-3); cursor:pointer;',
+        style: 'margin:0 0 var(--space-3); align-items:center; gap:var(--space-3); cursor:pointer;',
       }, [
-        enableToggle,
-        el('div', {}, [
-          el('strong', { style: 'color:var(--text-strong); display:block;' }, ['Enable cloud sync for this station']),
-          el('span', { class: 'muted small' }, ['Automatically push local changes and pull updates from other stations.']),
-        ]),
+        onlineToggle,
+        el('strong', { style: 'color:var(--text-strong); font-size:var(--fs-h3);' }, ['This clinic is online']),
       ]),
-      el('div', {
-        class: 'inline-row',
-        style: 'margin:0; align-items:flex-start; justify-content:space-between; gap:var(--space-4); flex-wrap:wrap;',
-      }, [
-        el('div', { style: 'display:flex; flex-direction:column; gap:6px;' }, statusRows),
-        syncNowBtn,
+      el('p', { class: 'muted small', style: 'margin:0;' }, [
+        'Leave this on. Switch it off only when there’s no wifi at the clinic; the app keeps working locally and re-syncs automatically when you turn it back on.',
+      ]),
+    ]));
+
+    /* --- Advanced (rarely needed: point at a different server) --- */
+    const urlInput = el('input', {
+      class: 'input', type: 'text', value: st.url || '',
+      placeholder: 'https://caring-hands-sync.<subdomain>.workers.dev',
+    });
+    const keyInput = el('input', {
+      class: 'input', type: 'password',
+      placeholder: 'Leave blank to keep the current key',
+    });
+    const saveServerBtn = el('button', {
+      class: 'btn btn--primary',
+      onClick: async () => {
+        try {
+          // Send the key only when one was typed, so a blank field keeps the baked-in / saved key.
+          await api.cloudConfig({ url: urlInput.value.trim(), key: keyInput.value ? keyInput.value : undefined });
+          toast('Saved', 'success');
+          paint();
+        } catch (e) { toast(e.message, 'error'); }
+      },
+    }, [icon('checkCircle', { size: 16 }), 'Save server']);
+
+    body.append(el('details', { class: 'collapse' }, [
+      el('summary', {}, [
+        el('span', { style: 'display:flex; align-items:center; gap:9px;' }, [icon('lock', { size: 16 }), 'Advanced']),
+      ]),
+      el('div', { class: 'collapse-body' }, [
+        el('p', { class: 'muted small', style: 'margin:0 0 var(--space-4);' }, [
+          'Most clinics never need this. Only change it if you’ve been given a different sync server to point at.',
+        ]),
+        el('div', { class: 'form-grid' }, [
+          el('label', { class: 'field span-2' }, [
+            el('span', { class: 'field-label' }, ['Cloud server URL']),
+            urlInput,
+            el('span', { class: 'field-hint' }, [st.usingDefaultCloud ? 'Using the built-in clinic cloud.' : 'Custom server.']),
+          ]),
+          el('label', { class: 'field span-2' }, [
+            el('span', { class: 'field-label' }, ['Clinic key']),
+            keyInput,
+          ]),
+        ]),
+        el('div', { class: 'action-row', style: 'margin-top:var(--space-2);' }, [saveServerBtn]),
+        el('div', { class: 'subtle small', style: 'margin-top:var(--space-3);' }, [`Device ID: ${st.deviceId}`]),
       ]),
     ]));
   }

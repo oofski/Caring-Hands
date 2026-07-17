@@ -1311,11 +1311,25 @@ function applyRemoteRows(remoteRows) {
 }
 
 // Cloud config/state lives in the settings table under a cloud_ prefix.
+// v1.2.3: the app ships ALWAYS-ONLINE. Every install auto-connects to the clinic
+// cloud below with zero setup; the only thing a clinic ever changes is the simple
+// Online / Run-offline switch (cloud_mode). Advanced users can still override the
+// URL/key, and those saved values win over these baked defaults.
+const DEFAULT_CLOUD = {
+  url: 'https://little-block-222a.randy-982.workers.dev',
+  key: 'randy',
+};
 function getSyncMeta() {
+  const savedUrl = (getSetting('cloud_url') || '').trim();
+  const savedKey = (getSetting('cloud_key') || '').trim();
+  const url = savedUrl || DEFAULT_CLOUD.url;
+  const key = savedKey || DEFAULT_CLOUD.key;
+  // Online unless the clinic explicitly chose to run offline (no wifi).
+  const mode = getSetting('cloud_mode') === 'offline' ? 'offline' : 'online';
   return {
-    url: getSetting('cloud_url') || '',
-    key: getSetting('cloud_key') || '',
-    enabled: getSetting('cloud_enabled') === '1',
+    url, key, mode,
+    enabled: mode === 'online' && !!url && !!key,
+    usingDefaultCloud: !savedUrl,
     deviceId: getSetting('cloud_device_id') || '',
     cursor: getSetting('cloud_cursor') || '',
     lastPush: getSetting('cloud_last_push') || '',
@@ -1324,10 +1338,12 @@ function getSyncMeta() {
   };
 }
 function setSyncMeta(patch) {
-  const map = { url: 'cloud_url', key: 'cloud_key', enabled: 'cloud_enabled', deviceId: 'cloud_device_id', cursor: 'cloud_cursor', lastPush: 'cloud_last_push', lastOk: 'cloud_last_ok', lastError: 'cloud_last_error' };
+  const map = { url: 'cloud_url', key: 'cloud_key', mode: 'cloud_mode', deviceId: 'cloud_device_id', cursor: 'cloud_cursor', lastPush: 'cloud_last_push', lastOk: 'cloud_last_ok', lastError: 'cloud_last_error' };
   for (const [k, v] of Object.entries(patch || {})) {
+    // Back-compat: an `enabled` boolean maps onto the online/offline mode.
+    if (k === 'enabled') { setSetting('cloud_mode', v ? 'online' : 'offline'); continue; }
     if (!map[k]) continue;
-    setSetting(map[k], k === 'enabled' ? (v ? '1' : '0') : (v == null ? '' : String(v)));
+    setSetting(map[k], v == null ? '' : String(v));
   }
   return getSyncMeta();
 }

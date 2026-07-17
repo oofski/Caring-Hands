@@ -47,16 +47,21 @@ jobs:
       - name: Publish downloadable release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.2.2-build.${{ github.run_number }}
-          name: Caring Hands v1.2.2 (build ${{ github.run_number }})
+          tag_name: v1.2.3-build.${{ github.run_number }}
+          name: Caring Hands v1.2.3 (build ${{ github.run_number }})
           prerelease: false
           make_latest: true
           body: |
-            ## Caring Hands Worldwide — Practice Management Software (v1.2.2)
+            ## Caring Hands Worldwide — Practice Management Software (v1.2.3)
 
             Offline-first dental clinic app for Windows. **Download the installer once — it auto-updates from here on.**
 
-            **New in v1.2.2 — a professional new sign-in screen**
+            **New in v1.2.3 — cloud is now on automatically, no setup**
+            - **Always online out of the box.** Every station now connects to the clinic cloud automatically — the queue syncs across all devices with **zero setup**. No URLs, no keys, no "enable sync" — it just works.
+            - **One simple switch.** Admin → Cloud is now a single control: **the clinic is Online**, or flip it to **Run offline** if a location has no wifi. Offline still works fully and re-syncs automatically the moment you turn it back on.
+            - No more sync configuration to fuss with.
+
+            **From v1.2.2 — a professional new sign-in screen**
             - Redesigned staff **sign-in** as a clean two-panel screen: a branded Caring Hands hero on the left and the sign-in form on the right.
             - New **"Remember me on this device"** — the app remembers your Company ID / username (never your password) so you don't retype it next time.
             - Patient **check-in** is still one tap away from the sign-in screen. Nothing about how you sign in changed — same accounts, same passwords.

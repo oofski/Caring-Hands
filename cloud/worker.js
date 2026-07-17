@@ -219,10 +219,15 @@ async function handlePull(url, env) {
 // Auth
 // ---------------------------------------------------------------------------
 
+// The clinic key. Uses the CLINIC_KEY secret when set; otherwise falls back to
+// the built-in default so a clinic that just pastes this Worker in is online with
+// zero setup (the Caring Hands app ships with the same default baked in).
+const DEFAULT_CLINIC_KEY = 'randy';
+
 function isAuthorized(request, env) {
-  const expected = env && env.CLINIC_KEY;
-  // No configured key => reject everything (fail closed).
-  if (typeof expected !== 'string' || expected.length === 0) return false;
+  const expected = (env && typeof env.CLINIC_KEY === 'string' && env.CLINIC_KEY.length)
+    ? env.CLINIC_KEY
+    : DEFAULT_CLINIC_KEY;
 
   const provided = extractBearer(request);
   if (provided == null) return false;

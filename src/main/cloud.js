@@ -125,18 +125,22 @@ function notifyRenderer() {
 function status() {
   const m = db.getSyncMeta();
   return {
-    enabled: m.enabled, url: m.url, hasKey: !!m.key,
+    enabled: m.enabled, mode: m.mode, online: m.mode === 'online',
+    url: m.url, hasKey: !!m.key, usingDefaultCloud: m.usingDefaultCloud,
     deviceId: m.deviceId, cursor: m.cursor,
     lastOk: m.lastOk, lastPush: m.lastPush, lastError: m.lastError,
     running, ...lastResult,
   };
 }
 
-function applyConfig({ url, key, enabled }) {
+function applyConfig({ url, key, enabled, mode, online }) {
   const patch = {};
   if (url !== undefined) patch.url = trimUrl(url);
   if (key !== undefined) patch.key = key;
-  if (enabled !== undefined) patch.enabled = !!enabled;
+  // Accept mode ('online'|'offline'), an `online` boolean, or legacy `enabled`.
+  if (mode !== undefined) patch.mode = mode === 'offline' ? 'offline' : 'online';
+  else if (online !== undefined) patch.mode = online ? 'online' : 'offline';
+  else if (enabled !== undefined) patch.mode = enabled ? 'online' : 'offline';
   db.ensureDeviceId();
   db.setSyncMeta(patch);
   restartTimer();

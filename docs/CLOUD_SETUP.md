@@ -1,5 +1,14 @@
 # Caring Hands — Cloud Sync Setup (no installs, all in your browser)
 
+> **As of v1.2.3, clinics do NOTHING to get cloud sync.** The app ships **always-online**
+> with the clinic cloud built in — every station syncs automatically with zero setup.
+> The only control staff ever touch is the **Online / Run offline** switch in
+> **Admin → Cloud** (flip to offline only when a location has no wifi; it re-syncs
+> automatically when you switch back on).
+>
+> This document is the **one-time server setup** (already done for this deployment) —
+> keep it only for reference or if you ever stand up a brand-new clinic cloud.
+
 This sets up the shared cloud so every station sees one live patient queue. You do
 **not** need to install Node.js, a terminal, or any command-line tool. Everything is
 done by clicking around the **Cloudflare dashboard** in a web browser, then pasting one
@@ -7,9 +16,8 @@ URL and one password into the app.
 
 It's a one-time setup of about **10 minutes**. You'll do it once for the whole clinic.
 
-> **Offline-first:** Cloud sync is OFF until you turn it on. The app works with no
-> internet at all. If the connection drops mid-clinic, each station keeps working and
-> re-syncs automatically when it's back.
+> **Offline-first:** The app works with no internet at all. If the connection drops
+> mid-clinic, each station keeps working locally and re-syncs automatically when it's back.
 
 ---
 
