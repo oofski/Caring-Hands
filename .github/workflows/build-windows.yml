@@ -47,16 +47,20 @@ jobs:
       - name: Publish downloadable release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.2.3-build.${{ github.run_number }}
-          name: Caring Hands v1.2.3 (build ${{ github.run_number }})
+          tag_name: v1.2.4-build.${{ github.run_number }}
+          name: Caring Hands v1.2.4 (build ${{ github.run_number }})
           prerelease: false
           make_latest: true
           body: |
-            ## Caring Hands Worldwide — Practice Management Software (v1.2.3)
+            ## Caring Hands Worldwide — Practice Management Software (v1.2.4)
 
             Offline-first dental clinic app for Windows. **Download the installer once — it auto-updates from here on.**
 
-            **New in v1.2.3 — cloud is now on automatically, no setup**
+            **New in v1.2.4 — FIX: patients now show up on every device**
+            - **Cross-device fix.** A patient added on one computer now appears in the queue on **every** other computer, as it should. Previously each computer quietly used its own separate clinic event, so a synced patient was saved but hidden from the other stations' queues. All devices now share **one clinic** automatically.
+            - Nothing to do — just update every station to this version and they'll line up on the same shared queue. (Existing patients re-sync automatically.)
+
+            **From v1.2.3 — cloud is now on automatically, no setup**
             - **Always online out of the box.** Every station now connects to the clinic cloud automatically — the queue syncs across all devices with **zero setup**. No URLs, no keys, no "enable sync" — it just works.
             - **One simple switch.** Admin → Cloud is now a single control: **the clinic is Online**, or flip it to **Run offline** if a location has no wifi. Offline still works fully and re-syncs automatically the moment you turn it back on.
             - No more sync configuration to fuss with.

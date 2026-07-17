@@ -282,6 +282,40 @@ function verifyPassword(password, salt, expectedHash) {
 /*  Seed: default admin + starter event                               */
 /* ------------------------------------------------------------------ */
 
+// v1.2.4: the default clinic event shares ONE identity across every device, so a
+// patient created on any computer lands in the same event everywhere and shows up
+// in every station's queue. Without this each device made its own event with a
+// different id, and the active-event queue filtered out patients synced from
+// other devices (they synced into the DB but were invisible).
+const DEFAULT_EVENT_UID = '00000000-0000-4000-8000-000000000001';
+
+// Ensure this device's default clinic event uses the shared identity above, and
+// that the active event points at it — so cloud-synced patients are visible.
+function convergeDefaultEvent() {
+  const shared = db.prepare('SELECT id FROM events WHERE uid = ? ORDER BY id ASC LIMIT 1').get(DEFAULT_EVENT_UID);
+  const activeId = Number(getSetting('active_event_id')) || null;
+  const activeEv = activeId ? db.prepare('SELECT id, uid, name FROM events WHERE id = ?').get(activeId) : null;
+
+  if (!shared) {
+    // No shared default yet on this device → promote the oldest (seed) event to
+    // the shared identity and re-push it + its patients so the cloud converges.
+    const seedEv = db.prepare('SELECT id FROM events ORDER BY id ASC LIMIT 1').get();
+    if (!seedEv) return;
+    db.prepare('UPDATE events SET uid = ?, synced_rev = NULL, content_rev = NULL WHERE id = ?').run(DEFAULT_EVENT_UID, seedEv.id);
+    db.prepare('UPDATE patients SET synced_rev = NULL, content_rev = NULL WHERE event_id = ?').run(seedEv.id);
+    if (activeId !== seedEv.id) setSetting('active_event_id', String(seedEv.id));
+    return;
+  }
+  // A shared default already exists (e.g. pulled from another device). If the
+  // active event is still this device's own auto-seeded default (not a
+  // deliberately created event), fold its patients into the shared event and
+  // switch the queue to it.
+  if (activeEv && activeEv.id !== shared.id && activeEv.uid !== DEFAULT_EVENT_UID && activeEv.name === 'Lowell Fairgrounds Clinic') {
+    db.prepare('UPDATE patients SET event_id = ?, synced_rev = NULL, content_rev = NULL WHERE event_id = ?').run(shared.id, activeEv.id);
+    setSetting('active_event_id', String(shared.id));
+  }
+}
+
 function seed() {
   const userCount = db.prepare('SELECT COUNT(*) AS n FROM users').get().n;
   if (userCount === 0) {
@@ -305,12 +339,17 @@ function seed() {
 
   const eventCount = db.prepare('SELECT COUNT(*) AS n FROM events').get().n;
   if (eventCount === 0) {
+    // Fresh install: create the default event already carrying the shared
+    // identity, so every device's default event is the same cloud entity.
     const info = db.prepare(
-      `INSERT INTO events (name, location, start_date, end_date, languages, active, created_at)
-       VALUES (?,?,?,?,?,1,?)`
-    ).run('Lowell Fairgrounds Clinic', 'Lowell, OR', today(), today(), 'en,es', now());
+      `INSERT INTO events (name, location, start_date, end_date, languages, active, created_at, uid)
+       VALUES (?,?,?,?,?,1,?,?)`
+    ).run('Lowell Fairgrounds Clinic', 'Lowell, OR', today(), today(), 'en,es', now(), DEFAULT_EVENT_UID);
     setSetting('active_event_id', String(info.lastInsertRowid));
   }
+  // Existing installs (or after any event change): make sure the default event is
+  // the shared, cross-device identity and the queue is pointed at it.
+  convergeDefaultEvent();
 
   // v1.0.7: adopt any legacy clinical staff (created before event scoping, so
   // event_id IS NULL) into the active event, so "Start fresh for next event"
