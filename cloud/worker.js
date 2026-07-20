@@ -130,13 +130,17 @@ async function handlePush(request, env) {
     }
 
     // Last-Write-Wins: read the stored updated_at first, and only overwrite
-    // when the incoming updated_at is >= the stored one.
+    // only when the incoming updated_at is STRICTLY newer than the stored one.
+    // updated_at is a globally-unique, totally-ordered stamp (monotonic ISO time
+    // + device id), so this tie-break ("skip on <=") is identical to the client's
+    // apply rule ("apply only when env > local") — server and client can never
+    // diverge on an equal-timestamp tie.
     const existing = await env.DB
       .prepare('SELECT updated_at FROM sync_rows WHERE uid = ?')
       .bind(row.uid)
       .first();
 
-    if (existing && String(row.updated_at) < String(existing.updated_at)) {
+    if (existing && String(row.updated_at) <= String(existing.updated_at)) {
       skipped++;
       continue;
     }

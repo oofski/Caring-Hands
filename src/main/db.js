@@ -1226,15 +1226,25 @@ const NAME_SOURCE = {
 };
 
 function nameOfId(uid) { if (!uid) return null; const u = db.prepare('SELECT full_name FROM users WHERE id = ?').get(uid); return u ? u.full_name : null; }
-// Strictly-increasing per-device timestamp so no two rows on one device share an
-// updated_at — keeps the pull cursor from skipping rows tied at a page boundary.
-let _lastStamp = '';
-function monotonicNow() {
+// A globally-unique, totally-ordered revision stamp: a strictly-increasing
+// per-device ISO time, PERSISTED across restarts (so a wall-clock rewind can't
+// hand out an older stamp), with the device id appended so two devices can never
+// produce an identical stamp. String comparison of these stamps is therefore a
+// deterministic total order — used identically for the pull cursor AND for
+// last-write-wins on both the server and the client, so ms-level ties can neither
+// skip a row at a page boundary nor cause the two devices to disagree.
+let _lastStamp = null;
+function monotonicIso() {
+  if (_lastStamp == null) _lastStamp = getSetting('cloud_last_stamp') || '';
   let t = now();
-  if (t <= _lastStamp) t = new Date(Date.parse(_lastStamp) + 1).toISOString();
+  if (t <= _lastStamp) t = new Date(Date.parse(_lastStamp || t) + 1).toISOString();
   _lastStamp = t;
   return t;
 }
+function stampNow() {
+  return monotonicIso() + '@' + (getSetting('cloud_device_id') || '0');
+}
+function persistStamp() { if (_lastStamp) setSetting('cloud_last_stamp', _lastStamp); }
 function sig(obj) { return crypto.createHash('sha256').update(JSON.stringify(obj)).digest('hex'); }
 function uidOf(table, id) { if (!id) return null; const r = db.prepare(`SELECT uid FROM ${table} WHERE id = ?`).get(id); return r ? r.uid : null; }
 function localIdByUid(table, uid) { if (!uid) return null; const r = db.prepare(`SELECT id FROM ${table} WHERE uid = ?`).get(uid); return r ? r.id : null; }
@@ -1243,8 +1253,14 @@ function localIdByUid(table, uid) { if (!uid) return null; const r = db.prepare(
 function buildData(entity, row) {
   const out = {};
   for (const col of SYNC_COLS[entity]) {
-    if (NAME_SOURCE[col]) out[col] = row[col] || nameOfId(row[NAME_SOURCE[col]]) || null;
-    else out[col] = row[col] === undefined ? null : row[col];
+    if (NAME_SOURCE[col]) {
+      // Keep an already-stored name verbatim (including an empty string synced
+      // from a peer) so its content hash is stable and it isn't re-pushed every
+      // cycle; only resolve from the local user id when the column is null.
+      out[col] = row[col] != null ? row[col] : (nameOfId(row[NAME_SOURCE[col]]) || null);
+    } else {
+      out[col] = row[col] === undefined ? null : row[col];
+    }
   }
   return out;
 }
@@ -1281,12 +1297,14 @@ function collectSyncRows(max = 400) {
       // last stamped for (content_rev), keeping timestamps stable across retries.
       let updatedAt = row.updated_at;
       if (row.content_rev !== s || !updatedAt) {
-        if (row.content_rev == null && updatedAt) {
-          // First sync of a pre-existing row: keep its real updated_at (fair LWW),
-          // just record which content that timestamp is for.
-          db.prepare(`UPDATE ${table} SET content_rev = ? WHERE id = ?`).run(s, row.id);
+        if (row.content_rev == null && updatedAt && !String(updatedAt).includes('@')) {
+          // First sync of a pre-existing row: KEEP its real edit time (fair LWW)
+          // but append the device id so the stamp is still globally unique and
+          // totally ordered (no page-boundary ties across devices).
+          updatedAt = String(updatedAt) + '@' + (getSetting('cloud_device_id') || '0');
+          db.prepare(`UPDATE ${table} SET updated_at = ?, content_rev = ? WHERE id = ?`).run(updatedAt, s, row.id);
         } else {
-          updatedAt = monotonicNow();
+          updatedAt = stampNow();
           db.prepare(`UPDATE ${table} SET updated_at = ?, content_rev = ? WHERE id = ?`).run(updatedAt, s, row.id);
         }
       }
@@ -1299,6 +1317,7 @@ function collectSyncRows(max = 400) {
       mark.push({ table, id: row.id, sig: s });
     }
   }
+  persistStamp(); // survive restarts / clock rewinds
   return { rows, mark };
 }
 
@@ -1417,6 +1436,17 @@ function ensureDeviceId() {
   return id;
 }
 
+// A small, persistent buffer of pulled rows whose parent wasn't present yet
+// (e.g. a treatment arriving before its patient). They are retried on every
+// pull until their parent shows up, so the pull cursor can always move forward
+// instead of wedging — and no row is ever dropped.
+const PENDING_CAP = 500;
+function getSyncPending() { return safeJson(getSetting('cloud_pending'), []); }
+function setSyncPending(rows) {
+  const arr = Array.isArray(rows) ? rows.slice(-PENDING_CAP) : [];
+  setSetting('cloud_pending', JSON.stringify(arr));
+}
+
 function close() {
   if (db) db.close();
   db = null;
@@ -1436,4 +1466,5 @@ module.exports = {
   getSetting, setSetting,
   // v1.1.0 cloud sync
   collectSyncRows, applyRemoteRows, markSynced, getSyncMeta, setSyncMeta, ensureDeviceId,
+  getSyncPending, setSyncPending,
 };

@@ -65,15 +65,18 @@ async function pushOnce(base, key, deviceId) {
 
 async function pullOnce(base, key) {
   let cursor = db.getSyncMeta().cursor || '';
-  let safeCursor = cursor;   // only advanced past rows that fully applied
-  let carry = [];            // deferred children waiting for a parent in a later page
   let pulled = 0, applied = 0, guard = 0;
-  // Follow `more` pages so a first sync catches up fully. Deferred rows (a child
-  // whose parent lands in a later page) are carried forward and re-applied, and
-  // the persisted cursor is never advanced past anything still deferred — so a
-  // row can be re-ordered across pages but never dropped.
+  // Retry any previously-orphaned rows first — their parent may have arrived
+  // since (e.g. a treatment that was pulled before its patient).
+  let carry = db.getSyncPending();
+  // Follow `more` pages so a first sync catches up fully. A child whose parent
+  // lands in a later page is carried forward within the loop. Because updated_at
+  // is now a globally-unique total order, no row is ever skipped at a page
+  // boundary, so the cursor can always advance — orphans that outlive the whole
+  // delta are parked in the persistent pending buffer and retried next cycle
+  // (never dropped, never wedging the cursor).
   for (;;) {
-    if (guard++ > 200) break;
+    if (guard++ > 500) break;
     const qs = `?since=${encodeURIComponent(cursor)}&limit=${PULL_LIMIT}`;
     const r = await httpJson('GET', base + '/v1/pull' + qs, key);
     const rows = (r && r.rows) || [];
@@ -84,10 +87,11 @@ async function pullOnce(base, key) {
       carry = res.deferredRows || [];
     }
     const pageCursor = (r && r.cursor) || cursor;
-    if (!carry.length) { safeCursor = pageCursor; db.setSyncMeta({ cursor: safeCursor }); }
-    cursor = pageCursor;
+    if (pageCursor !== cursor) { cursor = pageCursor; db.setSyncMeta({ cursor }); }
     if (!r || !r.more) break;
   }
+  // Park still-unresolved orphans for the next cycle (bounded, persisted).
+  db.setSyncPending(carry);
   return { pulled, applied };
 }
 
