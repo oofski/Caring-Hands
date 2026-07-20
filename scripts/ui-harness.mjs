@@ -420,6 +420,18 @@ async function main() {
   log(pr.ok && pr.data.deleted > 0, 'ADMIN can clear event staff: removed ' + (pr.ok ? pr.data.deleted : '?'));
   log(remaining.some((u) => u.role === 'admin') && !remaining.some((u) => u.username === 'hygx'), 'clear keeps admin, removes scoped staff');
 
+  // ---- v1.4.4: staff accounts are SYNCED so a team created on one laptop shows
+  //               up on every laptop. Guard that 'user' is a syncable entity. ----
+  currentUser = db.login('admin', 'admin');
+  db.createUser(currentUser, { username: 'syncme', full_name: 'Sync Me', role: 'doctor', password: 'x' });
+  const syncRows = db.collectSyncRows(1000).rows;
+  const userRow = syncRows.find((r) => r.entity === 'user' && r.data && r.data.username === 'syncme');
+  log(!!userRow, 'v1.4.4: staff accounts are collected as syncable rows (user entity present)');
+  log(!!userRow && userRow.data.role === 'doctor' && !!userRow.data.hash, 'v1.4.4: synced staff carry role + password hash so the account works on other laptops');
+  log(!!userRow && userRow.event_uid != null, 'v1.4.4: event-scoped staff carry their event so scoping survives the sync');
+  const adminRow = syncRows.find((r) => r.entity === 'user' && r.data && r.data.username === 'admin');
+  log(!adminRow || adminRow.uid === '00000000-0000-4000-8000-000000000002', 'v1.4.4: bootstrap admin uses the shared cloud identity (converges, no per-laptop duplicate)');
+
   await tick();
   if (errors.length) errors.forEach((e) => log(false, 'RUNTIME: ' + e));
   const failed = results.filter((r) => !r[0]).length;

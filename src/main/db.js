@@ -192,7 +192,9 @@ function migrate() {
   // an updated_at revision, and synced_rev (the revision last pushed/applied —
   // a row is "dirty" when updated_at != synced_rev). Denormalized *_by_name
   // columns let accountability survive across devices without syncing accounts.
-  for (const tbl of ['events', 'patients', 'triage', 'treatments', 'consents', 'xrays']) {
+  // v1.4.4: staff accounts sync too, so a team created on one laptop appears on
+  // every laptop. The users table gets the same sync bookkeeping columns.
+  for (const tbl of ['events', 'patients', 'triage', 'treatments', 'consents', 'xrays', 'users']) {
     addColumn(tbl, 'uid', 'TEXT');
     addColumn(tbl, 'updated_at', 'TEXT');
     addColumn(tbl, 'synced_rev', 'TEXT');   // sig last confirmed synced (== sig means clean)
@@ -227,7 +229,10 @@ function recreateUsersRoleCheck() {
   // upgrades) so no accounts, roles, active flags, or event scoping are lost.
   const existingCols = db.prepare('PRAGMA table_info(users)').all().map((c) => c.name);
   const rolesSql = ROLES.map((r) => `'${r}'`).join(',');
-  const carried = ['id', 'username', 'full_name', 'role', 'salt', 'hash', 'active', 'created_at', 'event_id']
+  // Carry EVERY column that currently exists — including the cloud-sync bookkeeping
+  // columns (uid/updated_at/synced_rev/content_rev) so a future role addition never
+  // strips a staff account's sync identity (which would re-duplicate them on sync).
+  const carried = ['id', 'username', 'full_name', 'role', 'salt', 'hash', 'active', 'created_at', 'event_id', 'uid', 'updated_at', 'synced_rev', 'content_rev']
     .filter((c) => existingCols.includes(c));
   db.pragma('foreign_keys = OFF');
   const tx = db.transaction(() => {
@@ -241,7 +246,11 @@ function recreateUsersRoleCheck() {
         hash         TEXT NOT NULL,
         active       INTEGER NOT NULL DEFAULT 1,
         created_at   TEXT NOT NULL,
-        event_id     INTEGER
+        event_id     INTEGER,
+        uid          TEXT,
+        updated_at   TEXT,
+        synced_rev   TEXT,
+        content_rev  TEXT
       );
     `);
     db.exec(
@@ -289,6 +298,12 @@ function verifyPassword(password, salt, expectedHash) {
 // different id, and the active-event queue filtered out patients synced from
 // other devices (they synced into the DB but were invisible).
 const DEFAULT_EVENT_UID = '00000000-0000-4000-8000-000000000001';
+// v1.4.4: the bootstrap administrator (username 'admin') is seeded independently
+// on every device. Give it ONE shared cloud identity — exactly like the default
+// event — so the seeded admin is a single synced row instead of N colliding
+// 'admin' rows (one per laptop). Real, admin-created accounts keep their own
+// unique uid and sync normally.
+const DEFAULT_ADMIN_UID = '00000000-0000-4000-8000-000000000002';
 
 // Ensure this device's default clinic event uses the shared identity above, and
 // that the active event points at it — so cloud-synced patients are visible.
@@ -305,6 +320,32 @@ function convergeDefaultEvent() {
   // Re-push its patients so their event_uid updates to the shared identity on
   // every device (the applyRemoteRows UPDATE now carries event_id — see below).
   db.prepare('UPDATE patients SET synced_rev = NULL, content_rev = NULL WHERE event_id = ?').run(seedEv.id);
+}
+
+// Point this device's bootstrap admin at the shared identity so every laptop's
+// seeded 'admin' is ONE cloud row (not N colliding ones). Conservative: only the
+// pristine seed admin (username 'admin', role admin) is promoted, and only when
+// nothing already holds the shared uid here.
+function convergeSeedAdmin() {
+  if (db.prepare('SELECT 1 FROM users WHERE uid = ? LIMIT 1').get(DEFAULT_ADMIN_UID)) return;
+  const seed = db.prepare("SELECT * FROM users WHERE username = 'admin' AND role = 'admin' ORDER BY id ASC LIMIT 1").get();
+  if (!seed) return;
+  if (verifyPassword('admin', seed.salt, seed.hash)) {
+    // STILL the untouched default admin/admin. Converge it to the shared uid but
+    // stamp it "ancient" so it ALWAYS loses last-write-wins to a laptop that set a
+    // real admin password — a fresh install must never reset the clinic's admin.
+    // content_rev = sig(data) makes collectSyncRows push it verbatim (no re-stamp).
+    const s = sig(buildData('user', seed));
+    const ancient = '0000-01-01T00:00:00.000Z@' + (getSetting('cloud_device_id') || '0');
+    db.prepare('UPDATE users SET uid = ?, updated_at = ?, synced_rev = NULL, content_rev = ? WHERE id = ?')
+      .run(DEFAULT_ADMIN_UID, ancient, s, seed.id);
+  } else {
+    // The admin password was changed on this laptop: converge to the shared uid and
+    // let collectSyncRows stamp it with a real current time so it propagates and
+    // wins over any default admin still out there.
+    db.prepare('UPDATE users SET uid = ?, synced_rev = NULL, content_rev = NULL WHERE id = ?')
+      .run(DEFAULT_ADMIN_UID, seed.id);
+  }
 }
 
 function seed() {
@@ -341,6 +382,7 @@ function seed() {
   // Existing installs (or after any event change): make sure the default event is
   // the shared, cross-device identity and the queue is pointed at it.
   convergeDefaultEvent();
+  convergeSeedAdmin();
 
   // v1.0.7: adopt any legacy clinical staff (created before event scoping, so
   // event_id IS NULL) into the active event, so "Start fresh for next event"
@@ -1257,11 +1299,16 @@ function exportEventJson(eventId) {
 /*  fields are hashed) so no write path had to change.                 */
 /* ================================================================== */
 
-const ENTITY_TABLE = { event: 'events', patient: 'patients', triage: 'triage', treatment: 'treatments', consent: 'consents', xray: 'xrays' };
-const APPLY_ORDER = ['event', 'patient', 'triage', 'treatment', 'consent', 'xray'];
+const ENTITY_TABLE = { event: 'events', user: 'users', patient: 'patients', triage: 'triage', treatment: 'treatments', consent: 'consents', xray: 'xrays' };
+// 'user' is applied right after 'event' (a scoped staff account is parented to an
+// event, exactly like a patient) and before patients.
+const APPLY_ORDER = ['event', 'user', 'patient', 'triage', 'treatment', 'consent', 'xray'];
 // Syncable payload columns per entity (fixed order -> stable content hash).
 const SYNC_COLS = {
   event: ['name', 'location', 'start_date', 'end_date', 'languages', 'active', 'created_at'],
+  // Staff account. salt+hash travel so the account can sign in on every laptop;
+  // event scoping travels via event_uid (the parent), NULL for global admins.
+  user: ['username', 'full_name', 'role', 'salt', 'hash', 'active', 'created_at'],
   patient: ['language', 'first_name', 'last_name', 'dob', 'gender', 'phone', 'email', 'demographics', 'medical_history', 'dental_history', 'status', 'created_at', 'dismissed_at', 'dismissed_by_name'],
   triage: ['complaint', 'flags', 'checklist', 'teeth', 'teeth_notes', 'notes', 'xray_count', 'xray_station', 'assigned_to', 'status', 'triage_signature', 'triage_signer_name', 'triaged_at', 'bp_systolic', 'bp_diastolic', 'heart_rate', 'vitals_at', 'blood_thinner', 'blood_thinner_detail', 'route', 'routed_at', 'emt_review', 'emt_signed_off', 'triaged_by_name', 'vitals_by_name', 'routed_by_name'],
   treatment: ['fillings', 'extractions', 'cleaning', 'anesthetic', 'other_procedures', 'clinical_notes', 'provider_name', 'provider_signature', 'locked', 'completed_at', 'completed_by_name'],
@@ -1359,8 +1406,10 @@ function collectSyncRows(max = 400) {
       }
       rows.push({
         entity, uid: row.uid,
-        event_uid: entity === 'patient' ? uidOf('events', row.event_id) : null,
-        patient_uid: (entity !== 'event' && entity !== 'patient') ? uidOf('patients', row.patient_id) : null,
+        // Patients and (event-scoped) staff both hang off an event; a global admin
+        // has event_id NULL -> event_uid NULL (no parent, never deferred on apply).
+        event_uid: (entity === 'patient' || entity === 'user') ? uidOf('events', row.event_id) : null,
+        patient_uid: (entity !== 'event' && entity !== 'patient' && entity !== 'user') ? uidOf('patients', row.patient_id) : null,
         deleted: 0, updated_at: updatedAt, data,
       });
       mark.push({ table, id: row.id, sig: s });
@@ -1399,6 +1448,22 @@ function applyRemoteRows(remoteRows) {
     // Resolve parent local id.
     let parentCol = null, parentId = null;
     if (entity === 'patient') { parentCol = 'event_id'; parentId = localIdByUid('events', env.event_uid); if (!parentId) { deferred++; deferredRows.push(env); return; } }
+    else if (entity === 'user') {
+      // A staff account is parented to an event (NULL for a global admin). Defer a
+      // scoped account whose event hasn't synced here yet; a NULL parent is fine.
+      parentCol = 'event_id';
+      if (env.event_uid) { parentId = localIdByUid('events', env.event_uid); if (!parentId) { deferred++; deferredRows.push(env); return; } }
+      else parentId = null;
+      // UNIQUE(username) guard: if a DIFFERENT local row already owns this username
+      // (every device seeds its own 'admin'; two admins could also create the same
+      // username offline), adopt that row's identity instead of a colliding INSERT
+      // that would otherwise skip this account forever. LWW then reconciles fields.
+      if (!existing) {
+        const uname = env.data && env.data.username;
+        const dupe = uname ? db.prepare('SELECT id FROM users WHERE username = ?').get(uname) : null;
+        if (dupe) { db.prepare('UPDATE users SET uid = ? WHERE id = ?').run(env.uid, dupe.id); return applyOne(env); }
+      }
+    }
     else if (entity !== 'event') {
       parentCol = 'patient_id'; parentId = localIdByUid('patients', env.patient_uid); if (!parentId) { deferred++; deferredRows.push(env); return; }
       // Guard the UNIQUE(patient_id) tables (triage/treatments): if a row already
