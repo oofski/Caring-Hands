@@ -47,16 +47,23 @@ jobs:
       - name: Publish downloadable release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.4.6-build.${{ github.run_number }}
-          name: Caring Hands v1.4.6 (build ${{ github.run_number }})
+          tag_name: v1.4.7-build.${{ github.run_number }}
+          name: Caring Hands v1.4.7 (build ${{ github.run_number }})
           prerelease: false
           make_latest: true
           body: |
-            ## Caring Hands Worldwide — Practice Management Software (v1.4.6)
+            ## Caring Hands Worldwide — Practice Management Software (v1.4.7)
 
             Offline-first dental clinic app for Windows. **Download the installer once — it auto-updates from here on.**
 
-            **New in v1.4.6 — the active event now syncs across laptops**
+            **New in v1.4.7 — updated consent forms, chairside consent, and a few clinical fixes**
+            - **Complete consent wording.** The General consent and the Oral Surgery consent now use the full, updated wording (the oral-surgery form includes the post-op / after-hours call instructions and hold-harmless). Read-aloud still works. Spanish and the other languages keep their existing translations; the new wording is the English authoritative text.
+            - **Complete a consent at the dentist's chair.** The dentist's Treat screen now shows a **Consents** card right under patient history. If a patient wanted a filling but the dentist recommends an extraction, the dentist can have the patient complete the **Oral Surgery consent right there** — enter the tooth number(s), have the patient sign, done. (Also works for capturing a General consent if one is somehow missing.)
+            - **General consent required before treatment.** The dentist can't document treatment until the General consent is on file. Every check-in already captures it, so nothing changes for normal visits; if it's ever missing, the Consents card lets the patient complete it first.
+            - **Phone numbers accept up to 10 digits** (digits only) at check-in and when editing a record. It's a cap, not a required length, so shorter local numbers still work.
+            - **High blood pressure — record re-checks.** When a reading is over 180/100, the vitals station lets you record **up to two more BP readings**. They show on the dentist's screen and print on the record (each in red if still high).
+
+            **From v1.4.6 — the active event now syncs across laptops**
             - **Fix: setting the clinic event carries to every computer.** Choosing an event under **Admin → Events → Set active** used to only change *that* computer, so laptops could sit on different events and split the patient queue. Now the selection syncs: set the event on one laptop and every other laptop switches to the **same** event automatically, so new check-ins and the queue line up everywhere. If two people pick different events at once, the most recent choice wins on all laptops. (Turning an event off, or creating brand-new events, syncs the same way.)
             - Nothing to configure — just update every station and pick your event once.
 
@@ -118,8 +125,8 @@ jobs:
 
             Includes everything from v1.0.2–1.1.1 (optional Cloud Sync, triage-free flow, per-event staff, Oregon consent, USB workflow, accountability, Russian, in-app auto-update).
 
-            - **Caring-Hands-Setup-1.4.6.exe** — installer (recommended; required for auto-update).
-            - **Caring-Hands-Portable-1.4.6.exe** — portable (no auto-update).
+            - **Caring-Hands-Setup-1.4.7.exe** — installer (recommended; required for auto-update).
+            - **Caring-Hands-Portable-1.4.7.exe** — portable (no auto-update).
 
             First sign-in: `admin / admin` — then create your staff accounts. All clinical data stays on the device unless you enable Cloud Sync.
           files: |
