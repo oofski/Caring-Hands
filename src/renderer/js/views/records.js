@@ -4,7 +4,6 @@ import { api } from '../api.js';
 import { icon } from '../icons.js';
 import { store } from '../store.js';
 import { statusPill } from './dashboard.js';
-import { exportButtons } from './provider.js';
 import { incompleteBanner } from '../components/patientHistory.js';
 
 export function renderRecords(ctx, params = {}) {
@@ -196,10 +195,7 @@ export function renderRecords(ctx, params = {}) {
         el('div', { class: 'col' }, [
           el('div', { class: 'card' }, [
             el('h3', { class: 'card-title' }, ['Export & deliver']),
-            exportButtons(ctx, id),
-            el('button', { class: 'btn btn--ghost btn--block', style: 'margin-top:8px', onClick: () => preview(id) }, [icon('eye', { size: 16 }), 'Preview PDF']),
-            el('button', { class: 'btn btn--ghost btn--block', onClick: () => screenDisplay(p) }, [icon('phone', { size: 16 }), 'Screen display for photo']),
-            p.email ? el('button', { class: 'btn btn--ghost btn--block', onClick: () => emailRecord(p) }, [icon('mail', { size: 16 }), 'Email to patient']) : null,
+            exportCard(id, p),
           ]),
           store.is('admin') ? el('div', { class: 'card' }, [
             el('h3', { class: 'card-title' }, ['Admin']),
@@ -254,6 +250,33 @@ export function renderRecords(ctx, params = {}) {
     if (!ok) return;
     try { await api.deletePatient(p.id); toast('Patient record deleted', 'success'); ctx.navigate('records'); }
     catch (e) { toast(e.message, 'error'); }
+  }
+
+  // Streamlined export/deliver block. ONE obvious primary action (save the full
+  // record PDF) plus the most common delivery (email, when we have an address);
+  // every other format/tool is tucked under "More options" so the panel isn't a
+  // wall of near-identical buttons.
+  function exportCard(id, p) {
+    const run = async (fn) => {
+      try { const r = await fn(); if (r && r.saved) toast(`Saved: ${r.path}`, 'success'); else if (r && r.printed) toast('Sent to printer', 'success'); }
+      catch (e) { toast(e.message, 'error'); }
+    };
+    const canUsb = store.can('admin', 'doctor'); // patient-USB export is admin/doctor only (IPC)
+    return el('div', { class: 'action-stack' }, [
+      el('button', { class: 'btn btn--primary btn--block', onClick: () => run(() => api.pdfGenerate(id, 'full')) }, [icon('save', { size: 16 }), 'Save record PDF']),
+      p.email ? el('button', { class: 'btn btn--ghost btn--block', onClick: () => emailRecord(p) }, [icon('mail', { size: 16 }), 'Email to patient']) : null,
+      el('details', { class: 'collapse', style: 'margin-top:4px' }, [
+        el('summary', { style: 'font-size:var(--fs-base)' }, ['More options']),
+        el('div', { class: 'collapse-body action-stack' }, [
+          el('button', { class: 'btn btn--ghost btn--block', onClick: () => run(() => api.pdfGenerate(id, 'progress')) }, [icon('clipboard', { size: 16 }), 'Progress note PDF']),
+          el('button', { class: 'btn btn--ghost btn--block', onClick: () => run(() => api.pdfGenerate(id, 'summary')) }, [icon('user', { size: 16 }), 'Patient summary PDF']),
+          el('button', { class: 'btn btn--ghost btn--block', onClick: () => preview(id) }, [icon('eye', { size: 16 }), 'Preview PDF']),
+          el('button', { class: 'btn btn--ghost btn--block', onClick: () => run(() => api.pdfPrint(id, 'full')) }, [icon('print', { size: 16 }), 'Print']),
+          el('button', { class: 'btn btn--ghost btn--block', onClick: () => screenDisplay(p) }, [icon('phone', { size: 16 }), 'Screen display for photo']),
+          canUsb ? el('button', { class: 'btn btn--ghost btn--block', onClick: () => run(() => api.exportRecordUsb(id)) }, [icon('upload', { size: 16 }), 'Save to patient USB']) : null,
+        ]),
+      ]),
+    ]);
   }
 
   async function preview(id) {

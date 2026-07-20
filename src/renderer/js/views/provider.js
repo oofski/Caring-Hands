@@ -794,12 +794,18 @@ export function exportButtons(ctx, id) {
     try { const r = await fn(); if (r && r.saved) ctx.toast(`Saved: ${r.path}`, 'success'); else if (r && r.printed) ctx.toast('Sent to printer', 'success'); }
     catch (e) { ctx.toast(e.message, 'error'); }
   };
+  // Streamlined: ONE clear primary (the full record) with the other formats
+  // tucked under "More formats" so the screen isn't a wall of buttons.
   return el('div', { class: 'action-stack', style: 'margin-top:12px' }, [
-    el('button', { class: 'btn btn--primary btn--block', onClick: () => run(() => api.pdfGenerate(id, 'progress')) }, [icon('save', { size: 16 }), 'Progress Note PDF']),
-    el('button', { class: 'btn btn--ghost btn--block', onClick: () => run(() => api.pdfGenerate(id, 'full')) }, [icon('clipboard', { size: 16 }), 'Full Record PDF']),
-    // F17: one-page patient summary PDF.
-    el('button', { class: 'btn btn--ghost btn--block', onClick: () => run(() => api.pdfGenerate(id, 'summary')) }, [icon('user', { size: 16 }), 'Patient summary PDF']),
-    el('button', { class: 'btn btn--ghost btn--block', onClick: () => run(() => api.pdfPrint(id, 'full')) }, [icon('print', { size: 16 }), 'Print']),
-    el('button', { class: 'btn btn--ghost btn--block', onClick: () => run(() => api.exportRecordUsb(id)) }, [icon('upload', { size: 16 }), 'Save to patient USB']),
+    el('button', { class: 'btn btn--primary btn--block', onClick: () => run(() => api.pdfGenerate(id, 'full')) }, [icon('save', { size: 16 }), 'Save record PDF']),
+    el('details', { class: 'collapse', style: 'margin-top:4px' }, [
+      el('summary', { style: 'font-size:var(--fs-base)' }, ['More formats']),
+      el('div', { class: 'collapse-body action-stack' }, [
+        el('button', { class: 'btn btn--ghost btn--block', onClick: () => run(() => api.pdfGenerate(id, 'progress')) }, [icon('clipboard', { size: 16 }), 'Progress note PDF']),
+        el('button', { class: 'btn btn--ghost btn--block', onClick: () => run(() => api.pdfGenerate(id, 'summary')) }, [icon('user', { size: 16 }), 'Patient summary PDF']),
+        el('button', { class: 'btn btn--ghost btn--block', onClick: () => run(() => api.pdfPrint(id, 'full')) }, [icon('print', { size: 16 }), 'Print']),
+        el('button', { class: 'btn btn--ghost btn--block', onClick: () => run(() => api.exportRecordUsb(id)) }, [icon('upload', { size: 16 }), 'Save to patient USB']),
+      ]),
+    ]),
   ]);
 }

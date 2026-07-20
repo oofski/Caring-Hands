@@ -27,7 +27,7 @@ const appRoot = document.getElementById('app');
 // order within a module follows insertion order below.
 const VIEWS = {
   // ---- Top-level (always visible) ----
-  dashboard: { render: renderDashboard, roles: ['admin', 'doctor', 'triage', 'emt', 'checkout', 'hygienist'], icon: 'dashboard', label: () => t('nav.dashboard'), module: 'top' },
+  dashboard: { render: renderDashboard, roles: ['admin', 'doctor', 'triage', 'emt', 'checkout', 'hygienist', 'registration'], icon: 'dashboard', label: () => t('nav.dashboard'), module: 'top' },
   // ---- Clinic (collapsible) — the day-to-day stations ----
   emt: { render: renderEmt, roles: ['admin', 'emt', 'triage'], icon: 'syringe', label: () => t('nav.emt'), module: 'clinic' },
   hygienist: { render: renderHygienist, roles: ['admin', 'hygienist'], icon: 'sparkle', label: () => t('nav.hygienist'), module: 'clinic' },

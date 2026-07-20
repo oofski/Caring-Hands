@@ -207,10 +207,11 @@ function migrate() {
   db.exec('CREATE INDEX IF NOT EXISTS idx_sync_events ON events(uid)');
 }
 
-const ROLES = ['admin', 'doctor', 'triage', 'emt', 'checkout', 'hygienist'];
+const ROLES = ['admin', 'doctor', 'triage', 'emt', 'checkout', 'hygienist', 'registration'];
 // Roles that do their clinical work on real patients (used for event-scoped
-// staff clearing — administrators are global and never swept).
-const EVENT_STAFF_ROLES = ['doctor', 'triage', 'emt', 'checkout', 'hygienist'];
+// staff clearing — administrators are global and never swept). 'registration'
+// is a front-desk role scoped to the event, so it clears with the rest.
+const EVENT_STAFF_ROLES = ['doctor', 'triage', 'emt', 'checkout', 'hygienist', 'registration'];
 
 // SQLite can't ALTER a CHECK constraint, so recreate the users table whenever a
 // role in ROLES is missing from the stored CHECK. This is how new roles ship

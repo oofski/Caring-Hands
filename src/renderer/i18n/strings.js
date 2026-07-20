@@ -80,7 +80,7 @@ const en = {
     error: 'Invalid username or password.',
     kiosk: 'Start patient check-in', kioskHint: 'Hand the device to a patient to begin intake',
   },
-  roles: { admin: 'Administrator', doctor: 'Dentist', triage: 'Front Desk (legacy)', emt: 'EMT / Nurse', checkout: 'Check-Out', hygienist: 'Hygienist' },
+  roles: { admin: 'Administrator', doctor: 'Dentist', triage: 'Front Desk (legacy)', emt: 'EMT / Nurse', checkout: 'Check-Out', hygienist: 'Hygienist', registration: 'Registration' },
   nav: {
     dashboard: 'Dashboard', checkin: 'Check-In', triage: 'Triage', provider: 'Dentist',
     records: 'Records', reports: 'Reports', admin: 'Admin', logout: 'Sign out',
@@ -176,7 +176,7 @@ const es = {
     error: 'Usuario o contraseña inválidos.',
     kiosk: 'Iniciar registro de paciente', kioskHint: 'Entregue el dispositivo al paciente para comenzar',
   },
-  roles: { admin: 'Administrador', doctor: 'Dentista', triage: 'Recepción (anterior)', emt: 'Enfermero/a (EMT)', checkout: 'Salida', hygienist: 'Higienista' },
+  roles: { admin: 'Administrador', doctor: 'Dentista', triage: 'Recepción (anterior)', emt: 'Enfermero/a (EMT)', checkout: 'Salida', hygienist: 'Higienista', registration: 'Registro' },
   nav: {
     dashboard: 'Panel', checkin: 'Registro', triage: 'Triaje', provider: 'Dentista',
     records: 'Registros', reports: 'Reportes', admin: 'Admin', logout: 'Salir',
@@ -331,7 +331,7 @@ const ru = {
   },
   app: { name: 'Caring Hands', sub: 'Worldwide', tagline: 'Руки помощи для здоровой жизни' },
   login: { kiosk: 'Начать регистрацию пациента', kioskHint: 'Передайте устройство пациенту, чтобы начать' },
-  roles: { admin: 'Администратор', doctor: 'Стоматолог', triage: 'Регистратура (устар.)', emt: 'Медбрат/сестра', checkout: 'Выписка', hygienist: 'Гигиенист' },
+  roles: { admin: 'Администратор', doctor: 'Стоматолог', triage: 'Регистратура (устар.)', emt: 'Медбрат/сестра', checkout: 'Выписка', hygienist: 'Гигиенист', registration: 'Регистрация' },
   intake: {
     welcome: 'Добро пожаловать в Caring Hands', chooseLanguage: 'Пожалуйста, выберите язык',
     start: 'Начать', step: 'Шаг', of: 'из',

@@ -33,10 +33,13 @@ const PERMS = {
   'events:setState': ['admin'],
   'events:delete': ['admin'],
   'patients:delete': ['admin'],
-  'patients:create': ['admin', 'doctor', 'triage', 'emt'],
+  // 'registration' is a front-desk check-in role. patients:create is registered
+  // raw (ungated, like the kiosk) so it can start check-ins; this list is the
+  // documented intent.
+  'patients:create': ['admin', 'doctor', 'triage', 'emt', 'registration'],
   'patients:update': ['admin', 'triage', 'doctor'],
   'patients:get': ['admin', 'doctor', 'triage', 'emt', 'checkout', 'hygienist'],
-  'patients:list': ['admin', 'doctor', 'triage', 'emt', 'checkout', 'hygienist'],
+  'patients:list': ['admin', 'doctor', 'triage', 'emt', 'checkout', 'hygienist', 'registration'],
   'patients:searchAll': ['admin', 'doctor', 'triage', 'emt', 'checkout', 'hygienist'],
   'patients:history': ['admin', 'doctor', 'triage', 'emt', 'checkout', 'hygienist'],
   'patients:incomplete': ['admin'],
@@ -67,8 +70,8 @@ const PERMS = {
   'audit:list': ['admin'],
   'cloud:config': ['admin'],
   'cloud:test': ['admin'],
-  'cloud:status': ['admin', 'doctor', 'triage', 'emt', 'checkout', 'hygienist'],
-  'cloud:syncNow': ['admin', 'doctor', 'triage', 'emt', 'checkout', 'hygienist'],
+  'cloud:status': ['admin', 'doctor', 'triage', 'emt', 'checkout', 'hygienist', 'registration'],
+  'cloud:syncNow': ['admin', 'doctor', 'triage', 'emt', 'checkout', 'hygienist', 'registration'],
   // update:* and app:version are open to any signed-in user (available in any view).
 };
 

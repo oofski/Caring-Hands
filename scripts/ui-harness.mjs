@@ -46,7 +46,7 @@ const PERMS = {
   'usersClearEventStaff': ['admin'],
   'eventsCreate': ['admin'], 'eventsUpdate': ['admin'], 'eventsSetActive': ['admin'], 'eventsSetState': ['admin'], 'eventsDelete': ['admin'],
   'patientsUpdate': ['admin', 'triage', 'doctor'], 'patientsGet': ['admin', 'doctor', 'triage', 'emt', 'checkout', 'hygienist'],
-  'patientsList': ['admin', 'doctor', 'triage', 'emt', 'checkout', 'hygienist'], 'patientsRecords': ['admin', 'doctor'],
+  'patientsList': ['admin', 'doctor', 'triage', 'emt', 'checkout', 'hygienist', 'registration'], 'patientsRecords': ['admin', 'doctor'],
   'patientsSearchAll': ['admin', 'doctor', 'triage', 'emt', 'checkout', 'hygienist'], 'patientsHistory': ['admin', 'doctor', 'triage', 'emt', 'checkout', 'hygienist'],
   'patientsIncomplete': ['admin'], 'patientsCleanupIncomplete': ['admin'], 'patientsDelete': ['admin'],
   'patientsDismiss': ['admin', 'checkout'], 'patientsMove': ['admin'], 'patientsAudit': ['admin', 'doctor', 'checkout', 'hygienist'],
@@ -382,6 +382,22 @@ async function main() {
   await window.api.authLogin({ username: 'cox', password: 'x' });
   pr = await window.api.patientsDismiss(rawP.id);
   log(!pr.ok && /EMT|nurse|vitals/i.test(pr.error || ''), 'v1.2.1: a checked-in (unseen) patient still cannot be dismissed: ' + (pr.ok ? 'NOT BLOCKED' : 'blocked'));
+
+  // ---- REGISTRATION role: front-desk check-in only, into the queue ----
+  currentUser = db.login('admin', 'admin');
+  const reg = db.createUser(currentUser, { username: 'regx', full_name: 'Reg One', role: 'registration', password: 'x' });
+  log(reg.role === 'registration', 'registration role can be created (CHECK widened, existing accounts intact)');
+  await window.api.authLogin({ username: 'regx', password: 'x' });
+  pr = await window.api.patientsCreate({ first_name: 'Front', last_name: 'Desk', demographics: {}, medical_history: {}, dental_history: { reason: 'checkup' }, consents: [] });
+  log(pr.ok, 'REGISTRATION can complete a check-in: ' + (pr.ok ? 'allowed' : pr.error));
+  const regMade = pr.ok ? db.getPatient(pr.data.id) : null;
+  log(!!regMade && regMade.status === 'checked_in', 'REGISTRATION check-in enters the queue (status=checked_in)');
+  pr = await window.api.patientsList({});
+  log(pr.ok, 'REGISTRATION can see the patient list (dashboard queue): ' + (pr.ok ? 'allowed' : pr.error));
+  pr = await window.api.usersList();
+  log(!pr.ok && /permission/i.test(pr.error || ''), 'REGISTRATION blocked from staff list (guard): ' + (pr.ok ? 'NOT BLOCKED' : 'blocked'));
+  pr = await window.api.patientsDismiss(regMade ? regMade.id : 0);
+  log(!pr.ok && /permission/i.test(pr.error || ''), 'REGISTRATION cannot dismiss patients (guard): ' + (pr.ok ? 'NOT BLOCKED' : 'blocked'));
 
   // ---- v1.0.7: HYGIENIST role + event-scoped staff ----
   currentUser = db.login('admin', 'admin');

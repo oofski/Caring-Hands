@@ -4,8 +4,14 @@ import { t, getLang, setLang, languageList, conditions, allergies, referrals, sp
 import { textField, textArea, selectField, yesNo, chipGrid } from '../forms.js';
 import { SignaturePad } from '../components/signature.js';
 import { api } from '../api.js';
+import { store } from '../store.js';
 
 export function renderKiosk(ctx) {
+  // Where check-in returns to. Patient self-service is launched from the sign-in
+  // screen (nobody signed in) → lock back to sign-in. A staff member running a
+  // registration desk stays signed in → drop them back on the dashboard so they
+  // can start the next check-in without re-entering their password.
+  const backTo = () => { setLang('en'); ctx.navigate(store.user ? 'dashboard' : 'login'); };
   const data = {
     language: 'en',
     demographics: {}, medical_history: {}, dental_history: {}, consents: [],
@@ -47,7 +53,7 @@ export function renderKiosk(ctx) {
             el('span', { class: 'lang-en' }, [l.label]),
           ])
         )),
-        el('button', { class: 'btn btn--ghost btn--sm kiosk-gate-exit', onClick: () => { setLang('en'); ctx.navigate('login'); } }, [icon('x', { size: 16 }), t('common.cancel')]),
+        el('button', { class: 'btn btn--ghost btn--sm kiosk-gate-exit', onClick: backTo }, [icon('x', { size: 16 }), t('common.cancel')]),
       ])
     );
   }
@@ -86,7 +92,7 @@ export function renderKiosk(ctx) {
     const header = el('div', { class: 'kiosk-header' }, [
       el('img', { class: 'kiosk-logo', src: '../../assets/logo.svg', alt: 'Caring Hands' }),
       el('div', { class: 'kiosk-step-label' }, [`${t('intake.step')} ${idx + 1} ${t('intake.of')} ${total} · ${step.title}`]),
-      el('button', { class: 'btn btn--ghost btn--sm btn--icon kiosk-exit', onClick: () => ctx.navigate('login') }, [icon('x', { size: 16 })]),
+      el('button', { class: 'btn btn--ghost btn--sm btn--icon kiosk-exit', onClick: backTo }, [icon('x', { size: 16 })]),
     ]);
 
     const body = el('div', { class: 'kiosk-body' }, [step.node]);
@@ -620,7 +626,7 @@ export function renderKiosk(ctx) {
       el('div', { class: 'thanks-name' }, [`${patient.first_name} ${patient.last_name}`]),
       el('div', { class: 'thanks-actions' }, [
         usbBtn,
-        el('button', { class: 'btn btn--primary btn--lg', onClick: () => { setLang('en'); ctx.navigate('login'); } }, [t('intake.done')]),
+        el('button', { class: 'btn btn--primary btn--lg', onClick: backTo }, [t('intake.done')]),
       ]),
     ]));
   }

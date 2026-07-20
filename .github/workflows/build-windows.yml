@@ -47,16 +47,20 @@ jobs:
       - name: Publish downloadable release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.4.2-build.${{ github.run_number }}
-          name: Caring Hands v1.4.2 (build ${{ github.run_number }})
+          tag_name: v1.4.3-build.${{ github.run_number }}
+          name: Caring Hands v1.4.3 (build ${{ github.run_number }})
           prerelease: false
           make_latest: true
           body: |
-            ## Caring Hands Worldwide — Practice Management Software (v1.4.2)
+            ## Caring Hands Worldwide — Practice Management Software (v1.4.3)
 
             Offline-first dental clinic app for Windows. **Download the installer once — it auto-updates from here on.**
 
-            **New in v1.4.2 — consistent info across screens + simpler stations**
+            **New in v1.4.3 — a Registration role + a simpler record export**
+            - **New "Registration" staff role.** Add a front-desk person under Admin → Staff & roles → Add staff → **Registration**. They sign in to a simple dashboard with one job: **Start patient check-in**. Each check-in they run drops straight into the vitals queue like any other. They can see the day's queue but can't open charts, change records, or reach any admin/clinical screen. After a check-in finishes they land right back on the dashboard — no re-typing a password between patients.
+            - **Streamlined record export.** The patient record screen had a wall of eight near-identical export buttons. It's now one clear **Save record PDF** button (plus **Email to patient** when there's an address on file); Progress note, Patient summary, Print, Preview, Screen-display, and Save-to-USB all tuck into a **"More options"** drawer. Same for the dentist's signed-off export panel.
+
+            **From v1.4.2 — consistent info across screens + simpler stations**
             - **Blood-thinner fix.** The patient's blood-thinner status now reads the SAME on every screen and in the PDF. If a thinner is in the med list OR the patient checked "takes blood thinners" at check-in, it's flagged everywhere — and if the EMT answered "No" while the history says yes, the app now shows a clear **"verify before extraction"** warning instead of a contradictory "No." (Fixes the case where the red flag said "takes blood thinners" but the line above said "No.")
             - **Safety: nothing hidden.** A typed-in "Other" allergy or condition (e.g. "Sulfa") now shows on the EMT/dentist/records screens — previously it only appeared in one PDF.
             - **Edits carry through.** A chief-complaint change made by the dentist now shows in Records and the patient history, not just the queues. "Checked out" is now worded the same everywhere.
@@ -101,8 +105,8 @@ jobs:
 
             Includes everything from v1.0.2–1.1.1 (optional Cloud Sync, triage-free flow, per-event staff, Oregon consent, USB workflow, accountability, Russian, in-app auto-update).
 
-            - **Caring-Hands-Setup-1.2.1.exe** — installer (recommended; required for auto-update).
-            - **Caring-Hands-Portable-1.2.1.exe** — portable (no auto-update).
+            - **Caring-Hands-Setup-1.4.3.exe** — installer (recommended; required for auto-update).
+            - **Caring-Hands-Portable-1.4.3.exe** — portable (no auto-update).
 
             First sign-in: `admin / admin` — then create your staff accounts. All clinical data stays on the device unless you enable Cloud Sync.
           files: |
