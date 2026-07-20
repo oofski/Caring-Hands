@@ -73,3 +73,20 @@ export function bloodThinnerText(patient) {
   if (s.confirmed === 'no') return { text: 'Blood thinners: No', level: 'ok', status: s };
   return { text: 'Blood thinners: not asked', level: 'muted', status: s };
 }
+
+// Hypertensive-crisis thresholds: a systolic OVER 180 or a diastolic OVER 100 is
+// flagged red wherever the blood-pressure reading is shown (EMT vitals, the
+// dentist's handoff strip, the record PDF). Strictly greater-than, so exactly
+// 180/100 is not flagged. A blank/omitted reading is never "high".
+// NOTE: pdf.js (main process, CommonJS) keeps its own copy of these two numbers —
+// keep them in sync if you ever change the threshold.
+export const BP_SYS_MAX = 180;
+export const BP_DIA_MAX = 100;
+export function bpStatus(sys, dia) {
+  const num = (v) => { if (v == null || v === '') return null; const n = Number(v); return Number.isNaN(n) ? null : n; };
+  const s = num(sys);
+  const d = num(dia);
+  const sysHigh = s != null && s > BP_SYS_MAX;
+  const diaHigh = d != null && d > BP_DIA_MAX;
+  return { sys: s, dia: d, sysHigh, diaHigh, high: sysHigh || diaHigh };
+}

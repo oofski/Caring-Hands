@@ -103,6 +103,28 @@ function footer(p) {
 function field(label, value) {
   return `<td><div class="label">${esc(label)}</div><div class="val">${value == null || value === '' ? '—' : esc(value)}</div></td>`;
 }
+// Same as field() but the value is trusted, pre-built HTML (already escaped where
+// needed) — used for the blood-pressure cell, which colours a high reading red.
+function fieldRaw(label, valueHtml) {
+  return `<td><div class="label">${esc(label)}</div><div class="val">${valueHtml == null || valueHtml === '' ? '—' : valueHtml}</div></td>`;
+}
+
+// Hypertensive-crisis threshold — mirrors src/renderer/js/medFlags.js (systolic
+// OVER 180 or diastolic OVER 100, strictly). Returns the "BP x/y" fragment, red +
+// bold when high so the printed record matches the on-screen alert. The numbers
+// are escaped, so the returned HTML is safe to inline.
+const PDF_BP_SYS_MAX = 180;
+const PDF_BP_DIA_MAX = 100;
+function bpHtml(tr) {
+  const t = tr || {};
+  const sys = t.bp_systolic != null ? esc(t.bp_systolic) : '—';
+  const dia = t.bp_diastolic != null ? esc(t.bp_diastolic) : '—';
+  const sN = t.bp_systolic == null || t.bp_systolic === '' ? null : Number(t.bp_systolic);
+  const dN = t.bp_diastolic == null || t.bp_diastolic === '' ? null : Number(t.bp_diastolic);
+  const high = (sN != null && !Number.isNaN(sN) && sN > PDF_BP_SYS_MAX) || (dN != null && !Number.isNaN(dN) && dN > PDF_BP_DIA_MAX);
+  const text = `BP ${sys}/${dia}`;
+  return high ? `<span style="color:#c0392b;font-weight:bold">${text} — HIGH</span>` : text;
+}
 
 const EXT_LABELS = {
   simple: 'Simple', impact_soft: 'Impact soft tissue', impact_bony: 'Impact part bony',
@@ -183,7 +205,7 @@ function progressNoteBody(p) {
 
     <h2>Clinical Assessment</h2>
     ${(tr.bp_systolic != null || tr.bp_diastolic != null || tr.heart_rate != null || tr.blood_thinner)
-      ? `<div class="box"><span class="label">Vitals: </span>BP ${tr.bp_systolic != null ? esc(tr.bp_systolic) : '—'}/${tr.bp_diastolic != null ? esc(tr.bp_diastolic) : '—'} · HR ${tr.heart_rate != null ? esc(tr.heart_rate) : '—'} · Blood thinners: ${esc(bloodThinnerLine(p))}</div>`
+      ? `<div class="box"><span class="label">Vitals: </span>${bpHtml(tr)} · HR ${tr.heart_rate != null ? esc(tr.heart_rate) : '—'} · Blood thinners: ${esc(bloodThinnerLine(p))}</div>`
       : ''}
     <div class="chips">${checklist}</div>
     <div class="box"><span class="label">Teeth of concern: </span>${(tr.teeth || []).map((x) => `<b>${esc(x)}</b>`).join(', ') || '<span class="muted">—</span>'}</div>
@@ -337,10 +359,11 @@ function bloodThinnerLine(p) {
 function healthBlock(p) {
   const tr = p.triage || {};
   const m = p.medical_history || {};
-  // vitals/thinner are passed through field(), which escapes — so build them RAW
-  // here (no esc()) to avoid double-escaping a blood-thinner detail like "A & B".
+  // Blood thinner is passed through field() which escapes — build it RAW (no esc)
+  // to avoid double-escaping a detail like "A & B". Vitals go through fieldRaw()
+  // instead so a high blood-pressure reading can render red (bpHtml is pre-escaped).
   const vitals = (tr.bp_systolic != null || tr.bp_diastolic != null || tr.heart_rate != null)
-    ? `BP ${tr.bp_systolic != null ? tr.bp_systolic : '—'}/${tr.bp_diastolic != null ? tr.bp_diastolic : '—'} · HR ${tr.heart_rate != null ? tr.heart_rate : '—'} bpm`
+    ? `${bpHtml(tr)} · HR ${tr.heart_rate != null ? esc(tr.heart_rate) : '—'} bpm`
     : 'Not recorded';
   const thinner = bloodThinnerLine(p);
   const list = (arr, otherKey) => {
@@ -361,7 +384,7 @@ function healthBlock(p) {
   return `
     <h2>Vitals & Health</h2>
     <table class="grid">
-      <tr>${field('Vitals (by EMT)', vitals)}${field('Blood thinners', thinner)}</tr>
+      <tr>${fieldRaw('Vitals (by EMT)', vitals)}${field('Blood thinners', thinner)}</tr>
     </table>
     <div><span class="label">Allergies</span> ${allergies}</div>
     <div><span class="label">Conditions</span> ${conditions}</div>

@@ -420,6 +420,51 @@ async function main() {
   log(pr.ok && pr.data.deleted > 0, 'ADMIN can clear event staff: removed ' + (pr.ok ? pr.data.deleted : '?'));
   log(remaining.some((u) => u.role === 'admin') && !remaining.some((u) => u.username === 'hygx'), 'clear keeps admin, removes scoped staff');
 
+  // ---- BP alert: the reading turns red when systolic > 180 OR diastolic > 100 ----
+  {
+    const { bpStatus } = await import('../src/renderer/js/medFlags.js');
+    log(bpStatus(181, 80).high && bpStatus(181, 80).sysHigh, 'BP: systolic 181 flags high');
+    log(!bpStatus(180, 80).high, 'BP: systolic exactly 180 is NOT high (strictly over)');
+    log(bpStatus(120, 101).high && bpStatus(120, 101).diaHigh, 'BP: diastolic 101 flags high');
+    log(!bpStatus(120, 100).high, 'BP: diastolic exactly 100 is NOT high (strictly over)');
+    log(!bpStatus(120, 80).high, 'BP: a normal 120/80 reading is not high');
+    log(bpStatus('190', '70').high, 'BP: string values are coerced (190/70 → high)');
+    log(!bpStatus('', null).high && !bpStatus(null, null).high && !bpStatus('abc', 'x').high, 'BP: blank / omitted / non-numeric reading is never high');
+  }
+  {
+    currentUser = db.login('admin', 'admin');
+    const store2 = (await import('../src/renderer/js/store.js')).store; store2.setUser(currentUser);
+    const ctx2 = { navigate: () => {}, toast: () => {}, store: store2, setDetail: () => {} };
+    const hiP = db.createPatient(currentUser, { first_name: 'High', last_name: 'Pressure', demographics: {}, medical_history: {}, dental_history: { reason: 'x' }, route: 'dentist' });
+    db.saveVitals(currentUser, hiP.id, { bp_systolic: '190', bp_diastolic: '105', heart_rate: '88' });
+    db.routePatient(currentUser, hiP.id, 'dentist');
+    const okP = db.createPatient(currentUser, { first_name: 'Normal', last_name: 'Pressure', demographics: {}, medical_history: {}, dental_history: { reason: 'x' }, route: 'dentist' });
+    db.saveVitals(currentUser, okP.id, { bp_systolic: '118', bp_diastolic: '76', heart_rate: '70' });
+    db.routePatient(currentUser, okP.id, 'dentist');
+
+    const { renderEmt } = await import('../src/renderer/js/views/emt.js');
+    const emtHi = renderEmt(ctx2, { id: hiP.id }); document.body.append(emtHi); await tick(); await tick();
+    log(/High blood pressure/i.test(emtHi.textContent), 'BP/EMT: high-BP patient shows the red high-BP warning');
+    const emtOk = renderEmt(ctx2, { id: okP.id }); document.body.append(emtOk); await tick(); await tick();
+    const okWarn = $all('.banner--alert', emtOk).find((n) => /High blood pressure/i.test(n.textContent));
+    log(!okWarn || okWarn.style.display === 'none', 'BP/EMT: normal-BP patient does NOT show the high-BP warning');
+
+    const { renderProvider } = await import('../src/renderer/js/views/provider.js');
+    const provHi = renderProvider(ctx2, { id: hiP.id }); document.body.append(provHi); await tick(); await tick();
+    log(/BP 190\/105 — HIGH/.test(provHi.textContent), 'BP/Dentist: high-BP handoff shows "BP 190/105 — HIGH"');
+    log(!!$all('.pill--danger', provHi).find((n) => /BP 190\/105/.test(n.textContent)), 'BP/Dentist: high BP is rendered as a red danger pill');
+    const provOk = renderProvider(ctx2, { id: okP.id }); document.body.append(provOk); await tick(); await tick();
+    log(/BP 118\/76/.test(provOk.textContent) && !/BP 118\/76 — HIGH/.test(provOk.textContent), 'BP/Dentist: normal BP is shown without a HIGH marker');
+
+    const pdf = require('../src/main/pdf.js');
+    const htmlHiFull = pdf.buildHtml(db.getPatient(hiP.id), 'full');
+    const htmlHiProg = pdf.buildHtml(db.getPatient(hiP.id), 'progress');
+    log(/color:#c0392b/.test(htmlHiFull) && /HIGH/.test(htmlHiFull), 'BP/PDF: full record colours a high reading red');
+    log(/color:#c0392b/.test(htmlHiProg), 'BP/PDF: progress note colours a high reading red');
+    const htmlOkFull = pdf.buildHtml(db.getPatient(okP.id), 'full');
+    log(!/color:#c0392b/.test(htmlOkFull) && /BP 118\/76/.test(htmlOkFull), 'BP/PDF: a normal reading is not coloured red');
+  }
+
   // ---- v1.4.4: staff accounts are SYNCED so a team created on one laptop shows
   //               up on every laptop. Guard that 'user' is a syncable entity. ----
   currentUser = db.login('admin', 'admin');

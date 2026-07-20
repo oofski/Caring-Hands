@@ -3,7 +3,7 @@ import { t } from '../i18n.js';
 import { api } from '../api.js';
 import { icon } from '../icons.js';
 import { patientHistoryPanel } from '../components/patientHistory.js';
-import { bloodThinnerStatus, bloodThinnerText } from '../medFlags.js';
+import { bloodThinnerStatus, bloodThinnerText, bpStatus, BP_SYS_MAX, BP_DIA_MAX } from '../medFlags.js';
 import { statusPill } from './dashboard.js';
 
 // Route metadata shared by the queue pills, the next-step card and the toasts.
@@ -154,6 +154,34 @@ export function renderEmt(ctx, params = {}) {
     const sys = el('input', { class: 'input', type: 'number', min: '0', max: '300', placeholder: t('intake.bpSys'), value: tr.bp_systolic != null ? tr.bp_systolic : (m.bp_systolic || '') });
     const dia = el('input', { class: 'input', type: 'number', min: '0', max: '200', placeholder: t('intake.bpDia'), value: tr.bp_diastolic != null ? tr.bp_diastolic : (m.bp_diastolic || '') });
     const hr = el('input', { class: 'input', type: 'number', min: '0', max: '300', placeholder: t('intake.hr'), value: tr.heart_rate != null ? tr.heart_rate : (m.heart_rate || '') });
+
+    // Turn the blood-pressure reading RED when it hits hypertensive-crisis levels
+    // (systolic over 180 or diastolic over 100). The offending field(s) go red as
+    // the EMT types, and a red warning line appears below the vitals.
+    const bpWarn = el('div', { class: 'banner banner--alert', style: 'margin-top:var(--space-2);display:none' }, [
+      icon('alert', { size: 16 }), el('span', {}, ['']),
+    ]);
+    function refreshBpHighlight() {
+      const st = bpStatus(sys.value, dia.value);
+      const paint = (inp, hi) => {
+        inp.style.borderColor = hi ? 'var(--danger, #c0392b)' : '';
+        inp.style.color = hi ? 'var(--danger, #c0392b)' : '';
+        inp.style.fontWeight = hi ? '700' : '';
+      };
+      paint(sys, st.sysHigh);
+      paint(dia, st.diaHigh);
+      if (st.high) {
+        const parts = [];
+        if (st.sysHigh) parts.push(`systolic ${st.sys} (> ${BP_SYS_MAX})`);
+        if (st.diaHigh) parts.push(`diastolic ${st.dia} (> ${BP_DIA_MAX})`);
+        bpWarn.querySelector('span').textContent = `High blood pressure — ${parts.join(', ')}. Recheck and flag before treatment.`;
+        bpWarn.style.display = '';
+      } else {
+        bpWarn.style.display = 'none';
+      }
+    }
+    sys.addEventListener('input', refreshBpHighlight);
+    dia.addEventListener('input', refreshBpHighlight);
 
     // Current vitals to carry through to secondary saves (avoids clobbering).
     function currentVitals() {
@@ -356,6 +384,7 @@ export function renderEmt(ctx, params = {}) {
           el('label', { class: 'field' }, [el('span', { class: 'field-label' }, [t('intake.bpDia')]), dia]),
           el('label', { class: 'field' }, [el('span', { class: 'field-label' }, [t('intake.hr')]), hr]),
         ]),
+        bpWarn,
         lastRecorded,
         bloodThinnerLine,
         el('button', { class: 'btn btn--soft btn--block', style: 'margin-top:var(--space-3)', onClick: save }, [icon('save', { size: 16 }), 'Save vitals']),
@@ -365,5 +394,6 @@ export function renderEmt(ctx, params = {}) {
 
       nextStep,
     ]));
+    refreshBpHighlight(); // paint a stored high reading red on open
   }
 }

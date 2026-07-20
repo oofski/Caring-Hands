@@ -7,7 +7,7 @@ import { Odontogram } from '../components/odontogram.js';
 import { patientHistoryCards, incompleteBanner } from '../components/patientHistory.js';
 import { store } from '../store.js';
 import { statusPill } from './dashboard.js';
-import { bloodThinnerStatus, bloodThinnerText } from '../medFlags.js';
+import { bloodThinnerStatus, bloodThinnerText, bpStatus } from '../medFlags.js';
 
 const QUADRANTS = [['UR', 'UR'], ['UL', 'UL'], ['LR', 'LR'], ['LL', 'LL']];
 const fmtWhen = (ts) => { if (!ts) return ''; const d = new Date(ts); return isNaN(d) ? String(ts) : d.toLocaleString(); };
@@ -97,18 +97,25 @@ export function renderProvider(ctx, params = {}) {
     function vitalsStrip() {
       const hasVitals = tr.bp_systolic != null || tr.bp_diastolic != null || tr.heart_rate != null;
       if (!hasVitals && !tr.route) return null;
-      const parts = [];
-      if (tr.bp_systolic != null || tr.bp_diastolic != null) {
-        parts.push(`BP ${tr.bp_systolic != null ? tr.bp_systolic : '—'}/${tr.bp_diastolic != null ? tr.bp_diastolic : '—'}`);
-      }
-      if (tr.heart_rate != null) parts.push(`HR ${tr.heart_rate}`);
+      // BP renders as its own element so a hypertensive-crisis reading (systolic
+      // over 180 or diastolic over 100) shows RED here, same as the EMT screen.
+      const bp = bpStatus(tr.bp_systolic, tr.bp_diastolic);
+      const bpEl = (tr.bp_systolic != null || tr.bp_diastolic != null)
+        ? el('span', { class: bp.high ? 'pill pill--danger' : 'small' }, [
+            bp.high ? el('span', { class: 'pill-dot' }) : null,
+            `BP ${tr.bp_systolic != null ? tr.bp_systolic : '—'}/${tr.bp_diastolic != null ? tr.bp_diastolic : '—'}${bp.high ? ' — HIGH' : ''}`,
+          ])
+        : null;
+      const rest = [];
+      if (tr.heart_rate != null) rest.push(`HR ${tr.heart_rate}`);
+      if (p.vitals_by_name) rest.push(`recorded by ${p.vitals_by_name}`);
       // Blood-thinner wording comes from the ONE shared helper so it always
       // matches the danger banner and every other screen (no "No" vs "Yes" mismatch).
       const bt = bloodThinnerText(p);
-      if (p.vitals_by_name) parts.push(`recorded by ${p.vitals_by_name}`);
       return el('div', { class: 'card', style: 'display:flex;flex-wrap:wrap;align-items:center;gap:var(--space-2) var(--space-3);padding:var(--space-3) var(--space-4)' }, [
         icon('syringe', { size: 14 }),
-        el('span', { class: 'small' }, [parts.join(' · ')]),
+        bpEl,
+        rest.length ? el('span', { class: 'small' }, [rest.join(' · ')]) : null,
         el('span', { class: bt.level === 'danger' ? 'pill pill--danger' : 'subtle small' }, [bt.text]),
         tr.route ? el('span', { class: 'subtle small' }, [p.routed_by_name ? `Sent here by ${p.routed_by_name}` : 'Routed by the EMT station']) : null,
       ]);
@@ -729,8 +736,9 @@ function accountabilityCard(p, tr, tx) {
   const dia = tr.bp_diastolic != null ? tr.bp_diastolic : mh.bp_diastolic;
   const hr = tr.heart_rate != null ? tr.heart_rate : mh.heart_rate;
   const fromTriage = tr.bp_systolic != null || tr.bp_diastolic != null || tr.heart_rate != null;
+  const bp = bpStatus(sys, dia); // red when systolic > 180 or diastolic > 100
   const vitalsStr = [];
-  if (sys != null || dia != null) vitalsStr.push(`BP ${sys != null ? sys : '—'}/${dia != null ? dia : '—'}`);
+  if (sys != null || dia != null) vitalsStr.push(`BP ${sys != null ? sys : '—'}/${dia != null ? dia : '—'}${bp.high ? ' — HIGH' : ''}`);
   if (hr != null) vitalsStr.push(`HR ${hr}`);
 
   line('user', 'Triaged by', p.triaged_by_name, tr.triaged_at);
@@ -742,7 +750,7 @@ function accountabilityCard(p, tr, tx) {
   return el('div', { class: 'card' }, [
     el('div', { class: 'card-title' }, [icon('clipboard', { size: 15 }), 'Accountability']),
     vitalsStr.length ? el('div', { class: 'chip-row', style: 'margin-bottom:10px' }, [
-      el('span', { class: 'pill pill--info' }, [icon('syringe', { size: 12 }), `${t('intake.vitalsTitle')}: ${vitalsStr.join(' · ')}`]),
+      el('span', { class: bp.high ? 'pill pill--danger' : 'pill pill--info' }, [icon('syringe', { size: 12 }), `${t('intake.vitalsTitle')}: ${vitalsStr.join(' · ')}`]),
       el('span', { class: 'subtle small' }, [fromTriage ? '(staff-measured)' : '(patient self-report)']),
     ]) : null,
     lines.length ? el('div', { class: 'kv-grid' }, lines) : null,
