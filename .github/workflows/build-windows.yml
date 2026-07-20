@@ -47,16 +47,22 @@ jobs:
       - name: Publish downloadable release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.4.0-build.${{ github.run_number }}
-          name: Caring Hands v1.4.0 (build ${{ github.run_number }})
+          tag_name: v1.4.2-build.${{ github.run_number }}
+          name: Caring Hands v1.4.2 (build ${{ github.run_number }})
           prerelease: false
           make_latest: true
           body: |
-            ## Caring Hands Worldwide — Practice Management Software (v1.4.0)
+            ## Caring Hands Worldwide — Practice Management Software (v1.4.2)
 
             Offline-first dental clinic app for Windows. **Download the installer once — it auto-updates from here on.**
 
-            **New in v1.4.0 — tidier menu + an admin Management console**
+            **New in v1.4.2 — consistent info across screens + simpler stations**
+            - **Blood-thinner fix.** The patient's blood-thinner status now reads the SAME on every screen and in the PDF. If a thinner is in the med list OR the patient checked "takes blood thinners" at check-in, it's flagged everywhere — and if the EMT answered "No" while the history says yes, the app now shows a clear **"verify before extraction"** warning instead of a contradictory "No." (Fixes the case where the red flag said "takes blood thinners" but the line above said "No.")
+            - **Safety: nothing hidden.** A typed-in "Other" allergy or condition (e.g. "Sulfa") now shows on the EMT/dentist/records screens — previously it only appeared in one PDF.
+            - **Edits carry through.** A chief-complaint change made by the dentist now shows in Records and the patient history, not just the queues. "Checked out" is now worded the same everywhere.
+            - **Simpler stations.** Each of the **EMT, Dentist, and Check-Out** screens now has ONE obvious primary button (Sign off & send / Mark visit complete / Verify & dismiss); less-used actions (lock, transfer, extra PDFs, USB tools) are tucked into a "More options" area. Removed a duplicate blood-thinner question on the EMT screen that could disagree with the main one.
+
+            **From v1.4.0 — tidier menu + an admin Management console**
             - **Collapsible sidebar.** The stations (Vitals, Cleanings, Dentist, Check-Out, Records, Reports) now live under a **Clinic** module you click to open, and system settings under an **Admin** module — so the menu isn't a long wall of items. Dashboard stays pinned at the top; your open/closed choice is remembered.
             - **Events moved into Admin; Languages removed** (language packs are still chosen per event under Admin → Events → Edit).
             - **New: Admin → Management.** A live, cloud-synced overview of every patient where an admin can **override the flow** — send a patient back to vitals, re-route them to the dentist or hygienist, **re-open a finished record to edit it**, check someone out, or remove a bad record. It also shows the cloud connection and can open the server's status page so you can confirm everything's connected.

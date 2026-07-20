@@ -118,7 +118,7 @@ export function statusPill(status) {
     triaged: ['Ready for treatment', 'pill--info'],
     in_treatment: ['In treatment', 'pill--warning'],
     completed: ['Completed', 'pill--success'],
-    dismissed: ['Dismissed', 'pill--neutral'],
+    dismissed: ['Checked out', 'pill--neutral'],
   };
   const [label, cls] = map[status] || [status, 'pill--neutral'];
   return el('span', { class: `pill ${cls}` }, [el('span', { class: 'pill-dot' }), label]);

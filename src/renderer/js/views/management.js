@@ -70,7 +70,7 @@ export function renderManagement(ctx) {
   /* ---------- Patient table ---------- */
   function tableCard(title, list, isDone) {
     const rows = list.map((p) => el('tr', {}, [
-      el('td', {}, [el('strong', {}, [`${p.last_name}, ${p.first_name}`]), p.blood_thinner === 'yes' ? el('span', { class: 'pill pill--danger', style: 'margin-left:6px' }, ['Blood thinner']) : el('span')]),
+      el('td', {}, [el('strong', {}, [`${p.last_name}, ${p.first_name}`]), p.on_thinner ? el('span', { class: 'pill pill--danger', style: 'margin-left:6px' }, ['Blood thinner']) : el('span')]),
       el('td', { class: 'num' }, [p.age != null ? String(p.age) : '—']),
       el('td', {}, [statusPill(p.status)]),
       el('td', {}, [el('span', { class: p.route ? 'pill pill--teal' : 'subtle small' }, [routeLabel(p.route)])]),

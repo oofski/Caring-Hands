@@ -7,7 +7,7 @@ import { Odontogram } from '../components/odontogram.js';
 import { patientHistoryCards, incompleteBanner } from '../components/patientHistory.js';
 import { store } from '../store.js';
 import { statusPill } from './dashboard.js';
-import { bloodThinnerStatus } from '../medFlags.js';
+import { bloodThinnerStatus, bloodThinnerText } from '../medFlags.js';
 
 const QUADRANTS = [['UR', 'UR'], ['UL', 'UL'], ['LR', 'LR'], ['LL', 'LL']];
 const fmtWhen = (ts) => { if (!ts) return ''; const d = new Date(ts); return isNaN(d) ? String(ts) : d.toLocaleString(); };
@@ -37,7 +37,7 @@ export function renderProvider(ctx, params = {}) {
     const atHygienist = ready.filter((p) => p.route === 'hygienist');
     const row = (p) => el('tr', {}, [
       el('td', {}, [el('strong', {}, [`${p.last_name}, ${p.first_name}`]),
-        p.blood_thinner === 'yes' ? el('span', { class: 'pill pill--danger', style: 'margin-left:8px' }, ['Blood thinner']) : null,
+        p.on_thinner ? el('span', { class: 'pill pill--danger', style: 'margin-left:8px' }, ['Blood thinner']) : null,
         (p.flags && p.flags.length) ? flagDot(p.flags.length) : null]),
       el('td', { class: 'num' }, [p.age != null ? String(p.age) : '—']),
       el('td', {}, [p.complaint || '—']),
@@ -80,7 +80,9 @@ export function renderProvider(ctx, params = {}) {
     const priorVisits = await api.patientHistory(id).catch(() => []);
 
     // medical flags
-    const flagConds = conditions().filter((c) => c.flag && (p.medical_history.conditions || []).includes(c.key)).map((c) => c.label);
+    // Blood thinners get their own dedicated danger banner + vitals-strip line, so
+    // exclude that condition here to avoid saying it three different ways.
+    const flagConds = conditions().filter((c) => c.flag && c.key !== 'blood_thinners' && (p.medical_history.conditions || []).includes(c.key)).map((c) => c.label);
     const flagAllergies = allergies().filter((a) => (p.medical_history.allergies || []).includes(a.key)).map((a) => `Allergy: ${a.label}`);
     if (p.medical_history.pregnancy === 'yes') flagConds.push('Pregnant');
     const flags = [...flagConds, ...flagAllergies];
@@ -95,19 +97,19 @@ export function renderProvider(ctx, params = {}) {
     function vitalsStrip() {
       const hasVitals = tr.bp_systolic != null || tr.bp_diastolic != null || tr.heart_rate != null;
       if (!hasVitals && !tr.route) return null;
-      const bt = bloodThinnerStatus(p);
       const parts = [];
       if (tr.bp_systolic != null || tr.bp_diastolic != null) {
         parts.push(`BP ${tr.bp_systolic != null ? tr.bp_systolic : '—'}/${tr.bp_diastolic != null ? tr.bp_diastolic : '—'}`);
       }
       if (tr.heart_rate != null) parts.push(`HR ${tr.heart_rate}`);
-      parts.push('Blood thinners: ' + (bt.onThinner
-        ? `Yes${bt.names.length ? ' — ' + bt.names.join(', ') : ''}`
-        : (bt.confirmed === 'no' ? 'No' : 'Not asked')));
+      // Blood-thinner wording comes from the ONE shared helper so it always
+      // matches the danger banner and every other screen (no "No" vs "Yes" mismatch).
+      const bt = bloodThinnerText(p);
       if (p.vitals_by_name) parts.push(`recorded by ${p.vitals_by_name}`);
       return el('div', { class: 'card', style: 'display:flex;flex-wrap:wrap;align-items:center;gap:var(--space-2) var(--space-3);padding:var(--space-3) var(--space-4)' }, [
         icon('syringe', { size: 14 }),
         el('span', { class: 'small' }, [parts.join(' · ')]),
+        el('span', { class: bt.level === 'danger' ? 'pill pill--danger' : 'subtle small' }, [bt.text]),
         tr.route ? el('span', { class: 'subtle small' }, [p.routed_by_name ? `Sent here by ${p.routed_by_name}` : 'Routed by the EMT station']) : null,
       ]);
     }
@@ -563,7 +565,6 @@ export function renderProvider(ctx, params = {}) {
           el('p', { class: 'view-sub' }, [`${p.age != null ? p.age + ' yrs · ' : ''}${p.gender || ''} · ${p.language === 'es' ? 'Español' : 'English'} · Complaint: ${(tr.complaint) || p.dental_history.reason || '—'}`]),
         ]),
         el('div', { style: 'display:flex;align-items:center;gap:var(--space-3)' }, [
-          locked ? null : softBtn('sparkle', 'Transfer to hygienist', transferToHygienist),
           locked ? el('span', { class: 'pill pill--neutral' }, [icon('lock', { size: 12 }), 'Locked']) : statusPill(p.status),
         ]),
       ]),
@@ -685,17 +686,23 @@ export function renderProvider(ctx, params = {}) {
         locked
           ? exportButtons(ctx, id)
           : el('div', { class: 'action-stack', style: 'margin-top:12px' }, [
-              ghostBtn('save', 'Save progress', () => save(false)),
+              // ONE clear primary action for the station; everything else is secondary.
               primaryBtn('checkCircle', 'Mark visit complete', () => save('complete')),
-              // Locking is optional — a finalized, read-only record if you want one.
-              el('button', { class: 'btn btn--ghost btn--block', type: 'button', onClick: () => save('lock') }, [icon('lock', { size: 16 }), 'Sign off & lock (optional)']),
-              // F17: patient summary PDF available before sign-off (doctor/admin only).
-              store.can('admin', 'doctor')
-                ? el('button', { class: 'btn btn--ghost btn--block', type: 'button', onClick: async () => {
-                    try { const r = await api.pdfGenerate(id, 'summary'); if (r && r.saved) toast(`Saved: ${r.path}`, 'success'); }
-                    catch (e) { toast(e.message, 'error'); }
-                  } }, [icon('user', { size: 16 }), 'Patient summary PDF'])
-                : null,
+              el('button', { class: 'btn btn--ghost btn--block', type: 'button', onClick: () => save(false) }, [icon('save', { size: 16 }), 'Save progress']),
+              // Less-common actions tucked away so the screen isn't a wall of buttons.
+              el('details', { class: 'collapse', style: 'margin-top:8px' }, [
+                el('summary', { style: 'font-size:var(--fs-base)' }, ['More options']),
+                el('div', { class: 'collapse-body action-stack' }, [
+                  el('button', { class: 'btn btn--ghost btn--block', type: 'button', onClick: transferToHygienist }, [icon('sparkle', { size: 16 }), 'Transfer to hygienist']),
+                  el('button', { class: 'btn btn--ghost btn--block', type: 'button', onClick: () => save('lock') }, [icon('lock', { size: 16 }), 'Sign off & lock (make record read-only)']),
+                  store.can('admin', 'doctor')
+                    ? el('button', { class: 'btn btn--ghost btn--block', type: 'button', onClick: async () => {
+                        try { const r = await api.pdfGenerate(id, 'summary'); if (r && r.saved) toast(`Saved: ${r.path}`, 'success'); }
+                        catch (e) { toast(e.message, 'error'); }
+                      } }, [icon('user', { size: 16 }), 'Patient summary PDF'])
+                    : null,
+                ]),
+              ]),
             ])),
     );
     refreshMarks();

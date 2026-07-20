@@ -44,7 +44,6 @@ export function renderCheckout(ctx, params = {}) {
         el('div', {}, [el('h1', {}, ['Check-Out']), el('p', { class: 'view-sub' }, [`${ready.length} ready to dismiss · ${done.length} dismissed`])]),
         el('div', { class: 'view-head-actions' }, [el('button', { class: 'btn btn--ghost btn--sm', onClick: queue }, [icon('refresh', { size: 15 }), 'Refresh'])]),
       ]),
-      el('div', { class: 'card' }, [el('div', { class: 'card-title' }, [icon('usb', { size: 15 }), 'USB at checkout']), await usbBar()]),
       el('div', { class: 'card' }, [
         el('div', { class: 'card-title' }, [icon('checkCircle', { size: 15 }), 'Ready to dismiss']),
         el('div', { class: 'data-table-wrap' }, [el('table', { class: 'data-table' }, [
@@ -58,6 +57,12 @@ export function renderCheckout(ctx, params = {}) {
           el('tbody', {}, done.map(rowFor)),
         ])]),
       ]) : null,
+      // USB tools live below the queue so the dismiss list leads. Collapsed by
+      // default to declutter; upload/clear stay fully available inside.
+      el('details', { class: 'collapse' }, [
+        el('summary', {}, [el('span', { style: 'display:flex; align-items:center; gap:9px;' }, [icon('usb', { size: 15 }), 'USB tools'])]),
+        el('div', { class: 'collapse-body' }, [await usbBar()]),
+      ]),
     );
   }
 
@@ -102,16 +107,22 @@ export function renderCheckout(ctx, params = {}) {
           el('div', { class: 'card' }, [
             el('div', { class: 'card-title' }, [icon('checkCircle', { size: 15 }), 'Actions']),
             el('div', { class: 'action-stack' }, [
-              el('button', { class: 'btn btn--ghost btn--block', onClick: async () => { try { const r = await api.pdfGenerate(id, 'summary'); if (r && r.saved) toast('Saved: ' + r.path, 'success'); } catch (e) { toast(e.message, 'error'); } } }, [icon('save', { size: 16 }), 'Patient summary PDF']),
-              p.email
-                ? el('button', { class: 'btn btn--ghost btn--block', onClick: () => emailSummary(p) }, [icon('mail', { size: 16 }), 'Email summary to patient'])
-                : el('div', {}, [
-                    el('button', { class: 'btn btn--ghost btn--block', disabled: 'disabled' }, [icon('mail', { size: 16 }), 'Email summary to patient']),
-                    el('p', { class: 'view-sub', style: 'margin-top:6px' }, ['No email on file.']),
-                  ]),
+              // Optional artefacts, grouped and de-emphasised so they read as
+              // secondary to the single primary action below.
+              el('div', { class: 'action-stack' }, [
+                el('span', { class: 'field-label' }, ['Before dismissing (optional)']),
+                el('button', { class: 'btn btn--ghost btn--block', onClick: async () => { try { const r = await api.pdfGenerate(id, 'summary'); if (r && r.saved) toast('Saved: ' + r.path, 'success'); } catch (e) { toast(e.message, 'error'); } } }, [icon('save', { size: 16 }), 'Patient summary PDF']),
+                p.email
+                  ? el('button', { class: 'btn btn--ghost btn--block', onClick: () => emailSummary(p) }, [icon('mail', { size: 16 }), 'Email summary to patient'])
+                  : el('div', {}, [
+                      el('button', { class: 'btn btn--ghost btn--block', disabled: 'disabled' }, [icon('mail', { size: 16 }), 'Email summary to patient']),
+                      el('p', { class: 'view-sub', style: 'margin-top:6px' }, ['No email on file.']),
+                    ]),
+              ]),
+              // Primary action — the climax: last, prominent, on its own.
               p.status === 'dismissed'
-                ? el('div', { class: 'pill pill--neutral' }, [`Dismissed by ${p.dismissed_by_name || '—'} · ${fmtWhen(p.dismissed_at)}`])
-                : el('button', { class: 'btn btn--primary btn--block', disabled: canDismiss ? null : 'disabled', onClick: () => dismiss(p) }, [icon('checkCircle', { size: 16 }), 'Verify & dismiss patient']),
+                ? el('div', { class: 'pill pill--neutral', style: 'margin-top:8px' }, [`Dismissed by ${p.dismissed_by_name || '—'} · ${fmtWhen(p.dismissed_at)}`])
+                : el('button', { class: 'btn btn--primary btn--block', style: 'margin-top:8px', disabled: canDismiss ? null : 'disabled', onClick: () => dismiss(p) }, [icon('checkCircle', { size: 16 }), 'Verify & dismiss patient']),
             ]),
           ]),
         ]),

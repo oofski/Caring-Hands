@@ -3,7 +3,7 @@ import { t } from '../i18n.js';
 import { api } from '../api.js';
 import { icon } from '../icons.js';
 import { patientHistoryPanel } from '../components/patientHistory.js';
-import { bloodThinnerStatus } from '../medFlags.js';
+import { bloodThinnerStatus, bloodThinnerText } from '../medFlags.js';
 import { statusPill } from './dashboard.js';
 
 // Route metadata shared by the queue pills, the next-step card and the toasts.
@@ -42,7 +42,6 @@ const REVIEW_QS = [
   ['pregnant', 'Pregnant?'],
   ['recent_surgery', 'Recent surgery/hospitalization?'],
   ['diabetic', 'Diabetic?'],
-  ['on_blood_thinners', 'On blood thinners?'],
   ['allergies_meds', 'Any medication allergies?'],
 ];
 
@@ -238,15 +237,6 @@ export function renderEmt(ctx, params = {}) {
       return el('div', { style: 'display:flex;gap:var(--space-1);flex:0 0 auto' }, [btn('yes', 'Yes'), btn('no', 'No')]);
     }
 
-    // Human-readable summary of the currently recorded blood-thinner answer.
-    function bloodThinnerAnswer() {
-      if (flag.confirmed === 'yes') {
-        return `Blood thinners: Yes${flag.names.length ? ' — ' + flag.names.join(', ') : ''}`;
-      }
-      if (flag.confirmed === 'no') return 'Blood thinners: No';
-      return 'Blood thinners: Not asked';
-    }
-
     const banner = flag.onThinner
       ? el('div', { class: 'banner banner--alert' }, [
           icon('alert', { size: 16 }),
@@ -257,6 +247,15 @@ export function renderEmt(ctx, params = {}) {
     const lastRecorded = tr.vitals_at
       ? el('p', { class: 'subtle small' }, [`Last recorded by ${p.vitals_by_name || '—'} · ${new Date(tr.vitals_at).toLocaleString()}`])
       : null;
+
+    // Canonical blood-thinner status line (shared helper) — same wording every
+    // screen shows. The dedicated Yes/No modal is the single source of truth.
+    const bt = bloodThinnerText(p);
+    const bloodThinnerLine = el('p', { style: 'margin-top:var(--space-2)' }, [
+      bt.level === 'danger'
+        ? el('span', { class: 'pill pill--danger' }, [el('span', { class: 'pill-dot' }), bt.text])
+        : el('span', { class: 'subtle small' }, [bt.text]),
+    ]);
 
     // EMT review card (C1).
     const reviewCard = el('div', { class: 'card', style: 'margin-top:var(--space-4)' }, [
@@ -270,7 +269,7 @@ export function renderEmt(ctx, params = {}) {
           reviewToggle(key),
         ]))),
       el('button', {
-        class: 'btn btn--primary btn--block',
+        class: 'btn btn--soft btn--block',
         style: 'margin-top:var(--space-3)',
         onClick: saveReview,
       }, [icon('save', { size: 16 }), 'Save review']),
@@ -358,8 +357,8 @@ export function renderEmt(ctx, params = {}) {
           el('label', { class: 'field' }, [el('span', { class: 'field-label' }, [t('intake.hr')]), hr]),
         ]),
         lastRecorded,
-        el('p', { class: 'subtle small' }, [bloodThinnerAnswer()]),
-        el('button', { class: 'btn btn--primary btn--block', style: 'margin-top:var(--space-3)', onClick: save }, [icon('save', { size: 16 }), 'Save vitals']),
+        bloodThinnerLine,
+        el('button', { class: 'btn btn--soft btn--block', style: 'margin-top:var(--space-3)', onClick: save }, [icon('save', { size: 16 }), 'Save vitals']),
       ]),
 
       reviewCard,

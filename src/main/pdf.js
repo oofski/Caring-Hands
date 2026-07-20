@@ -183,7 +183,7 @@ function progressNoteBody(p) {
 
     <h2>Clinical Assessment</h2>
     ${(tr.bp_systolic != null || tr.bp_diastolic != null || tr.heart_rate != null || tr.blood_thinner)
-      ? `<div class="box"><span class="label">Vitals: </span>BP ${tr.bp_systolic != null ? esc(tr.bp_systolic) : '—'}/${tr.bp_diastolic != null ? esc(tr.bp_diastolic) : '—'} · HR ${tr.heart_rate != null ? esc(tr.heart_rate) : '—'}${tr.blood_thinner ? ' · Blood thinners: ' + (tr.blood_thinner === 'yes' ? 'YES' + (tr.blood_thinner_detail ? ' (' + esc(tr.blood_thinner_detail) + ')' : '') : 'No') : ''}</div>`
+      ? `<div class="box"><span class="label">Vitals: </span>BP ${tr.bp_systolic != null ? esc(tr.bp_systolic) : '—'}/${tr.bp_diastolic != null ? esc(tr.bp_diastolic) : '—'} · HR ${tr.heart_rate != null ? esc(tr.heart_rate) : '—'} · Blood thinners: ${esc(bloodThinnerLine(p))}</div>`
       : ''}
     <div class="chips">${checklist}</div>
     <div class="box"><span class="label">Teeth of concern: </span>${(tr.teeth || []).map((x) => `<b>${esc(x)}</b>`).join(', ') || '<span class="muted">—</span>'}</div>
@@ -304,6 +304,33 @@ function titleKey(k) {
   return String(k || '').replace(/[_-]+/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
+// Reconcile the blood-thinner status for the RECORD the same way the app screens
+// do (EMT answer + medication list + self-reported condition), so a printed record
+// can never say "Blood thinners: No" while the app is flagging a thinner. Mirrors
+// src/renderer/js/medFlags.js.
+const PDF_THINNER_MEDS = [
+  'eliquis', 'apixaban', 'warfarin', 'coumadin', 'xarelto', 'rivaroxaban', 'plavix', 'clopidogrel',
+  'pradaxa', 'dabigatran', 'aspirin', 'asa', 'heparin', 'lovenox', 'enoxaparin', 'brilinta',
+  'ticagrelor', 'effient', 'prasugrel', 'savaysa', 'edoxaban', 'aggrenox', 'pletal', 'cilostazol',
+];
+function bloodThinnerLine(p) {
+  const tr = p.triage || {}, m = p.medical_history || {};
+  const names = new Set();
+  ((m.medications) || []).forEach((x) => {
+    const n = (x && x.name ? x.name : '').toLowerCase();
+    if (n && PDF_THINNER_MEDS.some((b) => n.split(/[^a-z]+/).includes(b) || n.includes(b))) names.add(String(x.name).trim());
+  });
+  const medHit = names.size > 0;
+  const condHit = ((m.conditions) || []).some((k) => k === 'blood_thinners' || k === 'bleeding');
+  const confirmed = tr.blood_thinner === 'yes' || tr.blood_thinner === 'no' ? tr.blood_thinner : null;
+  if (confirmed === 'yes' && tr.blood_thinner_detail) String(tr.blood_thinner_detail).split(/,\s*/).forEach((n) => n.trim() && names.add(n.trim()));
+  const nm = names.size ? ` (${[...names].join(', ')})` : '';
+  if (confirmed === 'no' && (medHit || condHit)) return `Reported on history${nm} — EMT marked "No" — VERIFY before extraction`;
+  if (confirmed === 'yes' || medHit || condHit) return `YES${nm}`;
+  if (confirmed === 'no') return 'No';
+  return 'Not asked';
+}
+
 // v1.2.0: the Vitals & Health block that was previously MISSING from the summary
 // PDF — EMT-entered vitals, the blood-thinner answer, the patient's medical
 // history, and the EMT's yes/no confirmations now attach to the record.
@@ -315,9 +342,7 @@ function healthBlock(p) {
   const vitals = (tr.bp_systolic != null || tr.bp_diastolic != null || tr.heart_rate != null)
     ? `BP ${tr.bp_systolic != null ? tr.bp_systolic : '—'}/${tr.bp_diastolic != null ? tr.bp_diastolic : '—'} · HR ${tr.heart_rate != null ? tr.heart_rate : '—'} bpm`
     : 'Not recorded';
-  const thinner = tr.blood_thinner === 'yes'
-    ? 'YES' + (tr.blood_thinner_detail ? ` (${tr.blood_thinner_detail})` : '')
-    : (tr.blood_thinner === 'no' ? 'No' : 'Not asked');
+  const thinner = bloodThinnerLine(p);
   const list = (arr, otherKey) => {
     // Filter the sentinel keys so an all-'none' section correctly shows the
     // "reviewed" fallback rather than a literal "None".

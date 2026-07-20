@@ -34,6 +34,12 @@ export function patientHistoryCards(p, priorVisits = []) {
   const dh = p.dental_history || {};
   const condLabels = conditions().filter((c) => (m.conditions || []).includes(c.key));
   const allergyLabels = allergies().filter((a) => (m.allergies || []).includes(a.key));
+  // SAFETY: a typed "Other" allergy/condition (e.g. "Sulfa") must be visible on
+  // screen, not buried in a PDF. Build the display pills with the free text added.
+  const allergyPills = allergyLabels.map((a) => el('span', { class: 'pill pill--danger' }, [el('span', { class: 'pill-dot' }), a.label]));
+  if ((m.allergies || []).includes('other') && m.allergies_other) allergyPills.push(el('span', { class: 'pill pill--danger' }, [el('span', { class: 'pill-dot' }), m.allergies_other]));
+  const condPills = condLabels.map((c) => el('span', { class: `pill ${c.flag ? 'pill--danger' : 'pill--info'}` }, [c.flag ? el('span', { class: 'pill-dot' }) : null, c.label]));
+  if ((m.conditions || []).includes('other') && m.conditions_other) condPills.push(el('span', { class: 'pill pill--info' }, [m.conditions_other]));
 
   const kv = (label, val) => el('div', { class: 'kv' }, [el('span', { class: 'kv-label' }, [label]), el('span', { class: 'kv-val' }, [val == null || val === '' ? '—' : String(val)])]);
   const card = (ic, title, ...kids) => el('div', { class: 'card' }, [el('div', { class: 'card-title' }, [icon(ic, { size: 15 }), title]), ...kids]);
@@ -56,9 +62,9 @@ export function patientHistoryCards(p, priorVisits = []) {
       kv('Tobacco use', m.tobacco), kv('Pregnant / nursing', m.pregnancy),
     ]),
     el('div', { class: 'field' }, [el('span', { class: 'field-label' }, ['Allergies']),
-      el('div', { class: 'chip-row' }, allergyLabels.length ? allergyLabels.map((a) => el('span', { class: 'pill pill--danger' }, [el('span', { class: 'pill-dot' }), a.label])) : [el('span', { class: 'muted' }, ['None reported'])])]),
+      el('div', { class: 'chip-row' }, allergyPills.length ? allergyPills : [el('span', { class: 'muted' }, [m.allergies_none ? 'None (reviewed)' : 'None reported'])])]),
     el('div', { class: 'field' }, [el('span', { class: 'field-label' }, ['Conditions']),
-      el('div', { class: 'chip-row' }, condLabels.length ? condLabels.map((c) => el('span', { class: `pill ${c.flag ? 'pill--danger' : 'pill--info'}` }, [c.flag ? el('span', { class: 'pill-dot' }) : null, c.label])) : [el('span', { class: 'muted' }, ['None reported'])])]),
+      el('div', { class: 'chip-row' }, condPills.length ? condPills : [el('span', { class: 'muted' }, [m.conditions_none ? 'None (reviewed)' : 'None reported'])])]),
     (m.medications || []).length ? el('div', { class: 'field' }, [
       el('span', { class: 'field-label' }, ['Current medications']),
       el('div', { class: 'data-table-wrap' }, [el('table', { class: 'data-table data-table--mini' }, [
@@ -70,7 +76,7 @@ export function patientHistoryCards(p, priorVisits = []) {
 
   out.push(card('tooth', 'Dental history',
     el('div', { class: 'kv-grid' }, [
-      kv('Reason for visit', dh.reason), kv('Long-term goals', dh.goals),
+      kv('Reason for visit', (p.triage && p.triage.complaint) || dh.reason), kv('Long-term goals', dh.goals),
       kv('Prior dentist', dh.prior_dentist), kv('Gums bleed', dh.gum_bleeding),
       kv('Sores / lumps', dh.sores), kv('Head/neck/jaw injury', dh.jaw_injury),
       kv('Clenching / grinding', dh.grinding), kv('Bleeding after extraction', dh.post_extraction_bleeding),

@@ -79,6 +79,9 @@ export function renderRecords(ctx, params = {}) {
     const p = await api.getPatient(id);
     const condLabels = conditions().filter((c) => (p.medical_history.conditions || []).includes(c.key)).map((c) => ({ label: c.label, flag: c.flag }));
     const allergyLabels = allergies().filter((a) => (p.medical_history.allergies || []).includes(a.key)).map((a) => a.label);
+    // Include the typed "Other" free-text allergy/condition so it's never hidden.
+    if ((p.medical_history.allergies || []).includes('other') && p.medical_history.allergies_other) allergyLabels.push(p.medical_history.allergies_other);
+    if ((p.medical_history.conditions || []).includes('other') && p.medical_history.conditions_other) condLabels.push({ label: p.medical_history.conditions_other, flag: false });
 
     const kv = (label, val) => el('div', { class: 'kv' }, [el('span', { class: 'kv-label' }, [label]), el('span', { class: 'kv-val' }, [val || '—'])]);
 
@@ -167,7 +170,7 @@ export function renderRecords(ctx, params = {}) {
           el('div', { class: 'card' }, [
             el('h3', { class: 'card-title' }, ['Dental history']),
             el('div', { class: 'kv-grid' }, [
-              kv('Reason', p.dental_history.reason), kv('Goals', p.dental_history.goals),
+              kv('Reason', (p.triage && p.triage.complaint) || p.dental_history.reason), kv('Goals', p.dental_history.goals),
               kv('Prior dentist', p.dental_history.prior_dentist), kv('Gums bleed', p.dental_history.gum_bleeding),
               kv('Sores / lumps', p.dental_history.sores), kv('Head/neck/jaw injury', p.dental_history.jaw_injury),
               kv('Grinding / clenching', p.dental_history.grinding), kv('Bleeding after extraction', p.dental_history.post_extraction_bleeding),

@@ -1011,8 +1011,30 @@ function listPatients({ eventId, search } = {}) {
       has_vitals: !!(tr && (tr.bp_systolic != null || tr.heart_rate != null)),
       emt_signed_off: !!(tr && tr.emt_signed_off),
       blood_thinner: tr ? tr.blood_thinner : null,
+      // Reconciled thinner signal so the QUEUES can't understate the risk: true if
+      // the EMT confirmed it, OR a thinner is in the med list, OR the patient
+      // self-reported the condition at check-in. Queue pills read this.
+      on_thinner: (tr && tr.blood_thinner === 'yes') || detectsBloodThinner(pt.medical_history),
     };
   });
+}
+
+// Backend mirror of the renderer's blood-thinner detection (medFlags.js), used so
+// listPatients can expose a reconciled on_thinner to the queue views (which don't
+// carry the full medical history). Keep this list in sync with medFlags.js.
+const BLOOD_THINNER_MEDS = [
+  'eliquis', 'apixaban', 'warfarin', 'coumadin', 'xarelto', 'rivaroxaban', 'plavix', 'clopidogrel',
+  'pradaxa', 'dabigatran', 'aspirin', 'asa', 'heparin', 'lovenox', 'enoxaparin', 'brilinta',
+  'ticagrelor', 'effient', 'prasugrel', 'savaysa', 'edoxaban', 'aggrenox', 'pletal', 'cilostazol',
+];
+function detectsBloodThinner(mh) {
+  const m = mh || {};
+  const medHit = ((m.medications) || []).some((x) => {
+    const n = (x && x.name ? x.name : '').toLowerCase();
+    return n && BLOOD_THINNER_MEDS.some((b) => n.split(/[^a-z]+/).includes(b) || n.includes(b));
+  });
+  const condHit = ((m.conditions) || []).some((k) => k === 'blood_thinners' || k === 'bleeding');
+  return medHit || condHit;
 }
 
 // Returning-patient lookup across ALL events.
