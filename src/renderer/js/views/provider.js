@@ -106,6 +106,14 @@ export function renderProvider(ctx, params = {}) {
             `BP ${tr.bp_systolic != null ? tr.bp_systolic : '—'}/${tr.bp_diastolic != null ? tr.bp_diastolic : '—'}${bp.high ? ' — HIGH' : ''}`,
           ])
         : null;
+      // Any BP re-checks the EMT recorded (shown red if still high).
+      const recheckEls = (Array.isArray(tr.bp_rechecks) ? tr.bp_rechecks : []).map((r) => {
+        const st = bpStatus(r.bp_systolic, r.bp_diastolic);
+        return el('span', { class: st.high ? 'pill pill--danger' : 'small' }, [
+          st.high ? el('span', { class: 'pill-dot' }) : null,
+          `re-check ${r.bp_systolic != null ? r.bp_systolic : '—'}/${r.bp_diastolic != null ? r.bp_diastolic : '—'}${st.high ? ' — HIGH' : ''}`,
+        ]);
+      });
       const rest = [];
       if (tr.heart_rate != null) rest.push(`HR ${tr.heart_rate}`);
       if (p.vitals_by_name) rest.push(`recorded by ${p.vitals_by_name}`);
@@ -115,6 +123,7 @@ export function renderProvider(ctx, params = {}) {
       return el('div', { class: 'card', style: 'display:flex;flex-wrap:wrap;align-items:center;gap:var(--space-2) var(--space-3);padding:var(--space-3) var(--space-4)' }, [
         icon('syringe', { size: 14 }),
         bpEl,
+        ...recheckEls,
         rest.length ? el('span', { class: 'small' }, [rest.join(' · ')]) : null,
         el('span', { class: bt.level === 'danger' ? 'pill pill--danger' : 'subtle small' }, [bt.text]),
         tr.route ? el('span', { class: 'subtle small' }, [p.routed_by_name ? `Sent here by ${p.routed_by_name}` : 'Routed by the EMT station']) : null,
@@ -442,6 +451,69 @@ export function renderProvider(ctx, params = {}) {
       );
     }
 
+    /* ---------- Chairside consent capture ---------- */
+    // Sometimes a patient wanted a filling but the dentist recommends an extraction,
+    // so the oral-surgery consent wasn't signed at check-in. The dentist can have the
+    // patient complete it here — with the tooth number(s) — before treating. Also
+    // used to capture a general consent the intake missed (gates treatment below).
+    async function captureConsent(type) {
+      const isSurgery = type === 'oral_surgery';
+      const paras = isSurgery ? t('consent.oralSurgeryFull') : t('consent.generalFull');
+      const list = Array.isArray(paras) ? paras : [paras];
+      const textBox = el('div', { style: 'max-height:40vh;overflow:auto;border:var(--border-line);border-radius:var(--radius-sm);padding:var(--space-3);background:var(--surface);margin-bottom:var(--space-3)' },
+        list.map((para, i) => el('p', { style: 'margin:0 0 var(--space-2);font-size:var(--fs-sm)' }, [isSurgery ? para : `${i + 1}. ${para}`])));
+      const agree = el('input', { type: 'checkbox', class: 'big-check' });
+      const signer = el('input', { class: 'input', placeholder: 'Patient / guardian name', value: `${p.first_name || ''} ${p.last_name || ''}`.trim() });
+      const teeth = isSurgery ? el('input', { class: 'input', placeholder: 'e.g. 18, 19', value: '' }) : null;
+      const sig = SignaturePad();
+      const body = el('div', {}, [
+        textBox,
+        isSurgery ? el('label', { class: 'field' }, [el('span', { class: 'field-label' }, ['Tooth number(s) for this consent']), teeth]) : null,
+        el('label', { class: 'agree-row' }, [agree, el('span', {}, [t('consent.agree')])]),
+        el('label', { class: 'field' }, [el('span', { class: 'field-label' }, ['Patient / guardian name']), signer]),
+        el('div', { class: 'field' }, [el('span', { class: 'field-label' }, ['Signature']), sig.node]),
+        el('p', { class: 'field-hint' }, ['Signature optional — the patient may sign on the screen or leave it blank.']),
+      ]);
+      const ok = await modal({ title: isSurgery ? t('consent.surgeryTitle') : t('consent.generalTitle'), body, confirmText: 'Save consent', cancelText: 'Cancel' });
+      if (!ok) return;
+      if (!agree.checked) { toast('Please check the agreement box to record consent.', 'error'); return; }
+      if (!signer.value.trim()) { toast('Enter the patient / guardian name.', 'error'); return; }
+      try {
+        await api.addConsent(id, {
+          type, language: 'en',
+          signer_name: signer.value.trim(),
+          signature_png: sig.isEmpty() ? null : sig.getDataUrl(),
+          tooth_numbers: isSurgery ? teeth.value.trim() : undefined,
+        });
+        toast('Consent recorded', 'success');
+        detail(id);
+      } catch (e) { toast(e.message, 'error'); }
+    }
+
+    // Consent status + "complete it here" actions, shown right under patient history.
+    function consentsPanel() {
+      const general = (p.consents || []).find((c) => c.type === 'general');
+      const surgery = (p.consents || []).find((c) => c.type === 'oral_surgery');
+      const row = (label, c, type) => el('div', { style: 'display:flex;align-items:center;justify-content:space-between;gap:var(--space-3);flex-wrap:wrap;padding:var(--space-2) 0' }, [
+        el('div', {}, [
+          el('strong', {}, [label]),
+          c
+            ? el('div', { class: 'subtle small' }, [`Signed${c.signer_name ? ' by ' + c.signer_name : ''}${type === 'oral_surgery' && c.tooth_numbers ? ' · teeth ' + c.tooth_numbers : ''}`])
+            : el('div', { class: 'subtle small' }, ['Not on file']),
+        ]),
+        c
+          ? el('span', { class: 'pill pill--success' }, [el('span', { class: 'pill-dot' }), 'Signed'])
+          : (locked ? el('span', { class: 'pill pill--neutral' }, ['—'])
+            : el('button', { class: 'btn btn--primary btn--sm', type: 'button', onClick: () => captureConsent(type) }, [icon('pen', { size: 14 }), 'Complete now'])),
+      ]);
+      return el('div', { class: 'card' }, [
+        el('div', { class: 'card-title' }, [icon('pen', { size: 15 }), 'Consents']),
+        el('p', { class: 'subtle small', style: 'margin:0' }, ['Have the patient complete any missing consent at the chair. Oral surgery captures the tooth number(s) and signature.']),
+        row('General consent', general, 'general'),
+        row('Oral surgery consent', surgery, 'oral_surgery'),
+      ]);
+    }
+
     /* ---------- F13: quadrant zoom buttons (focus the odontogram on a quadrant) ---------- */
     function quadZoomBar() {
       const mk = (q, label) => el('button', { class: 'btn btn--soft btn--sm', type: 'button', onClick: () => odo.setQuadrant(q) }, [label]);
@@ -530,6 +602,13 @@ export function renderProvider(ctx, params = {}) {
     // finalize that locks the record read-only). Nobody has to lock to move a
     // patient through to check-out.
     async function save(mode) {
+      // Gate: the dentist can't document treatment until the general consent is on
+      // file. Every kiosk check-in already captures it; if it's somehow missing,
+      // the Consents panel above lets the patient complete it right here first.
+      if (!(p.consents || []).some((c) => c.type === 'general')) {
+        toast('The general consent must be completed before documenting treatment — use the Consents panel above.', 'error');
+        return;
+      }
       const payload = collectTreatment();
       if (mode === 'lock') {
         if (!payload.provider_name) { toast('Printed provider name is required to lock the record.', 'error'); return; }
@@ -609,6 +688,10 @@ export function renderProvider(ctx, params = {}) {
         el('summary', { class: 'history-summary' }, [icon('clipboard', { size: 16 }), 'Patient history', priorVisits.length ? el('span', { class: 'pill pill--info', style: 'margin-left:8px' }, [`${priorVisits.length} prior visit(s)`]) : null]),
         el('div', { class: 'history-grid' }, patientHistoryCards(p, priorVisits)),
       ]),
+
+      // Consents — right under patient history so the dentist can have a missing
+      // consent (esp. oral surgery, with tooth numbers) completed at the chair.
+      consentsPanel(),
 
       // Visit bar (paper top row) — the dentist is the planning hub now.
       panel('clipboard', 'Visit & treatment plan',

@@ -50,7 +50,7 @@ const PERMS = {
   'patientsSearchAll': ['admin', 'doctor', 'triage', 'emt', 'checkout', 'hygienist'], 'patientsHistory': ['admin', 'doctor', 'triage', 'emt', 'checkout', 'hygienist'],
   'patientsIncomplete': ['admin'], 'patientsCleanupIncomplete': ['admin'], 'patientsDelete': ['admin'],
   'patientsDismiss': ['admin', 'checkout'], 'patientsMove': ['admin'], 'patientsAudit': ['admin', 'doctor', 'checkout', 'hygienist'],
-  'vitalsSave': ['admin', 'doctor', 'triage', 'emt'], 'patientsRoute': ['admin', 'doctor', 'triage', 'emt'], 'consentSetTeeth': ['admin', 'doctor'],
+  'vitalsSave': ['admin', 'doctor', 'triage', 'emt'], 'patientsRoute': ['admin', 'doctor', 'triage', 'emt'], 'consentSetTeeth': ['admin', 'doctor'], 'consentAdd': ['admin', 'doctor'],
   'usbLoad': ['admin', 'doctor', 'triage', 'checkout'], 'usbUploadCheckout': ['admin', 'doctor', 'triage', 'checkout'], 'usbClear': ['admin', 'doctor', 'triage', 'checkout'],
   'triageSave': ['admin', 'doctor', 'triage'], 'treatmentSave': ['admin', 'doctor', 'hygienist'],
   'xrayAdd': ['admin', 'doctor', 'triage'], 'xrayGet': ['admin', 'doctor', 'triage', 'hygienist'], 'xrayList': ['admin', 'doctor', 'triage', 'hygienist'], 'xrayDelete': ['admin', 'doctor', 'triage'],
@@ -97,6 +97,7 @@ window.api = {
   vitalsSave: okWrap(({ patientId, data }) => db.saveVitals(currentUser, patientId, data), 'vitalsSave'),
   patientsRoute: okWrap(({ patientId, route }) => db.routePatient(currentUser, patientId, route), 'patientsRoute'),
   consentSetTeeth: okWrap(({ consentId, tooth_numbers }) => db.updateConsentTeeth(currentUser, consentId, tooth_numbers), 'consentSetTeeth'),
+  consentAdd: okWrap(({ patientId, consent }) => db.addPatientConsent(currentUser, patientId, consent), 'consentAdd'),
   patientsDismiss: okWrap((id) => db.dismissPatient(currentUser, id), 'patientsDismiss'),
   patientsMove: okWrap(({ id, target }) => db.adminMovePatient(currentUser, id, target), 'patientsMove'),
   patientsAudit: okWrap((id) => db.patientAudit(id), 'patientsAudit'),
@@ -222,6 +223,7 @@ async function main() {
 
   // Step: General consent — agree + signer + signature
   log(/Consent|Consentimiento/i.test($('.kiosk-step-label').textContent), 'on consent step');
+  log(/specimens, tissue or parts/i.test($('.kiosk-body').textContent) && /hold Caring Hands Worldwide/i.test($('.kiosk-body').textContent), 'general consent shows the complete new wording at check-in');
   const agree = $('.big-check'); if (agree) { agree.checked = true; agree.dispatchEvent(new window.Event('change', { bubbles: true })); }
   const signer = $all('.kiosk-body input').find((i) => /name/i.test(i.placeholder || '') || true);
   // signer is the first text input on consent step
@@ -485,6 +487,66 @@ async function main() {
   log(db.getActiveEvent().id === evSel.id, 'v1.4.6: Set active selects the event on this device');
   const evRow = db.collectSyncRows(2000).rows.find((r) => r.entity === 'event' && r.data && r.data.name === 'Sync Event');
   log(!!evRow && !!evRow.data.selected_at, 'v1.4.6: the active-event selection (selected_at) is a synced field so it reaches other laptops');
+
+  // ---- v1.4.7: consent wording, chairside consent capture, treatment gate,
+  //               phone digits, and BP re-checks. ----
+  {
+    const { CATALOG } = await import('../src/renderer/i18n/strings.js');
+    const i18nMod = await import('../src/renderer/js/i18n.js');
+    log((CATALOG.en.consent.generalFull || []).length === 7 && (CATALOG.en.consent.oralSurgeryFull || []).length >= 8, 'v1.4.7: full general (7) + oral-surgery consent wording present in English');
+    i18nMod.setLang('en');
+    log(Array.isArray(i18nMod.tRaw('consent.generalFull')), 'v1.4.7: English defines the full consent text (tRaw)');
+    i18nMod.setLang('es');
+    log(i18nMod.tRaw('consent.generalFull') === undefined && Array.isArray(i18nMod.t('consent.generalFull')), 'v1.4.7: other languages keep their own consent (tRaw undefined; t falls back to English)');
+    i18nMod.setLang('en');
+
+    currentUser = db.login('admin', 'admin');
+    // Chairside oral-surgery consent with tooth numbers (dentist station).
+    const cp = db.createPatient(currentUser, { first_name: 'Chair', last_name: 'Side', demographics: {}, medical_history: {}, dental_history: {}, consents: [] });
+    const afterAdd = db.addPatientConsent(currentUser, cp.id, { type: 'oral_surgery', signer_name: 'Chair Side', tooth_numbers: '18, 19', signature_png: 'data:,sig' });
+    const os = (afterAdd.consents || []).find((c) => c.type === 'oral_surgery');
+    log(!!os && os.tooth_numbers === '18, 19', 'v1.4.7: dentist can capture an oral-surgery consent chairside WITH tooth numbers');
+    log(db.collectSyncRows(3000).rows.some((r) => r.entity === 'consent' && r.data && r.data.tooth_numbers === '18, 19'), 'v1.4.7: a chairside consent is a syncable row (reaches other laptops)');
+
+    // BP re-checks: stored, capped at 2, preserved by a plain re-save.
+    const bpp = db.createPatient(currentUser, { first_name: 'Re', last_name: 'Check', demographics: {}, medical_history: {}, dental_history: {} });
+    db.saveVitals(currentUser, bpp.id, { bp_systolic: '190', bp_diastolic: '110', heart_rate: '88', bp_rechecks: [{ bp_systolic: '185', bp_diastolic: '105', heart_rate: '84' }, { bp_systolic: '176', bp_diastolic: '98', heart_rate: '80' }, { bp_systolic: '170', bp_diastolic: '95' }] });
+    let bpFull = db.getPatient(bpp.id);
+    log((bpFull.triage.bp_rechecks || []).length === 2, 'v1.4.7: up to 2 BP re-checks stored (extra dropped)');
+    db.saveVitals(currentUser, bpp.id, { bp_systolic: '188', bp_diastolic: '108', heart_rate: '90' }); // plain re-save, no rechecks key
+    log((db.getPatient(bpp.id).triage.bp_rechecks || []).length === 2, 'v1.4.7: a plain vitals re-save keeps the re-checks');
+    // Synced JSON triage fields travel as JSON strings (like flags/emt_review).
+    log(db.collectSyncRows(3000).rows.some((r) => {
+      if (r.entity !== 'triage' || !r.data || r.data.bp_rechecks == null) return false;
+      try { return JSON.parse(r.data.bp_rechecks).length === 2; } catch { return false; }
+    }), 'v1.4.7: BP re-checks are a synced triage field');
+    const rcPdf = require('../src/main/pdf.js').buildHtml(db.getPatient(bpp.id), 'full');
+    log(/re-check/i.test(rcPdf), 'v1.4.7: BP re-checks appear in the record PDF');
+
+    // Renders: EMT re-check affordance + provider consent panel + treatment gate.
+    const store3 = (await import('../src/renderer/js/store.js')).store; store3.setUser(currentUser);
+    const ctx3 = { navigate: () => {}, toast: () => {}, store: store3, setDetail: () => {} };
+    const emtHi2 = (await import('../src/renderer/js/views/emt.js')).renderEmt(ctx3, { id: bpp.id }); document.body.append(emtHi2); await tick(); await tick();
+    log(/Add another BP reading/i.test(emtHi2.textContent), 'v1.4.7: EMT offers extra BP readings when the reading is high');
+
+    // Provider consent panel + gate: patient with NO general consent cannot be documented.
+    db.saveVitals(currentUser, cp.id, { bp_systolic: '120', bp_diastolic: '80', heart_rate: '70' });
+    db.routePatient(currentUser, cp.id, 'dentist');
+    const { renderProvider } = await import('../src/renderer/js/views/provider.js');
+    const provNoConsent = renderProvider(ctx3, { id: cp.id }); document.body.append(provNoConsent); await tick(); await tick();
+    log(/Consents/.test(provNoConsent.textContent) && /Complete now/i.test(provNoConsent.textContent), 'v1.4.7: dentist sees a Consents panel with a "Complete now" action for the missing general consent');
+    const completeBtn = $all('button', provNoConsent).find((b) => /Mark visit complete/i.test(b.textContent));
+    if (completeBtn) completeBtn.click();
+    await tick(); await tick();
+    log(db.getPatient(cp.id).status !== 'completed', 'v1.4.7: treatment is BLOCKED until the general consent is signed');
+    // Now capture the general consent and confirm treatment can proceed.
+    db.addPatientConsent(currentUser, cp.id, { type: 'general', signer_name: 'Chair Side', signature_png: 'data:,g' });
+    const provWithConsent = renderProvider(ctx3, { id: cp.id }); document.body.append(provWithConsent); await tick(); await tick();
+    const completeBtn2 = $all('button', provWithConsent).find((b) => /Mark visit complete/i.test(b.textContent));
+    if (completeBtn2) completeBtn2.click();
+    await tick(); await tick();
+    log(db.getPatient(cp.id).status === 'completed', 'v1.4.7: once the general consent is signed, the dentist can document + complete the visit');
+  }
 
   await tick();
   if (errors.length) errors.forEach((e) => log(false, 'RUNTIME: ' + e));

@@ -44,6 +44,7 @@ export const api = {
   saveVitals: (patientId, data) => call('vitalsSave', { patientId, data }),
   routePatient: (patientId, route) => call('patientsRoute', { patientId, route }),
   setConsentTeeth: (consentId, tooth_numbers) => call('consentSetTeeth', { consentId, tooth_numbers }),
+  addConsent: (patientId, consent) => call('consentAdd', { patientId, consent }),
   dismissPatient: (id) => call('patientsDismiss', id),
   movePatient: (id, target) => call('patientsMove', { id, target }),
   patientAudit: (id) => call('patientsAudit', id),

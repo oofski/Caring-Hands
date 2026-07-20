@@ -1,4 +1,5 @@
 import { el, clear, toast, modal } from '../dom.js';
+import { limitDigits } from '../forms.js';
 import { t, conditions, allergies, referralLabel, languageList } from '../i18n.js';
 import { api } from '../api.js';
 import { icon } from '../icons.js';
@@ -219,6 +220,8 @@ export function renderRecords(ctx, params = {}) {
       emergency_name: el('input', { class: 'input', value: d.emergency_name || '' }),
       emergency_phone: el('input', { class: 'input', value: d.emergency_phone || '' }),
     };
+    limitDigits(f.phone, 10);
+    limitDigits(f.emergency_phone, 10);
     const fld = (label, node, span) => el('label', { class: 'field' + (span ? ' span-2' : '') }, [el('span', { class: 'field-label' }, [label]), node]);
     const form = el('div', { class: 'form-grid' }, [
       fld('First name', f.first_name), fld('Last name', f.last_name),

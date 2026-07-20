@@ -53,6 +53,7 @@ const PERMS = {
   'patients:route': ['admin', 'doctor', 'triage', 'emt'],
   'treatment:save': ['admin', 'doctor', 'hygienist'],
   'consent:setTeeth': ['admin', 'doctor'],
+  'consent:add': ['admin', 'doctor'],
   'xray:add': ['admin', 'doctor', 'triage', 'emt'],
   'xray:get': ['admin', 'doctor', 'triage', 'emt', 'hygienist'],
   'xray:list': ['admin', 'doctor', 'triage', 'emt', 'checkout', 'hygienist'],
@@ -175,6 +176,7 @@ function register(getMainWindow) {
   handle('vitals:save', ({ patientId, data }) => db.saveVitals(currentUser, patientId, data));
   handle('patients:route', ({ patientId, route }) => db.routePatient(currentUser, patientId, route));
   handle('consent:setTeeth', ({ consentId, tooth_numbers }) => db.updateConsentTeeth(currentUser, consentId, tooth_numbers));
+  handle('consent:add', ({ patientId, consent }) => db.addPatientConsent(currentUser, patientId, consent));
   handle('patients:dismiss', (id) => db.dismissPatient(currentUser, id));
   handle('patients:move', ({ id, target }) => db.adminMovePatient(currentUser, id, target));
   handle('patients:audit', (id) => db.patientAudit(id));

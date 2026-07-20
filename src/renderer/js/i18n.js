@@ -21,6 +21,15 @@ export function t(path) {
   return fallback != null ? fallback : path;
 }
 
+// Like t(), but WITHOUT the English fallback: returns the value only if the
+// CURRENT language defines it, else undefined. Used for consent bodies so English
+// can show the full authoritative wording while other languages keep their own
+// translated consent text (rather than falling back to English legalese).
+export function tRaw(path) {
+  const lookup = (obj) => path.split('.').reduce((o, k) => (o == null ? undefined : o[k]), obj);
+  return lookup(CATALOG[lang]);
+}
+
 export function conditions() {
   return CONDITIONS.map((c) => ({ key: c.key, flag: c.flag, label: c[lang] || c.en }));
 }

@@ -1,7 +1,7 @@
 import { el, clear, toast } from '../dom.js';
 import { icon } from '../icons.js';
-import { t, getLang, setLang, languageList, conditions, allergies, referrals, speak, stopSpeaking } from '../i18n.js';
-import { textField, textArea, selectField, yesNo, chipGrid } from '../forms.js';
+import { t, tRaw, getLang, setLang, languageList, conditions, allergies, referrals, speak, stopSpeaking } from '../i18n.js';
+import { textField, textArea, selectField, yesNo, chipGrid, limitDigits } from '../forms.js';
 import { SignaturePad } from '../components/signature.js';
 import { api } from '../api.js';
 import { store } from '../store.js';
@@ -137,6 +137,9 @@ export function renderKiosk(ctx) {
     ], { selected: d.children || [] });
     const emName = textField(t('intake.emergencyName'), { value: d.emergency_name, required: true });
     const emPhone = textField(t('intake.emergencyPhone'), { value: d.emergency_phone, type: 'tel', required: true });
+    // Phone numbers accept digits only, max 10.
+    limitDigits(phone.input, 10);
+    limitDigits(emPhone.input, 10);
 
     // F4: referral as a dropdown of known sources; "Other" reveals a free-text field.
     const referral = selectField(t('intake.referral'), [
@@ -356,10 +359,11 @@ export function renderKiosk(ctx) {
     return Math.floor((Date.now() - d.getTime()) / (365.25 * 24 * 3600 * 1000));
   }
 
-  // Shared consent-section builder with per-section read-aloud.
-  function consentSection({ title, intro, clauses, extra }) {
+  // Shared consent-section builder with per-section read-aloud. `paras` renders as
+  // plain paragraphs (unnumbered), `clauses` as a numbered list.
+  function consentSection({ title, intro, paras, clauses, extra }) {
     const wrap = el('div', { class: 'consent-block' });
-    const fullText = [title, intro, ...(clauses || []), ...(extra ? [extra] : [])].filter(Boolean).join('. ');
+    const fullText = [title, intro, ...(paras || []), ...(clauses || []), ...(extra ? [extra] : [])].filter(Boolean).join('. ');
     const readLabel = el('span', {}, [t('common.readAloud')]);
     const readBtn = el('button', { class: 'btn btn--read', type: 'button' }, [icon('speaker', { size: 16 }), readLabel]);
     let reading = false;
@@ -371,6 +375,7 @@ export function renderKiosk(ctx) {
     });
     wrap.append(el('div', { class: 'consent-head' }, [el('h3', {}, [title]), readBtn]));
     if (intro) wrap.append(el('p', { class: 'consent-intro' }, [intro]));
+    if (paras) paras.forEach((p) => wrap.append(el('p', { class: 'consent-intro' }, [p])));
     if (clauses) wrap.append(el('ol', { class: 'consent-list' }, clauses.map((c) => el('li', {}, [c]))));
     if (extra) wrap.append(el('p', { class: 'consent-extra' }, [extra]));
     return wrap;
@@ -383,13 +388,16 @@ export function renderKiosk(ctx) {
     const signer = textField(t('intake.signerName'), { value: '', required: true });
     const rel = textField(t('intake.relationship'), { value: minor ? '' : '' });
 
-    // F9: render the verbatim Oregon general-consent paragraph as the primary
-    // consent text. It already includes the COVID acknowledgment, so we do NOT
-    // append a separate COVID section. The read-aloud button reads this text.
+    // Render the complete general-consent wording. English shows the full
+    // numbered clauses (consent.generalFull); other languages keep their existing
+    // translated paragraph (consent.oregon) — tRaw returns the full list only when
+    // the CURRENT language defines it, so no locale falls back to English legalese.
+    const generalFull = tRaw('consent.generalFull');
     const sections = el('div', {}, [
       consentSection({
         title: t('consent.generalTitle'),
-        intro: t('consent.oregon'),
+        intro: generalFull ? '' : t('consent.oregon'),
+        clauses: generalFull || null,
       }),
     ]);
 
@@ -443,13 +451,18 @@ export function renderKiosk(ctx) {
       ru: 'Подпись необязательна — вы можете расписаться стилусом/на сенсорном экране или оставить поле пустым.',
     });
 
+    // English shows the complete oral-surgery wording (consent.oralSurgeryFull,
+    // rendered as paragraphs — it already includes the post-op / emergency call
+    // instructions and hold-harmless). Other languages keep their existing sections.
+    const surgeryFull = tRaw('consent.oralSurgeryFull');
+    const surgerySections = surgeryFull
+      ? [consentSection({ title: t('consent.surgeryTitle'), paras: surgeryFull })]
+      : [
+          consentSection({ title: t('consent.surgeryTitle'), intro: t('consent.surgeryIntro'), clauses: t('consent.surgeryClauses') }),
+          consentSection({ title: t('consent.postOpTitle'), clauses: [t('consent.postOp')], extra: t('consent.emergency') }),
+        ];
     const node = el('div', { class: 'consent-screen' }, [
-      consentSection({
-        title: t('consent.surgeryTitle'),
-        intro: t('consent.surgeryIntro'),
-        clauses: t('consent.surgeryClauses'),
-      }),
-      consentSection({ title: t('consent.postOpTitle'), clauses: [t('consent.postOp')], extra: t('consent.emergency') }),
+      ...surgerySections,
       el('div', { class: 'banner banner--info' }, [icon('flag', { size: 16 }), ' ' + toothNote]),
       el('label', { class: 'agree-row' }, [agree, el('span', {}, [t('consent.agree')])]),
       signer.node,

@@ -179,13 +179,54 @@ export function renderEmt(ctx, params = {}) {
       } else {
         bpWarn.style.display = 'none';
       }
+      updateRecheckAffordance();
     }
     sys.addEventListener('input', refreshBpHighlight);
     dia.addEventListener('input', refreshBpHighlight);
 
-    // Current vitals to carry through to secondary saves (avoids clobbering).
+    // BP re-checks: when the primary reading is high, the EMT may record up to TWO
+    // additional readings. Each row highlights red the same way as the primary.
+    const recheckRows = el('div', {});
+    function makeRecheck(r = {}) {
+      if (recheckRows.children.length >= 2) return;
+      const rs = el('input', { class: 'input', type: 'number', min: '0', max: '300', placeholder: t('intake.bpSys'), value: r.bp_systolic != null ? r.bp_systolic : '' });
+      const rd = el('input', { class: 'input', type: 'number', min: '0', max: '200', placeholder: t('intake.bpDia'), value: r.bp_diastolic != null ? r.bp_diastolic : '' });
+      const rh = el('input', { class: 'input', type: 'number', min: '0', max: '300', placeholder: t('intake.hr'), value: r.heart_rate != null ? r.heart_rate : '' });
+      const paintRow = () => {
+        const st = bpStatus(rs.value, rd.value);
+        const c = (inp, hi) => { inp.style.borderColor = hi ? 'var(--danger, #c0392b)' : ''; inp.style.color = hi ? 'var(--danger, #c0392b)' : ''; inp.style.fontWeight = hi ? '700' : ''; };
+        c(rs, st.sysHigh); c(rd, st.diaHigh);
+      };
+      rs.addEventListener('input', paintRow); rd.addEventListener('input', paintRow);
+      const row = el('div', { class: 'field', style: 'margin-top:var(--space-2)' }, [
+        el('span', { class: 'field-label' }, [`Re-check #${recheckRows.children.length + 1}`]),
+        el('div', { class: 'vitals-grid' }, [rs, rd, rh]),
+      ]);
+      row._get = () => ({ bp_systolic: rs.value.trim(), bp_diastolic: rd.value.trim(), heart_rate: rh.value.trim() });
+      recheckRows.append(row);
+      paintRow();
+      updateRecheckAffordance();
+    }
+    const addRecheckBtn = el('button', { class: 'btn btn--ghost btn--sm', type: 'button', style: 'margin-top:var(--space-2)', onClick: () => makeRecheck() }, [icon('plus', { size: 15 }), 'Add another BP reading']);
+    const recheckSection = el('div', { style: 'margin-top:var(--space-2);display:none' }, [
+      el('p', { class: 'subtle small', style: 'margin:0' }, ['Blood pressure is high — you may record up to two more readings.']),
+      recheckRows,
+      addRecheckBtn,
+    ]);
+    function updateRecheckAffordance() {
+      const high = bpStatus(sys.value, dia.value).high;
+      recheckSection.style.display = (high || recheckRows.children.length) ? '' : 'none';
+      addRecheckBtn.style.display = (high && recheckRows.children.length < 2) ? '' : 'none';
+    }
+    (tr.bp_rechecks || []).slice(0, 2).forEach((r) => makeRecheck(r));
+
+    // Current vitals to carry through to secondary saves (avoids clobbering). The
+    // re-checks travel with every save so a review/thinner save preserves them.
     function currentVitals() {
-      return { bp_systolic: sys.value.trim(), bp_diastolic: dia.value.trim(), heart_rate: hr.value.trim() };
+      return {
+        bp_systolic: sys.value.trim(), bp_diastolic: dia.value.trim(), heart_rate: hr.value.trim(),
+        bp_rechecks: Array.from(recheckRows.children).map((row) => row._get()).filter((r) => r.bp_systolic || r.bp_diastolic || r.heart_rate),
+      };
     }
 
     // After vitals save, ask the patient about blood thinners and persist the
@@ -385,6 +426,7 @@ export function renderEmt(ctx, params = {}) {
           el('label', { class: 'field' }, [el('span', { class: 'field-label' }, [t('intake.hr')]), hr]),
         ]),
         bpWarn,
+        recheckSection,
         lastRecorded,
         bloodThinnerLine,
         el('button', { class: 'btn btn--soft btn--block', style: 'margin-top:var(--space-3)', onClick: save }, [icon('save', { size: 16 }), 'Save vitals']),

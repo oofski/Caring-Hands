@@ -187,6 +187,9 @@ function migrate() {
   // has signed the patient off from the vitals station into a clinical queue.
   addColumn('triage', 'emt_review', "TEXT NOT NULL DEFAULT '{}'");
   addColumn('triage', 'emt_signed_off', 'INTEGER NOT NULL DEFAULT 0');
+  // v1.4.7: when a reading is high, the EMT may record up to 2 additional BP
+  // readings (re-checks). Stored as a small JSON array on the triage row.
+  addColumn('triage', 'bp_rechecks', "TEXT NOT NULL DEFAULT '[]'");
 
   // v1.1.0: cloud sync. Each syncable row carries a stable uid (cloud identity),
   // an updated_at revision, and synced_rev (the revision last pushed/applied —
@@ -852,7 +855,7 @@ function getPatient(id) {
   if (!p) return null;
   p.consents = db.prepare('SELECT * FROM consents WHERE patient_id = ? ORDER BY signed_at').all(id);
   const tr = db.prepare('SELECT * FROM triage WHERE patient_id = ?').get(id);
-  p.triage = tr ? { ...tr, flags: safeJson(tr.flags, []), checklist: safeJson(tr.checklist, {}), teeth: safeJson(tr.teeth, []), teeth_notes: safeJson(tr.teeth_notes, {}), emt_review: safeJson(tr.emt_review, {}), emt_signed_off: !!tr.emt_signed_off } : null;
+  p.triage = tr ? { ...tr, flags: safeJson(tr.flags, []), checklist: safeJson(tr.checklist, {}), teeth: safeJson(tr.teeth, []), teeth_notes: safeJson(tr.teeth_notes, {}), emt_review: safeJson(tr.emt_review, {}), bp_rechecks: safeJson(tr.bp_rechecks, []), emt_signed_off: !!tr.emt_signed_off } : null;
   const t = db.prepare('SELECT * FROM treatments WHERE patient_id = ?').get(id);
   p.treatment = t
     ? {
@@ -914,6 +917,15 @@ function saveVitals(actor, patientId, data) {
   if (Object.prototype.hasOwnProperty.call(d, 'emt_review') && d.emt_review && typeof d.emt_review === 'object' && Object.keys(d.emt_review).length) {
     db.prepare('UPDATE triage SET emt_review=? WHERE patient_id=?').run(JSON.stringify(d.emt_review), patientId);
   }
+  // Up to 2 additional BP re-checks (only written when the key is present, so a
+  // plain save never wipes them). Each keeps only the vitals fields.
+  if (Object.prototype.hasOwnProperty.call(d, 'bp_rechecks') && Array.isArray(d.bp_rechecks)) {
+    const cleaned = d.bp_rechecks
+      .map((r) => ({ bp_systolic: toIntOrNull(r.bp_systolic), bp_diastolic: toIntOrNull(r.bp_diastolic), heart_rate: toIntOrNull(r.heart_rate) }))
+      .filter((r) => r.bp_systolic != null || r.bp_diastolic != null || r.heart_rate != null)
+      .slice(0, 2);
+    db.prepare('UPDATE triage SET bp_rechecks=? WHERE patient_id=?').run(JSON.stringify(cleaned), patientId);
+  }
   audit(actor, 'vitals', 'patient', patientId, `${sys == null ? '—' : sys}/${dia == null ? '—' : dia} HR ${hr == null ? '—' : hr}${hasBT ? ' · thinner:' + (bt || 'no') : ''}`);
   return getPatient(patientId);
 }
@@ -939,6 +951,27 @@ function routePatient(actor, patientId, route) {
   // (dentist <-> hygienist transfer) keeps whatever clinical status they're in.
   db.prepare("UPDATE patients SET status='triaged', updated_at=? WHERE id=? AND status='checked_in'").run(now(), patientId);
   audit(actor, 'route', 'patient', patientId, route);
+  return getPatient(patientId);
+}
+
+// A consent completed chairside for an EXISTING patient — e.g. the dentist has the
+// patient sign the oral-surgery consent at the chair (capturing the tooth numbers
+// at the same time), or captures a general consent the intake missed.
+function addPatientConsent(actor, patientId, consent) {
+  const p = db.prepare('SELECT id FROM patients WHERE id = ?').get(patientId);
+  if (!p) throw new Error('Patient not found.');
+  const c = consent || {};
+  if (c.type !== 'general' && c.type !== 'oral_surgery') throw new Error('Unknown consent type.');
+  const teeth = c.tooth_numbers != null && String(c.tooth_numbers).trim() ? String(c.tooth_numbers).trim() : null;
+  db.prepare(
+    `INSERT INTO consents (patient_id, type, version, language, signer_name, relationship, signature_png, signed_at, tooth_numbers, amended_by, amended_at)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?)`
+  ).run(
+    patientId, c.type, c.version || `${c.type}-${c.language || 'en'}-chairside-v1`, c.language || 'en',
+    c.signer_name || '', c.relationship || '', c.signature_png || '', c.signed_at || now(),
+    teeth, teeth ? (actor ? actor.full_name : null) : null, teeth ? now() : null
+  );
+  audit(actor, 'consent_add', 'patient', patientId, c.type + (teeth ? ' · teeth ' + teeth : ''));
   return getPatient(patientId);
 }
 
@@ -1334,7 +1367,7 @@ const SYNC_COLS = {
   // event scoping travels via event_uid (the parent), NULL for global admins.
   user: ['username', 'full_name', 'role', 'salt', 'hash', 'active', 'created_at'],
   patient: ['language', 'first_name', 'last_name', 'dob', 'gender', 'phone', 'email', 'demographics', 'medical_history', 'dental_history', 'status', 'created_at', 'dismissed_at', 'dismissed_by_name'],
-  triage: ['complaint', 'flags', 'checklist', 'teeth', 'teeth_notes', 'notes', 'xray_count', 'xray_station', 'assigned_to', 'status', 'triage_signature', 'triage_signer_name', 'triaged_at', 'bp_systolic', 'bp_diastolic', 'heart_rate', 'vitals_at', 'blood_thinner', 'blood_thinner_detail', 'route', 'routed_at', 'emt_review', 'emt_signed_off', 'triaged_by_name', 'vitals_by_name', 'routed_by_name'],
+  triage: ['complaint', 'flags', 'checklist', 'teeth', 'teeth_notes', 'notes', 'xray_count', 'xray_station', 'assigned_to', 'status', 'triage_signature', 'triage_signer_name', 'triaged_at', 'bp_systolic', 'bp_diastolic', 'heart_rate', 'vitals_at', 'blood_thinner', 'blood_thinner_detail', 'route', 'routed_at', 'emt_review', 'emt_signed_off', 'bp_rechecks', 'triaged_by_name', 'vitals_by_name', 'routed_by_name'],
   treatment: ['fillings', 'extractions', 'cleaning', 'anesthetic', 'other_procedures', 'clinical_notes', 'provider_name', 'provider_signature', 'locked', 'completed_at', 'completed_by_name'],
   consent: ['type', 'version', 'language', 'signer_name', 'relationship', 'signature_png', 'signed_at', 'tooth_numbers', 'amended_by', 'amended_at'],
   xray: ['station', 'image_png', 'note', 'created_at'],
@@ -1599,7 +1632,7 @@ module.exports = {
   listEvents, createEvent, updateEvent, setActiveEvent, setEventActive, deleteEvent, getActiveEvent,
   createPatient, updatePatient, deletePatient, getPatient, listPatients, searchAllPatients, patientHistory,
   listIncompletePatients, deleteIncompletePatients,
-  saveVitals, routePatient, updateConsentTeeth, dismissPatient, adminMovePatient, patientAudit, importPatientFromPortable,
+  saveVitals, routePatient, updateConsentTeeth, addPatientConsent, dismissPatient, adminMovePatient, patientAudit, importPatientFromPortable,
   saveTriage, saveTreatment,
   addXray, getXray, listXrays, deleteXray,
   dashboardStats, listAudit, audit,

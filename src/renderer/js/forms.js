@@ -1,5 +1,16 @@
 import { el } from './dom.js';
 
+// Constrain an input to digits only, at most `max` (e.g. a 10-digit phone number).
+// Strips anything non-numeric on input and caps the length.
+export function limitDigits(inputEl, max = 10) {
+  if (!inputEl) return;
+  inputEl.setAttribute('inputmode', 'numeric');
+  inputEl.setAttribute('maxlength', String(max));
+  const clean = () => { const d = (inputEl.value || '').replace(/\D/g, '').slice(0, max); if (d !== inputEl.value) inputEl.value = d; };
+  inputEl.addEventListener('input', clean);
+  clean();
+}
+
 // Reusable labelled form controls. Each returns { node, get, set }.
 
 export function textField(label, { value = '', type = 'text', placeholder = '', required = false, hint = '' } = {}) {

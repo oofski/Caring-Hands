@@ -115,15 +115,20 @@ function fieldRaw(label, valueHtml) {
 // are escaped, so the returned HTML is safe to inline.
 const PDF_BP_SYS_MAX = 180;
 const PDF_BP_DIA_MAX = 100;
-function bpHtml(tr) {
+function bpHtml(tr, label = 'BP') {
   const t = tr || {};
   const sys = t.bp_systolic != null ? esc(t.bp_systolic) : '—';
   const dia = t.bp_diastolic != null ? esc(t.bp_diastolic) : '—';
   const sN = t.bp_systolic == null || t.bp_systolic === '' ? null : Number(t.bp_systolic);
   const dN = t.bp_diastolic == null || t.bp_diastolic === '' ? null : Number(t.bp_diastolic);
   const high = (sN != null && !Number.isNaN(sN) && sN > PDF_BP_SYS_MAX) || (dN != null && !Number.isNaN(dN) && dN > PDF_BP_DIA_MAX);
-  const text = `BP ${sys}/${dia}`;
+  const text = `${label} ${sys}/${dia}`;
   return high ? `<span style="color:#c0392b;font-weight:bold">${text} — HIGH</span>` : text;
+}
+// Any additional BP re-checks the EMT recorded (each red if still high).
+function bpRechecksHtml(tr) {
+  const rc = (tr && Array.isArray(tr.bp_rechecks)) ? tr.bp_rechecks : [];
+  return rc.map((r) => bpHtml({ bp_systolic: r.bp_systolic, bp_diastolic: r.bp_diastolic }, 're-check')).join(' · ');
 }
 
 const EXT_LABELS = {
@@ -205,7 +210,7 @@ function progressNoteBody(p) {
 
     <h2>Clinical Assessment</h2>
     ${(tr.bp_systolic != null || tr.bp_diastolic != null || tr.heart_rate != null || tr.blood_thinner)
-      ? `<div class="box"><span class="label">Vitals: </span>${bpHtml(tr)} · HR ${tr.heart_rate != null ? esc(tr.heart_rate) : '—'} · Blood thinners: ${esc(bloodThinnerLine(p))}</div>`
+      ? `<div class="box"><span class="label">Vitals: </span>${bpHtml(tr)}${bpRechecksHtml(tr) ? ' · ' + bpRechecksHtml(tr) : ''} · HR ${tr.heart_rate != null ? esc(tr.heart_rate) : '—'} · Blood thinners: ${esc(bloodThinnerLine(p))}</div>`
       : ''}
     <div class="chips">${checklist}</div>
     <div class="box"><span class="label">Teeth of concern: </span>${(tr.teeth || []).map((x) => `<b>${esc(x)}</b>`).join(', ') || '<span class="muted">—</span>'}</div>
@@ -363,7 +368,7 @@ function healthBlock(p) {
   // to avoid double-escaping a detail like "A & B". Vitals go through fieldRaw()
   // instead so a high blood-pressure reading can render red (bpHtml is pre-escaped).
   const vitals = (tr.bp_systolic != null || tr.bp_diastolic != null || tr.heart_rate != null)
-    ? `${bpHtml(tr)} · HR ${tr.heart_rate != null ? esc(tr.heart_rate) : '—'} bpm`
+    ? `${bpHtml(tr)}${bpRechecksHtml(tr) ? ' · ' + bpRechecksHtml(tr) : ''} · HR ${tr.heart_rate != null ? esc(tr.heart_rate) : '—'} bpm`
     : 'Not recorded';
   const thinner = bloodThinnerLine(p);
   const list = (arr, otherKey) => {
