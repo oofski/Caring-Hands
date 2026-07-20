@@ -900,6 +900,32 @@ function dismissPatient(actor, id) {
   return getPatient(id);
 }
 
+// v1.4.0: admin management override — move a patient to any stage regardless of
+// the normal flow (send back to vitals, re-route, re-open a finished record so it
+// can be edited again, or check them out). Admin-only via the IPC role matrix.
+const MOVE_TARGETS = ['emt', 'dentist', 'hygienist', 'reopen', 'dismiss'];
+function adminMovePatient(actor, id, target) {
+  if (!MOVE_TARGETS.includes(target)) throw new Error('Unknown move target.');
+  const p = db.prepare('SELECT * FROM patients WHERE id = ?').get(id);
+  if (!p) throw new Error('Patient not found.');
+  if (target === 'dentist' || target === 'hygienist') return routePatient(actor, id, target);
+  if (target === 'emt') {
+    // Send back to the vitals/EMT queue.
+    db.prepare("UPDATE patients SET status='checked_in', updated_at=? WHERE id=?").run(now(), id);
+  } else if (target === 'reopen') {
+    // Bring a completed OR dismissed patient back into treatment and unlock the
+    // record so it can be edited again (clears any dismissal).
+    db.prepare("UPDATE patients SET status='in_treatment', dismissed_by=NULL, dismissed_by_name=NULL, dismissed_at=NULL, updated_at=? WHERE id=?").run(now(), id);
+    db.prepare('UPDATE treatments SET locked=0 WHERE patient_id=?').run(id);
+    db.prepare("UPDATE triage SET status='in_treatment' WHERE patient_id=? AND status='completed'").run(id);
+  } else if (target === 'dismiss') {
+    // Admin override: check a patient out from any stage.
+    db.prepare("UPDATE patients SET status='dismissed', dismissed_by=?, dismissed_at=?, updated_at=? WHERE id=?").run(actor ? actor.id : null, now(), now(), id);
+  }
+  audit(actor, 'admin_move', 'patient', id, target);
+  return getPatient(id);
+}
+
 // Per-patient action log (who did what, when) — for the accountability views.
 function patientAudit(id) {
   return db.prepare(
@@ -1458,7 +1484,7 @@ module.exports = {
   listEvents, createEvent, updateEvent, setActiveEvent, setEventActive, deleteEvent, getActiveEvent,
   createPatient, updatePatient, deletePatient, getPatient, listPatients, searchAllPatients, patientHistory,
   listIncompletePatients, deleteIncompletePatients,
-  saveVitals, routePatient, updateConsentTeeth, dismissPatient, patientAudit, importPatientFromPortable,
+  saveVitals, routePatient, updateConsentTeeth, dismissPatient, adminMovePatient, patientAudit, importPatientFromPortable,
   saveTriage, saveTreatment,
   addXray, getXray, listXrays, deleteXray,
   dashboardStats, listAudit, audit,

@@ -49,7 +49,7 @@ const PERMS = {
   'patientsList': ['admin', 'doctor', 'triage', 'emt', 'checkout', 'hygienist'], 'patientsRecords': ['admin', 'doctor'],
   'patientsSearchAll': ['admin', 'doctor', 'triage', 'emt', 'checkout', 'hygienist'], 'patientsHistory': ['admin', 'doctor', 'triage', 'emt', 'checkout', 'hygienist'],
   'patientsIncomplete': ['admin'], 'patientsCleanupIncomplete': ['admin'], 'patientsDelete': ['admin'],
-  'patientsDismiss': ['admin', 'checkout'], 'patientsAudit': ['admin', 'doctor', 'checkout', 'hygienist'],
+  'patientsDismiss': ['admin', 'checkout'], 'patientsMove': ['admin'], 'patientsAudit': ['admin', 'doctor', 'checkout', 'hygienist'],
   'vitalsSave': ['admin', 'doctor', 'triage', 'emt'], 'patientsRoute': ['admin', 'doctor', 'triage', 'emt'], 'consentSetTeeth': ['admin', 'doctor'],
   'usbLoad': ['admin', 'doctor', 'triage', 'checkout'], 'usbUploadCheckout': ['admin', 'doctor', 'triage', 'checkout'], 'usbClear': ['admin', 'doctor', 'triage', 'checkout'],
   'triageSave': ['admin', 'doctor', 'triage'], 'treatmentSave': ['admin', 'doctor', 'hygienist'],
@@ -98,6 +98,7 @@ window.api = {
   patientsRoute: okWrap(({ patientId, route }) => db.routePatient(currentUser, patientId, route), 'patientsRoute'),
   consentSetTeeth: okWrap(({ consentId, tooth_numbers }) => db.updateConsentTeeth(currentUser, consentId, tooth_numbers), 'consentSetTeeth'),
   patientsDismiss: okWrap((id) => db.dismissPatient(currentUser, id), 'patientsDismiss'),
+  patientsMove: okWrap(({ id, target }) => db.adminMovePatient(currentUser, id, target), 'patientsMove'),
   patientsAudit: okWrap((id) => db.patientAudit(id), 'patientsAudit'),
   usbList: async () => ({ ok: true, data: [] }),
   usbWriteCheckin: async () => ({ ok: true, data: { saved: false } }),
@@ -283,7 +284,7 @@ async function main() {
   // Always run authenticated so a kiosk regression can't mask real view errors.
   currentUser = db.login('admin', 'admin');
   // v1.0.9: the triage view is unregistered from the app shell (station removed).
-  const views = ['dashboard', 'provider', 'reports', 'admin', 'emt', 'checkout', 'hygienist'];
+  const views = ['dashboard', 'provider', 'reports', 'admin', 'emt', 'checkout', 'hygienist', 'management'];
   for (const v of views) {
     try {
       const mod = await import('../src/renderer/js/views/' + v + '.js');

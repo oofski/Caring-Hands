@@ -47,16 +47,21 @@ jobs:
       - name: Publish downloadable release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.3.1-build.${{ github.run_number }}
-          name: Caring Hands v1.3.1 (build ${{ github.run_number }})
+          tag_name: v1.4.0-build.${{ github.run_number }}
+          name: Caring Hands v1.4.0 (build ${{ github.run_number }})
           prerelease: false
           make_latest: true
           body: |
-            ## Caring Hands Worldwide — Practice Management Software (v1.3.1)
+            ## Caring Hands Worldwide — Practice Management Software (v1.4.0)
 
             Offline-first dental clinic app for Windows. **Download the installer once — it auto-updates from here on.**
 
-            **New in v1.3.1 — cloud sync hardening**
+            **New in v1.4.0 — tidier menu + an admin Management console**
+            - **Collapsible sidebar.** The stations (Vitals, Cleanings, Dentist, Check-Out, Records, Reports) now live under a **Clinic** module you click to open, and system settings under an **Admin** module — so the menu isn't a long wall of items. Dashboard stays pinned at the top; your open/closed choice is remembered.
+            - **Events moved into Admin; Languages removed** (language packs are still chosen per event under Admin → Events → Edit).
+            - **New: Admin → Management.** A live, cloud-synced overview of every patient where an admin can **override the flow** — send a patient back to vitals, re-route them to the dentist or hygienist, **re-open a finished record to edit it**, check someone out, or remove a bad record. It also shows the cloud connection and can open the server's status page so you can confirm everything's connected.
+
+            **From v1.3.1 — cloud sync hardening**
             - Bullet-proofed the multi-device sync against rare race conditions: two stations editing at the very same moment now resolve to the same result on every device (no silent disagreement), a busy first sync can never skip a record, and a record whose linked patient hasn't arrived yet is safely retried instead of stalling the sync. Everyday syncing is unchanged — this just closes the tiny edge cases. Nothing to do but update.
 
             **From v1.3.0 — cleaner navigation + a big reliability pass**

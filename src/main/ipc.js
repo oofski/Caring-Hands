@@ -42,6 +42,7 @@ const PERMS = {
   'patients:incomplete': ['admin'],
   'patients:cleanupIncomplete': ['admin'],
   'patients:dismiss': ['admin', 'checkout'],
+  'patients:move': ['admin'],
   'patients:audit': ['admin', 'doctor', 'checkout', 'hygienist'],
   'patients:records': ['admin', 'doctor'],
   'triage:save': ['admin', 'doctor', 'triage'],
@@ -172,6 +173,7 @@ function register(getMainWindow) {
   handle('patients:route', ({ patientId, route }) => db.routePatient(currentUser, patientId, route));
   handle('consent:setTeeth', ({ consentId, tooth_numbers }) => db.updateConsentTeeth(currentUser, consentId, tooth_numbers));
   handle('patients:dismiss', (id) => db.dismissPatient(currentUser, id));
+  handle('patients:move', ({ id, target }) => db.adminMovePatient(currentUser, id, target));
   handle('patients:audit', (id) => db.patientAudit(id));
 
   /* ---- X-rays ---- */

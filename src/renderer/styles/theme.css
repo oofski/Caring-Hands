@@ -138,6 +138,17 @@ h3{ font-weight:var(--fw-semibold); }
   color:var(--text-on-inverse); opacity:.45; padding:0 12px; margin:14px 0 4px;
 }
 .nav-group-label:first-child{ margin-top:2px; }
+/* Collapsible module header (Clinic / Admin) */
+.nav-group{
+  display:flex; align-items:center; justify-content:space-between; gap:8px; width:100%;
+  text-transform:uppercase; letter-spacing:.12em; font-size:var(--fs-2xs, 10px); font-weight:var(--fw-bold);
+  color:var(--text-on-inverse); opacity:.55; background:transparent; border:none; cursor:pointer;
+  padding:6px 12px; margin:12px 0 2px; font-family:var(--font-sans); border-radius:var(--radius-sm);
+  transition:opacity var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
+}
+.nav-group:hover{ opacity:.9; background:rgba(255,255,255,.06); }
+.nav-group svg{ transition:transform var(--dur-fast) var(--ease); opacity:.7; }
+.nav-group--open svg{ transform:rotate(90deg); }
 .nav-item{
   display:flex; align-items:center; gap:11px; padding:0 12px; height:38px; border:none; cursor:pointer;
   background:transparent; color:var(--text-on-inverse); opacity:.78; border-radius:var(--radius-sm);

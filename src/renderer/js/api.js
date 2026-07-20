@@ -45,6 +45,7 @@ export const api = {
   routePatient: (patientId, route) => call('patientsRoute', { patientId, route }),
   setConsentTeeth: (consentId, tooth_numbers) => call('consentSetTeeth', { consentId, tooth_numbers }),
   dismissPatient: (id) => call('patientsDismiss', id),
+  movePatient: (id, target) => call('patientsMove', { id, target }),
   patientAudit: (id) => call('patientsAudit', id),
 
   usbList: () => call('usbList'),

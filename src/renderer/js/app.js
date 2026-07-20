@@ -13,6 +13,7 @@ import { renderAdmin } from './views/admin.js';
 import { renderEmt } from './views/emt.js';
 import { renderCheckout } from './views/checkout.js';
 import { renderHygienist } from './views/hygienist.js';
+import { renderManagement } from './views/management.js';
 
 const appRoot = document.getElementById('app');
 
@@ -25,24 +26,30 @@ const appRoot = document.getElementById('app');
 // accessible sidebar item under the right module. `module` drives the grouping;
 // order within a module follows insertion order below.
 const VIEWS = {
-  // ---- Clinic ----
-  dashboard: { render: renderDashboard, roles: ['admin', 'doctor', 'triage', 'emt', 'checkout', 'hygienist'], icon: 'dashboard', label: () => t('nav.dashboard'), module: 'clinic' },
+  // ---- Top-level (always visible) ----
+  dashboard: { render: renderDashboard, roles: ['admin', 'doctor', 'triage', 'emt', 'checkout', 'hygienist'], icon: 'dashboard', label: () => t('nav.dashboard'), module: 'top' },
+  // ---- Clinic (collapsible) — the day-to-day stations ----
   emt: { render: renderEmt, roles: ['admin', 'emt', 'triage'], icon: 'syringe', label: () => t('nav.emt'), module: 'clinic' },
   hygienist: { render: renderHygienist, roles: ['admin', 'hygienist'], icon: 'sparkle', label: () => t('nav.hygienist'), module: 'clinic' },
   provider: { render: renderProvider, roles: ['admin', 'doctor'], icon: 'tooth', label: () => t('nav.provider'), module: 'clinic' },
   checkout: { render: renderCheckout, roles: ['admin', 'checkout'], icon: 'checkCircle', label: () => t('nav.checkout'), module: 'clinic' },
   records: { render: renderRecords, roles: ['admin', 'doctor', 'checkout'], icon: 'records', label: () => t('nav.records'), module: 'clinic' },
   reports: { render: renderReports, roles: ['admin', 'doctor'], icon: 'reports', label: () => t('nav.reports'), module: 'clinic' },
-  events: { render: (c, p) => renderAdmin(c, { ...p, section: 'events' }), roles: ['admin'], icon: 'calendar', label: () => 'Events', module: 'clinic' },
-  languages: { render: (c, p) => renderAdmin(c, { ...p, section: 'languages' }), roles: ['admin'], icon: 'globe', label: () => 'Languages', module: 'clinic' },
-  // ---- Admin ----
+  // ---- Admin (collapsible) — management & system ----
+  management: { render: renderManagement, roles: ['admin'], icon: 'admin', label: () => 'Management', module: 'admin' },
   staff: { render: (c, p) => renderAdmin(c, { ...p, section: 'staff' }), roles: ['admin'], icon: 'users', label: () => 'Staff & roles', module: 'admin' },
+  events: { render: (c, p) => renderAdmin(c, { ...p, section: 'events' }), roles: ['admin'], icon: 'calendar', label: () => 'Events', module: 'admin' },
   cloud: { render: (c, p) => renderAdmin(c, { ...p, section: 'cloud' }), roles: ['admin'], icon: 'globe', label: () => 'Cloud', module: 'admin' },
   data: { render: (c, p) => renderAdmin(c, { ...p, section: 'data' }), roles: ['admin'], icon: 'database', label: () => 'Backup & Export', module: 'admin' },
   audit: { render: (c, p) => renderAdmin(c, { ...p, section: 'audit' }), roles: ['admin'], icon: 'clipboard', label: () => 'Audit log', module: 'admin' },
 };
 
+// Collapsible sidebar groups. A group auto-expands when it holds the active view;
+// otherwise its open/closed state is remembered per device.
 const NAV_MODULES = [['clinic', 'Clinic'], ['admin', 'Admin']];
+const NAV_STATE_KEY = 'ch.nav.groups';
+function navGroupsState() { try { return JSON.parse(window.localStorage.getItem(NAV_STATE_KEY) || '{}'); } catch (_) { return {}; } }
+function saveNavGroupsState(s) { try { window.localStorage.setItem(NAV_STATE_KEY, JSON.stringify(s)); } catch (_) { /* ignore */ } }
 
 // Views call ctx.setDetail(true) when they open a patient detail and
 // ctx.setDetail(false) when they return to their list, so cloud-sync
@@ -58,7 +65,7 @@ let lastNav = { name: 'dashboard', params: {} };
 // Queue/list screens safe to auto-refresh when cloud sync pulls new data. Detail
 // screens (params.id set) are never auto-refreshed so a clinician mid-edit is
 // never interrupted.
-const LIVE_VIEWS = new Set(['dashboard', 'emt', 'provider', 'hygienist', 'checkout', 'records']);
+const LIVE_VIEWS = new Set(['dashboard', 'emt', 'provider', 'hygienist', 'checkout', 'records', 'management']);
 
 function navigate(name, params = {}) {
   if (name === 'login') return renderFullscreen(renderLogin(ctx));
@@ -101,23 +108,37 @@ function initials(name) {
   return (name || '?').split(/\s+/).slice(0, 2).map((w) => w[0] || '').join('').toUpperCase();
 }
 
+let shellActive = 'dashboard';
+let shellContent = null;
 function renderShell(active, contentNode) {
   clear(appRoot);
   appRoot.className = 'app-shell';
+  shellActive = active; shellContent = contentNode;
 
   const navButton = (name, v) => el('button', {
     class: 'nav-item' + (name === active ? ' nav-item--on' : ''),
     onClick: () => navigate(name),
   }, [el('span', { class: 'nav-icon' }, [icon(v.icon, { size: 18 })]), el('span', {}, [v.label()])]);
 
-  // Grouped into modules (CLINIC / ADMIN); a module with no role-visible items
-  // (e.g. Admin for a non-admin) is skipped entirely, header and all.
   const navItems = [];
+  // Top-level items (Dashboard) are always visible.
+  Object.entries(VIEWS)
+    .filter(([, v]) => v.module === 'top' && v.roles.includes(store.user.role))
+    .forEach(([name, v]) => navItems.push(navButton(name, v)));
+
+  // Collapsible modules (Clinic / Admin). A group auto-opens when it holds the
+  // active view; otherwise its open/closed state is remembered per device.
+  const groupState = navGroupsState();
   for (const [mod, label] of NAV_MODULES) {
     const items = Object.entries(VIEWS).filter(([, v]) => v.module === mod && v.roles.includes(store.user.role));
     if (!items.length) continue;
-    navItems.push(el('div', { class: 'nav-group-label' }, [label]));
-    items.forEach(([name, v]) => navItems.push(navButton(name, v)));
+    const hasActive = items.some(([name]) => name === active);
+    const open = hasActive || groupState[mod] === true; // default collapsed unless saved-open or holds the active view
+    navItems.push(el('button', {
+      class: 'nav-group' + (open ? ' nav-group--open' : ''),
+      onClick: () => { const s = navGroupsState(); s[mod] = !open; saveNavGroupsState(s); renderShell(shellActive, shellContent); },
+    }, [el('span', {}, [label]), icon('chevron', { size: 14 })]));
+    if (open) items.forEach(([name, v]) => navItems.push(navButton(name, v)));
   }
 
   // Live cloud-status badge (replaces the old, now-inaccurate "No cloud" label).
