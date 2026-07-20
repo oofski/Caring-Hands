@@ -47,16 +47,23 @@ jobs:
       - name: Publish downloadable release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.2.4-build.${{ github.run_number }}
-          name: Caring Hands v1.2.4 (build ${{ github.run_number }})
+          tag_name: v1.3.0-build.${{ github.run_number }}
+          name: Caring Hands v1.3.0 (build ${{ github.run_number }})
           prerelease: false
           make_latest: true
           body: |
-            ## Caring Hands Worldwide — Practice Management Software (v1.2.4)
+            ## Caring Hands Worldwide — Practice Management Software (v1.3.0)
 
             Offline-first dental clinic app for Windows. **Download the installer once — it auto-updates from here on.**
 
-            **New in v1.2.4 — FIX: patients now show up on every device**
+            **New in v1.3.0 — cleaner navigation + a big reliability pass**
+            - **Sidebar modules.** The menu is now grouped into **Clinic** (Dashboard, Vitals, Cleanings, Dentist, Check-Out, Records, Reports, Events, Languages) and **Admin** (Staff & roles, Cloud, Backup & Export, Audit log). Everything that used to be buried in the crowded "Admin" tabbed screen is now its own clean, one-click page.
+            - **Safety fix:** a blood-thinner detected in a patient's medication list now **always** raises the alert on the dentist's chart — even if the EMT answered "no" to the blood-thinner question (with a discrepancy note).
+            - **No more getting kicked out of a chart:** cloud sync no longer refreshes the queue out from under a clinician who has a patient's chart open.
+            - **Records fix:** the checkout/records/full-record PDFs now reliably include x-rays and all EMT vitals; USB check-out no longer downgrades a completed visit; a stray "null" on the empty Check-Out screen is gone.
+            - **Robustness:** a single bad synced record can no longer break a station's patient list; patient names can't be blanked by an edit; recording the EMT's yes/no review no longer risks wiping vitals; plus a dozen smaller fixes across sign-in, reports, and admin.
+
+            **From v1.2.4 — patients show up on every device**
             - **Cross-device fix.** A patient added on one computer now appears in the queue on **every** other computer, as it should. Previously each computer quietly used its own separate clinic event, so a synced patient was saved but hidden from the other stations' queues. All devices now share **one clinic** automatically.
             - Nothing to do — just update every station to this version and they'll line up on the same shared queue. (Existing patients re-sync automatically.)
 

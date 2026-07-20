@@ -133,6 +133,11 @@ h3{ font-weight:var(--fw-semibold); }
 .brand-name{ font-family:var(--font-display); font-weight:var(--fw-bold); font-size:var(--fs-base); color:#fff; letter-spacing:var(--tracking-tight); }
 .brand-sub{ font-size:var(--fs-2xs); letter-spacing:var(--tracking-eyebrow); color:var(--text-on-inverse-mute); font-weight:var(--fw-semibold); text-transform:uppercase; }
 .nav{ display:flex; flex-direction:column; gap:2px; margin-top:4px; }
+.nav-group-label{
+  text-transform:uppercase; letter-spacing:.12em; font-size:var(--fs-2xs, 10px); font-weight:var(--fw-bold);
+  color:var(--text-on-inverse); opacity:.45; padding:0 12px; margin:14px 0 4px;
+}
+.nav-group-label:first-child{ margin-top:2px; }
 .nav-item{
   display:flex; align-items:center; gap:11px; padding:0 12px; height:38px; border:none; cursor:pointer;
   background:transparent; color:var(--text-on-inverse); opacity:.78; border-radius:var(--radius-sm);

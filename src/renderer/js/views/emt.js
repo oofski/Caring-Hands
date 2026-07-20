@@ -66,6 +66,7 @@ export function renderEmt(ctx, params = {}) {
   return root;
 
   async function queue() {
+    ctx.setDetail && ctx.setDetail(false);
     const patients = await api.listPatients({});
     const live = patients.filter((p) => p.status !== 'dismissed');
     // Work order: needs vitals first, then vitals done but not signed off, then the rest.
@@ -145,6 +146,7 @@ export function renderEmt(ctx, params = {}) {
   }
 
   async function detail(id) {
+    ctx.setDetail && ctx.setDetail(true);
     const p = await api.getPatient(id);
     const tr = p.triage || {};
     const m = p.medical_history || {};

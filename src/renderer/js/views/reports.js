@@ -9,6 +9,7 @@ const STATUS_META = {
   triaged: ['Ready for treatment', 'var(--accent)'],
   in_treatment: ['In treatment', 'var(--warning)'],
   completed: ['Completed', 'var(--success)'],
+  dismissed: ['Checked out', 'var(--text-subtle)'],
 };
 const dayKey = (iso) => (iso ? String(iso).slice(0, 10) : 'unknown');
 const fmtDay = (d) => { const dt = new Date(d + 'T00:00:00'); return isNaN(dt) ? d : dt.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }); };
@@ -116,7 +117,7 @@ function stat(ic, value, label) {
 
 // Segmented stacked bar + legend with counts — the redesigned status view.
 function statusBar(byStatus, total) {
-  const order = ['checked_in', 'triaged', 'in_treatment', 'completed'];
+  const order = ['checked_in', 'triaged', 'in_treatment', 'completed', 'dismissed'];
   const present = order.filter((k) => byStatus[k]);
   const bar = el('div', { class: 'status-bar' }, present.map((k) => {
     const pct = total ? (byStatus[k] / total) * 100 : 0;

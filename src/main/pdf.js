@@ -24,6 +24,24 @@ function yn(v) {
   return v === true || v === 'yes' || v === 'Yes' ? 'Yes' : v === false || v === 'no' ? 'No' : esc(v || '—');
 }
 
+// Only allow safe image sources (data:image or http(s)) and strip any stray
+// quotes, so a crafted signature/x-ray value can't break out of the src="" and
+// inject markup/handlers into the print renderer.
+function imgSrc(v) {
+  const s = String(v == null ? '' : v);
+  if (!/^(data:image\/|https?:\/\/)/i.test(s)) return '';
+  return s.replace(/"/g, '%22');
+}
+
+// Embedded x-ray images block, shared by the summary and full-record PDFs.
+function xrayGallery(p) {
+  return (p._xrays || []).filter((x) => x && x.image_png).map((x) => `
+    <div class="xray">
+      <img src="${imgSrc(x.image_png)}"/>
+      <div class="cap">${x.station ? 'Station ' + esc(x.station) : 'X-ray'}${x.note ? ' · ' + esc(x.note) : ''}</div>
+    </div>`).join('');
+}
+
 function fmtDate(iso) {
   if (!iso) return '—';
   const d = new Date(iso);
@@ -164,7 +182,7 @@ function progressNoteBody(p) {
     </table>
 
     <h2>Clinical Assessment</h2>
-    ${(tr.bp_systolic != null || tr.heart_rate != null || tr.blood_thinner)
+    ${(tr.bp_systolic != null || tr.bp_diastolic != null || tr.heart_rate != null || tr.blood_thinner)
       ? `<div class="box"><span class="label">Vitals: </span>BP ${tr.bp_systolic != null ? esc(tr.bp_systolic) : '—'}/${tr.bp_diastolic != null ? esc(tr.bp_diastolic) : '—'} · HR ${tr.heart_rate != null ? esc(tr.heart_rate) : '—'}${tr.blood_thinner ? ' · Blood thinners: ' + (tr.blood_thinner === 'yes' ? 'YES' + (tr.blood_thinner_detail ? ' (' + esc(tr.blood_thinner_detail) + ')' : '') : 'No') : ''}</div>`
       : ''}
     <div class="chips">${checklist}</div>
@@ -188,7 +206,7 @@ function progressNoteBody(p) {
         <div class="muted">${t.completed_at ? 'Signed ' + fmtDate(t.completed_at) : 'Not yet finalized'}</div>
       </div>
       <div>
-        ${t.provider_signature ? `<div class="sig"><img src="${t.provider_signature}"/></div>` : '<span class="muted">No signature</span>'}
+        ${t.provider_signature ? `<div class="sig"><img src="${imgSrc(t.provider_signature)}"/></div>` : '<span class="muted">No signature</span>'}
       </div>
     </div>`;
 }
@@ -230,7 +248,7 @@ function fullPacketBody(p) {
           <div class="val">${esc(c.signer_name)}${c.relationship ? ' (' + esc(c.relationship) + ')' : ''}</div>
           <div class="muted">${esc(c.version)} · Signed ${fmtDate(c.signed_at)}</div>
         </div>
-        <div>${c.signature_png ? `<div class="sig"><img src="${c.signature_png}"/></div>` : ''}</div>
+        <div>${c.signature_png ? `<div class="sig"><img src="${imgSrc(c.signature_png)}"/></div>` : ''}</div>
       </div>
       ${consentBody}
       ${teethBlock}
@@ -271,6 +289,9 @@ function fullPacketBody(p) {
 
     <h2>Consents & Signatures</h2>
     ${consents}
+
+    <h2>X-Rays</h2>
+    ${xrayGallery(p) ? `<div class="xrays">${xrayGallery(p)}</div>` : '<span class="muted">No x-rays on file</span>'}
 
     <div class="pagebreak"></div>
     ${header('Progress Note', `${p.event ? p.event.name : ''}`)}
@@ -351,11 +372,7 @@ function summaryBody(p) {
       });
   const anesthetic = anesEntries.join('') || '<span class="muted">None</span>';
 
-  const xrays = (p._xrays || []).filter((x) => x && x.image_png).map((x) => `
-    <div class="xray">
-      <img src="${x.image_png}"/>
-      <div class="cap">${x.station ? 'Station ' + esc(x.station) : 'X-ray'}${x.note ? ' · ' + esc(x.note) : ''}</div>
-    </div>`).join('');
+  const xrays = xrayGallery(p);
 
   return `
     <h2>Patient & Visit</h2>

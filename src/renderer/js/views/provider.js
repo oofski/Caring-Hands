@@ -27,6 +27,7 @@ export function renderProvider(ctx, params = {}) {
   return root;
 
   async function queue() {
+    ctx.setDetail && ctx.setDetail(false);
     const patients = await api.listPatients({});
     const ready = patients.filter((p) => ['triaged', 'in_treatment'].includes(p.status));
     // EMT routing: 'dentist' and 'both' belong here; route null = legacy rows
@@ -64,6 +65,7 @@ export function renderProvider(ctx, params = {}) {
   }
 
   async function detail(id) {
+    ctx.setDetail && ctx.setDetail(true);
     const p = await api.getPatient(id);
     const tr = p.triage || {};
     const tx = p.treatment || {};

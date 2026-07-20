@@ -8,33 +8,44 @@ import { icon } from '../icons.js';
 // Cloud tab can drop the previous listener before adding a new one (no stacking).
 let cloudUnsub = null;
 
-export function renderAdmin(ctx) {
-  const root = el('div', { class: 'view' });
-  let tab = 'staff';
+// Each of these is reached from its own sidebar item (Staff & roles, Events,
+// Languages, Cloud, Backup & Export, Audit log). renderAdmin(ctx, {section})
+// renders JUST that section as a standalone page — no tab bar. Titles/subtitles
+// for the standalone header:
+const SECTION_META = {
+  staff: ['Staff & roles', 'Add your team and control who can access each part of the app.'],
+  events: ['Clinic events', 'Set up and switch the active clinic event.'],
+  data: ['Backup & Export', 'Back up this device and export event data.'],
+  languages: ['Languages', 'Choose which language packs appear at patient check-in.'],
+  cloud: ['Cloud', 'Keep every station on one shared, live queue.'],
+  audit: ['Audit log', 'A record of who did what, and when.'],
+};
 
-  const tabs = [
-    ['staff', 'Staff', 'users'], ['events', 'Events', 'calendar'], ['data', 'Backup & Export', 'database'],
-    ['languages', 'Languages', 'globe'], ['cloud', 'Cloud', 'globe'], ['audit', 'Audit log', 'clipboard'],
-  ];
+export function renderAdmin(ctx, params = {}) {
+  const root = el('div', { class: 'view' });
+  // The sidebar drives navigation now, so a section is always specified. Default
+  // to staff if somehow called without one.
+  let tab = params.section && SECTION_META[params.section] ? params.section : 'staff';
+
+  const sectionFns = { staff: staffTab, events: eventsTab, data: dataTab, languages: langTab, cloud: cloudTab, audit: auditTab };
 
   function paint() {
     clear(root);
+    const [title, sub] = SECTION_META[tab] || ['Admin', ''];
     root.append(
       el('div', { class: 'view-head' }, [
         el('div', {}, [
           el('div', {
             style: 'font-size:var(--fs-2xs); text-transform:uppercase; letter-spacing:var(--tracking-eyebrow); color:var(--teal-deep); font-weight:var(--fw-semibold); margin-bottom:var(--space-1);',
           }, ['Helping hands for healthy living']),
-          el('h1', {}, [t('nav.admin')]),
-          el('p', { class: 'view-sub' }, ['Manage your team, clinic events, backups, languages, and the activity log.']),
+          el('h1', {}, [title]),
+          el('p', { class: 'view-sub' }, [sub]),
         ]),
       ]),
-      el('div', { class: 'tab-bar' }, tabs.map(([k, label, ic]) =>
-        el('button', { class: 'tab' + (tab === k ? ' tab--on' : ''), onClick: () => { tab = k; paint(); } }, [icon(ic, { size: 15 }), label]))),
       el('div', { class: 'tab-body', id: 'tab-body' }),
     );
     const body = root.querySelector('#tab-body');
-    ({ staff: staffTab, events: eventsTab, data: dataTab, languages: langTab, cloud: cloudTab, audit: auditTab }[tab])(body);
+    sectionFns[tab](body);
   }
 
   /* ---- Staff ---- */

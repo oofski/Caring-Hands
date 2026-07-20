@@ -66,12 +66,19 @@ export function SignaturePad({ onChange } = {}) {
   ]);
 
   setTimeout(resize, 0);
-  window.addEventListener('resize', resize);
+  // Self-removing resize listener: once the pad's canvas is detached (the view
+  // re-rendered), the handler unbinds itself instead of leaking across renders.
+  const onResize = () => {
+    if (!canvas.isConnected) { window.removeEventListener('resize', onResize); return; }
+    resize();
+  };
+  window.addEventListener('resize', onResize);
 
   return {
     node: wrap,
     isEmpty: () => !dirty,
     clear: () => { ctx.clearRect(0, 0, canvas.width, canvas.height); dirty = false; },
     getDataUrl: () => (dirty ? canvas.toDataURL('image/png') : null),
+    destroy: () => window.removeEventListener('resize', onResize),
   };
 }

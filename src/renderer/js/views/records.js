@@ -13,6 +13,7 @@ export function renderRecords(ctx, params = {}) {
   return root;
 
   async function list() {
+    ctx.setDetail && ctx.setDetail(false);
     const events = await api.listEvents();
     const searchInput = el('input', { class: 'input search-input', placeholder: 'Search by name, DOB, phone…' });
     const allInput = el('input', { class: 'input search-input', placeholder: 'Returning patient lookup (all events)…' });
@@ -74,6 +75,7 @@ export function renderRecords(ctx, params = {}) {
   }
 
   async function detail(id) {
+    ctx.setDetail && ctx.setDetail(true);
     const p = await api.getPatient(id);
     const condLabels = conditions().filter((c) => (p.medical_history.conditions || []).includes(c.key)).map((c) => ({ label: c.label, flag: c.flag }));
     const allergyLabels = allergies().filter((a) => (p.medical_history.allergies || []).includes(a.key)).map((a) => a.label);

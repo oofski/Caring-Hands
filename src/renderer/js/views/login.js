@@ -45,6 +45,10 @@ export function renderLogin(ctx) {
     inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); })
   );
 
+  // Place the cursor for a returning user: password when the username is
+  // remembered, otherwise the username field.
+  setTimeout(() => { (saved.user ? password : username).focus(); }, 0);
+
   const feature = (ic, title) => el('div', { class: 'auth-feature' }, [
     el('div', { class: 'auth-feature-ic' }, [icon(ic, { size: 18 })]),
     el('strong', {}, [title]),

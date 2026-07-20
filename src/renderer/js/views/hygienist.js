@@ -28,6 +28,7 @@ export function renderHygienist(ctx, params = {}) {
   return root;
 
   async function queue() {
+    ctx.setDetail && ctx.setDetail(false);
     const patients = await api.listPatients({});
     const live = patients.filter((p) => p.status !== 'dismissed');
     // B1/B2 QUEUE GATE: a patient only belongs in the cleaning queue once the EMT
@@ -61,6 +62,7 @@ export function renderHygienist(ctx, params = {}) {
   }
 
   async function detail(id) {
+    ctx.setDetail && ctx.setDetail(true);
     const p = await api.getPatient(id);
     const tx = p.treatment || {};
     const tr = p.triage || {};

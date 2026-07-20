@@ -1,4 +1,4 @@
-import { el, clear, toast, modal } from '../dom.js';
+import { el, clear, mount, toast, modal } from '../dom.js';
 import { t } from '../i18n.js';
 import { api } from '../api.js';
 import { icon } from '../icons.js';
@@ -27,6 +27,7 @@ export function renderCheckout(ctx, params = {}) {
   }
 
   async function queue() {
+    ctx.setDetail && ctx.setDetail(false);
     const patients = await api.listPatients({});
     const ready = patients.filter((p) => p.status === 'completed');
     const done = patients.filter((p) => p.status === 'dismissed');
@@ -38,7 +39,7 @@ export function renderCheckout(ctx, params = {}) {
       el('td', {}, [el('button', { class: 'btn btn--primary btn--sm', onClick: (e) => { e.stopPropagation(); detail(p.id); } }, ['Review', icon('chevron', { size: 15 })])]),
     ]);
     clear(root);
-    root.append(
+    mount(root,
       el('div', { class: 'view-head' }, [
         el('div', {}, [el('h1', {}, ['Check-Out']), el('p', { class: 'view-sub' }, [`${ready.length} ready to dismiss · ${done.length} dismissed`])]),
         el('div', { class: 'view-head-actions' }, [el('button', { class: 'btn btn--ghost btn--sm', onClick: queue }, [icon('refresh', { size: 15 }), 'Refresh'])]),
@@ -61,6 +62,7 @@ export function renderCheckout(ctx, params = {}) {
   }
 
   async function detail(id) {
+    ctx.setDetail && ctx.setDetail(true);
     const p = await api.getPatient(id);
     const tx = p.treatment || {};
     // v1.2.1: locking is optional now — a patient can be checked out once their

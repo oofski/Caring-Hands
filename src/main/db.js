@@ -292,28 +292,18 @@ const DEFAULT_EVENT_UID = '00000000-0000-4000-8000-000000000001';
 // Ensure this device's default clinic event uses the shared identity above, and
 // that the active event points at it — so cloud-synced patients are visible.
 function convergeDefaultEvent() {
-  const shared = db.prepare('SELECT id FROM events WHERE uid = ? ORDER BY id ASC LIMIT 1').get(DEFAULT_EVENT_UID);
-  const activeId = Number(getSetting('active_event_id')) || null;
-  const activeEv = activeId ? db.prepare('SELECT id, uid, name FROM events WHERE id = ?').get(activeId) : null;
-
-  if (!shared) {
-    // No shared default yet on this device → promote the oldest (seed) event to
-    // the shared identity and re-push it + its patients so the cloud converges.
-    const seedEv = db.prepare('SELECT id FROM events ORDER BY id ASC LIMIT 1').get();
-    if (!seedEv) return;
-    db.prepare('UPDATE events SET uid = ?, synced_rev = NULL, content_rev = NULL WHERE id = ?').run(DEFAULT_EVENT_UID, seedEv.id);
-    db.prepare('UPDATE patients SET synced_rev = NULL, content_rev = NULL WHERE event_id = ?').run(seedEv.id);
-    if (activeId !== seedEv.id) setSetting('active_event_id', String(seedEv.id));
-    return;
-  }
-  // A shared default already exists (e.g. pulled from another device). If the
-  // active event is still this device's own auto-seeded default (not a
-  // deliberately created event), fold its patients into the shared event and
-  // switch the queue to it.
-  if (activeEv && activeEv.id !== shared.id && activeEv.uid !== DEFAULT_EVENT_UID && activeEv.name === 'Lowell Fairgrounds Clinic') {
-    db.prepare('UPDATE patients SET event_id = ?, synced_rev = NULL, content_rev = NULL WHERE event_id = ?').run(shared.id, activeEv.id);
-    setSetting('active_event_id', String(shared.id));
-  }
+  // Already converged on this device — do nothing.
+  if (db.prepare('SELECT 1 FROM events WHERE uid = ? LIMIT 1').get(DEFAULT_EVENT_UID)) return;
+  // CONSERVATIVE: only ever promote the PRISTINE auto-seed event, identified by
+  // its exact seed name + location (never a renamed or user-created event), and
+  // never change which event is active. This avoids merging genuinely different
+  // clinic events or yanking a clinic off the event they deliberately chose.
+  const seedEv = db.prepare("SELECT id FROM events WHERE name = 'Lowell Fairgrounds Clinic' AND location = 'Lowell, OR' ORDER BY id ASC LIMIT 1").get();
+  if (!seedEv) return; // no pristine seed to promote — leave every event alone
+  db.prepare('UPDATE events SET uid = ?, synced_rev = NULL, content_rev = NULL WHERE id = ?').run(DEFAULT_EVENT_UID, seedEv.id);
+  // Re-push its patients so their event_uid updates to the shared identity on
+  // every device (the applyRemoteRows UPDATE now carries event_id — see below).
+  db.prepare('UPDATE patients SET synced_rev = NULL, content_rev = NULL WHERE event_id = ?').run(seedEv.id);
 }
 
 function seed() {
@@ -365,6 +355,12 @@ function seed() {
 /* ------------------------------------------------------------------ */
 
 const now = () => new Date().toISOString();
+// Never let a malformed JSON column (e.g. from a bad cloud-sync row) throw and
+// take down a whole patient list / detail. Falls back to the given default.
+function safeJson(str, fallback) {
+  if (str == null || str === '') return fallback;
+  try { const v = JSON.parse(str); return v == null ? fallback : v; } catch { return fallback; }
+}
 const today = () => new Date().toISOString().slice(0, 10);
 
 function setSetting(key, value) {
@@ -510,7 +506,9 @@ function deleteUser(actor, id) {
   const row = db.prepare('SELECT * FROM users WHERE id = ?').get(id);
   if (!row) throw new Error('User not found.');
   if (actor && actor.id === id) throw new Error('You cannot delete your own account.');
-  if (row.role === 'admin') {
+  // Only guard against removing the last ACTIVE administrator. Deleting an
+  // already-inactive admin can never leave the clinic without a usable admin.
+  if (row.role === 'admin' && row.active) {
     const admins = db.prepare("SELECT COUNT(*) AS n FROM users WHERE role = 'admin' AND active = 1").get().n;
     if (admins <= 1) throw new Error('Cannot delete the last administrator.');
   }
@@ -620,9 +618,9 @@ function rowToPatient(p) {
   return {
     ...p,
     age: ageFromDob(p.dob),
-    demographics: JSON.parse(p.demographics || '{}'),
-    medical_history: JSON.parse(p.medical_history || '{}'),
-    dental_history: JSON.parse(p.dental_history || '{}'),
+    demographics: safeJson(p.demographics, {}),
+    medical_history: safeJson(p.medical_history, {}),
+    dental_history: safeJson(p.dental_history, {}),
   };
 }
 
@@ -680,6 +678,13 @@ function updatePatient(actor, id, data) {
   const p = db.prepare('SELECT * FROM patients WHERE id = ?').get(id);
   if (!p) throw new Error('Patient not found.');
   const d = data || {};
+  // Same guard as createPatient: never let an edit blank the patient's name
+  // (an explicit '' is not caught by ??), which reintroduces nameless records.
+  const first = (d.first_name ?? p.first_name);
+  const last = (d.last_name ?? p.last_name);
+  if (!String(first || '').trim() || !String(last || '').trim()) {
+    throw new Error('Patient first and last name are required.');
+  }
   db.prepare(
     `UPDATE patients SET
        language=?, first_name=?, last_name=?, dob=?, gender=?, phone=?, email=?,
@@ -687,15 +692,15 @@ function updatePatient(actor, id, data) {
      WHERE id=?`
   ).run(
     d.language || p.language,
-    (d.first_name ?? p.first_name),
-    (d.last_name ?? p.last_name),
+    first,
+    last,
     d.dob ?? p.dob,
     d.gender ?? p.gender,
     d.phone ?? p.phone,
     d.email ?? p.email,
-    JSON.stringify(d.demographics || JSON.parse(p.demographics)),
-    JSON.stringify(d.medical_history || JSON.parse(p.medical_history)),
-    JSON.stringify(d.dental_history || JSON.parse(p.dental_history)),
+    JSON.stringify(d.demographics || safeJson(p.demographics, {})),
+    JSON.stringify(d.medical_history || safeJson(p.medical_history, {})),
+    JSON.stringify(d.dental_history || safeJson(p.dental_history, {})),
     now(),
     id
   );
@@ -736,8 +741,8 @@ function patientHistory(patientId) {
     const tx = db.prepare('SELECT fillings, extractions, cleaning FROM treatments WHERE patient_id = ?').get(r.id);
     let summary = [];
     if (tx) {
-      const f = JSON.parse(tx.fillings || '[]').length, x = JSON.parse(tx.extractions || '[]').length;
-      const c = Object.values(JSON.parse(tx.cleaning || '{}')).some(Boolean);
+      const f = safeJson(tx.fillings, []).length, x = safeJson(tx.extractions, []).length;
+      const c = Object.values(safeJson(tx.cleaning, {})).some(Boolean);
       if (f) summary.push(`${f} filling(s)`);
       if (x) summary.push(`${x} extraction(s)`);
       if (c) summary.push('cleaning');
@@ -780,16 +785,16 @@ function getPatient(id) {
   if (!p) return null;
   p.consents = db.prepare('SELECT * FROM consents WHERE patient_id = ? ORDER BY signed_at').all(id);
   const tr = db.prepare('SELECT * FROM triage WHERE patient_id = ?').get(id);
-  p.triage = tr ? { ...tr, flags: JSON.parse(tr.flags), checklist: JSON.parse(tr.checklist), teeth: JSON.parse(tr.teeth), teeth_notes: JSON.parse(tr.teeth_notes || '{}'), emt_review: JSON.parse(tr.emt_review || '{}'), emt_signed_off: !!tr.emt_signed_off } : null;
+  p.triage = tr ? { ...tr, flags: safeJson(tr.flags, []), checklist: safeJson(tr.checklist, {}), teeth: safeJson(tr.teeth, []), teeth_notes: safeJson(tr.teeth_notes, {}), emt_review: safeJson(tr.emt_review, {}), emt_signed_off: !!tr.emt_signed_off } : null;
   const t = db.prepare('SELECT * FROM treatments WHERE patient_id = ?').get(id);
   p.treatment = t
     ? {
         ...t,
         locked: !!t.locked,
-        fillings: JSON.parse(t.fillings),
-        extractions: JSON.parse(t.extractions),
-        cleaning: JSON.parse(t.cleaning),
-        anesthetic: JSON.parse(t.anesthetic),
+        fillings: safeJson(t.fillings, []),
+        extractions: safeJson(t.extractions, []),
+        cleaning: safeJson(t.cleaning, {}),
+        anesthetic: safeJson(t.anesthetic, []),
       }
     : null;
   p.xrays = db.prepare('SELECT id, station, note, created_at FROM xrays WHERE patient_id = ?').all(id);
@@ -818,6 +823,10 @@ function saveVitals(actor, patientId, data) {
   const tr = db.prepare('SELECT id FROM triage WHERE patient_id = ?').get(patientId);
   const d = data || {};
   const sys = toIntOrNull(d.bp_systolic), dia = toIntOrNull(d.bp_diastolic), hr = toIntOrNull(d.heart_rate);
+  // Only treat this as a vitals write when at least one vitals key is present, so
+  // a review-only or blood-thinner-only save never nulls out previously recorded
+  // vitals (or reassigns vitals_by/vitals_at to the wrong actor).
+  const hasVitals = ['bp_systolic', 'bp_diastolic', 'heart_rate'].some((k) => Object.prototype.hasOwnProperty.call(d, k));
   // Blood-thinner confirmation is optional and only written when the key is
   // present, so a plain vitals save never clears a previously recorded answer.
   const hasBT = Object.prototype.hasOwnProperty.call(d, 'blood_thinner');
@@ -825,15 +834,17 @@ function saveVitals(actor, patientId, data) {
   const btd = hasBT ? (d.blood_thinner_detail || null) : null;
   if (!tr) {
     db.prepare(`INSERT INTO triage (patient_id, status, bp_systolic, bp_diastolic, heart_rate, vitals_by, vitals_at, blood_thinner, blood_thinner_detail)
-                VALUES (?, 'waiting', ?, ?, ?, ?, ?, ?, ?)`).run(patientId, sys, dia, hr, actor ? actor.id : null, now(), bt, btd);
+                VALUES (?, 'waiting', ?, ?, ?, ?, ?, ?, ?)`).run(patientId, sys, dia, hr, hasVitals && actor ? actor.id : null, hasVitals ? now() : null, bt, btd);
   } else {
-    db.prepare('UPDATE triage SET bp_systolic=?, bp_diastolic=?, heart_rate=?, vitals_by=?, vitals_at=? WHERE patient_id=?')
-      .run(sys, dia, hr, actor ? actor.id : null, now(), patientId);
+    if (hasVitals) {
+      db.prepare('UPDATE triage SET bp_systolic=?, bp_diastolic=?, heart_rate=?, vitals_by=?, vitals_at=? WHERE patient_id=?')
+        .run(sys, dia, hr, actor ? actor.id : null, now(), patientId);
+    }
     if (hasBT) db.prepare('UPDATE triage SET blood_thinner=?, blood_thinner_detail=? WHERE patient_id=?').run(bt, btd, patientId);
   }
-  // v1.2.0: the EMT's yes/no medical confirmations, stored only when provided so
-  // a plain vitals save never wipes them. Attaches to the patient record + PDFs.
-  if (Object.prototype.hasOwnProperty.call(d, 'emt_review') && d.emt_review && typeof d.emt_review === 'object') {
+  // v1.2.0: the EMT's yes/no confirmations, stored only when at least one answer
+  // is present so a blank/plain save never wipes a previously filled review.
+  if (Object.prototype.hasOwnProperty.call(d, 'emt_review') && d.emt_review && typeof d.emt_review === 'object' && Object.keys(d.emt_review).length) {
     db.prepare('UPDATE triage SET emt_review=? WHERE patient_id=?').run(JSON.stringify(d.emt_review), patientId);
   }
   audit(actor, 'vitals', 'patient', patientId, `${sys == null ? '—' : sys}/${dia == null ? '—' : dia} HR ${hr == null ? '—' : hr}${hasBT ? ' · thinner:' + (bt || 'no') : ''}`);
@@ -849,8 +860,8 @@ function routePatient(actor, patientId, route) {
   if (!ROUTES.includes(route)) throw new Error('Choose where the patient goes next: dentist, hygienist, or both.');
   const tr = db.prepare('SELECT id FROM triage WHERE patient_id = ?').get(patientId);
   if (!tr) {
-    db.prepare(`INSERT INTO triage (patient_id, status, route, routed_by, routed_at)
-                VALUES (?, 'ready', ?, ?, ?)`).run(patientId, route, actor ? actor.id : null, now());
+    db.prepare(`INSERT INTO triage (patient_id, status, route, routed_by, routed_at, emt_signed_off)
+                VALUES (?, 'ready', ?, ?, ?, 1)`).run(patientId, route, actor ? actor.id : null, now());
   } else {
     db.prepare(`UPDATE triage SET route=?, routed_by=?, routed_at=?, emt_signed_off=1,
                   status = CASE WHEN status IN ('completed','in_treatment') THEN status ELSE 'ready' END
@@ -920,7 +931,15 @@ function importPatientFromPortable(actor, portable) {
   }
   // Triage, treatment, vitals, x-rays from the portable file.
   if (portable.triage) saveTriage(actor, pid, portable.triage);
-  if (portable.treatment) saveTreatment(actor, pid, portable.treatment, !!portable.treatment.locked);
+  if (portable.treatment) {
+    // Preserve the treatment's completion state on import: a locked record stays
+    // locked, a completed-but-unlocked record stays completed (v1.2.1 "Mark visit
+    // complete"), and only a genuinely in-progress record imports as such —
+    // otherwise USB checkout silently reverted completed visits to in_treatment.
+    const t = portable.treatment;
+    const mode = t.locked ? 'lock' : (t.completed_at ? 'complete' : false);
+    saveTreatment(actor, pid, t, mode);
+  }
   (portable.xrays || []).forEach((x) => { if (x.image_png) db.prepare('INSERT INTO xrays (patient_id, station, image_png, note, created_at, updated_at) VALUES (?,?,?,?,?,?)').run(pid, x.station || null, x.image_png, x.note || null, x.created_at || now(), now()); });
   recountXrays(pid);
   audit(actor, 'usb_import', 'patient', pid, `${portable.first_name} ${portable.last_name}`.trim());
@@ -960,7 +979,7 @@ function listPatients({ eventId, search } = {}) {
       email: pt.email || (pt.demographics && pt.demographics.email) || null,
       triage_status: tr ? tr.status : null,
       complaint: tr ? tr.complaint : null,
-      flags: tr ? JSON.parse(tr.flags) : [],
+      flags: tr ? safeJson(tr.flags, []) : [],
       assigned_to: tr ? tr.assigned_to : null,
       route: tr ? tr.route : null,
       has_vitals: !!(tr && (tr.bp_systolic != null || tr.heart_rate != null)),
@@ -1329,8 +1348,14 @@ function applyRemoteRows(remoteRows) {
     const extraVals = [env.uid, env.updated_at, rowSig, rowSig];
     if (parentCol) { extraCols.push(parentCol); extraVals.push(parentId); }
     if (existing) {
-      const setSql = [...cols, 'updated_at', 'synced_rev', 'content_rev'].map((c) => `${c} = ?`).join(', ');
-      db.prepare(`UPDATE ${table} SET ${setSql} WHERE id = ?`).run(...vals, env.updated_at, rowSig, rowSig, existing.id);
+      // Include the parent FK (event_id / patient_id) in the UPDATE so a row that
+      // was re-parented on another device (e.g. moved to the shared clinic event)
+      // actually moves here too — not just on first INSERT.
+      const upCols = [...cols, 'updated_at', 'synced_rev', 'content_rev'];
+      const upVals = [...vals, env.updated_at, rowSig, rowSig];
+      if (parentCol) { upCols.push(parentCol); upVals.push(parentId); }
+      const setSql = upCols.map((c) => `${c} = ?`).join(', ');
+      db.prepare(`UPDATE ${table} SET ${setSql} WHERE id = ?`).run(...upVals, existing.id);
     } else {
       const allCols = [...cols, ...extraCols];
       const ph = allCols.map(() => '?').join(', ');

@@ -20,18 +20,36 @@ const appRoot = document.getElementById('app');
 // (planning + fillings/extractions) or Hygienist (cleaning) -> Check-Out.
 // The separate Triage station is gone; legacy 'triage' accounts work the EMT
 // station so no existing login loses access on update.
+// The sidebar is organised into two modules: CLINIC (running the clinic day to
+// day) and ADMIN (accounts, data, system). Each former Admin tab is now its own
+// accessible sidebar item under the right module. `module` drives the grouping;
+// order within a module follows insertion order below.
 const VIEWS = {
-  dashboard: { render: renderDashboard, roles: ['admin', 'doctor', 'triage', 'emt', 'checkout', 'hygienist'], icon: 'dashboard', label: () => t('nav.dashboard') },
-  emt: { render: renderEmt, roles: ['admin', 'emt', 'triage'], icon: 'syringe', label: () => t('nav.emt') },
-  hygienist: { render: renderHygienist, roles: ['admin', 'hygienist'], icon: 'sparkle', label: () => t('nav.hygienist') },
-  provider: { render: renderProvider, roles: ['admin', 'doctor'], icon: 'tooth', label: () => t('nav.provider') },
-  checkout: { render: renderCheckout, roles: ['admin', 'checkout'], icon: 'checkCircle', label: () => t('nav.checkout') },
-  records: { render: renderRecords, roles: ['admin', 'doctor', 'checkout'], icon: 'records', label: () => t('nav.records') },
-  reports: { render: renderReports, roles: ['admin', 'doctor'], icon: 'reports', label: () => t('nav.reports') },
-  admin: { render: renderAdmin, roles: ['admin'], icon: 'admin', label: () => t('nav.admin') },
+  // ---- Clinic ----
+  dashboard: { render: renderDashboard, roles: ['admin', 'doctor', 'triage', 'emt', 'checkout', 'hygienist'], icon: 'dashboard', label: () => t('nav.dashboard'), module: 'clinic' },
+  emt: { render: renderEmt, roles: ['admin', 'emt', 'triage'], icon: 'syringe', label: () => t('nav.emt'), module: 'clinic' },
+  hygienist: { render: renderHygienist, roles: ['admin', 'hygienist'], icon: 'sparkle', label: () => t('nav.hygienist'), module: 'clinic' },
+  provider: { render: renderProvider, roles: ['admin', 'doctor'], icon: 'tooth', label: () => t('nav.provider'), module: 'clinic' },
+  checkout: { render: renderCheckout, roles: ['admin', 'checkout'], icon: 'checkCircle', label: () => t('nav.checkout'), module: 'clinic' },
+  records: { render: renderRecords, roles: ['admin', 'doctor', 'checkout'], icon: 'records', label: () => t('nav.records'), module: 'clinic' },
+  reports: { render: renderReports, roles: ['admin', 'doctor'], icon: 'reports', label: () => t('nav.reports'), module: 'clinic' },
+  events: { render: (c, p) => renderAdmin(c, { ...p, section: 'events' }), roles: ['admin'], icon: 'calendar', label: () => 'Events', module: 'clinic' },
+  languages: { render: (c, p) => renderAdmin(c, { ...p, section: 'languages' }), roles: ['admin'], icon: 'globe', label: () => 'Languages', module: 'clinic' },
+  // ---- Admin ----
+  staff: { render: (c, p) => renderAdmin(c, { ...p, section: 'staff' }), roles: ['admin'], icon: 'users', label: () => 'Staff & roles', module: 'admin' },
+  cloud: { render: (c, p) => renderAdmin(c, { ...p, section: 'cloud' }), roles: ['admin'], icon: 'globe', label: () => 'Cloud', module: 'admin' },
+  data: { render: (c, p) => renderAdmin(c, { ...p, section: 'data' }), roles: ['admin'], icon: 'database', label: () => 'Backup & Export', module: 'admin' },
+  audit: { render: (c, p) => renderAdmin(c, { ...p, section: 'audit' }), roles: ['admin'], icon: 'clipboard', label: () => 'Audit log', module: 'admin' },
 };
 
-const ctx = { navigate, toast: (m, k) => toast(m, k), store };
+const NAV_MODULES = [['clinic', 'Clinic'], ['admin', 'Admin']];
+
+// Views call ctx.setDetail(true) when they open a patient detail and
+// ctx.setDetail(false) when they return to their list, so cloud-sync
+// auto-refresh never repaints over an open chart. (Internal detail() calls
+// don't go through navigate(), so params.id alone can't tell us.)
+let detailOpen = false;
+const ctx = { navigate, toast: (m, k) => toast(m, k), store, setDetail: (v) => { detailOpen = !!v; } };
 
 // App version + offline-update state, shown in any view.
 const appInfo = { version: '', hasUpdate: false, latest: null, checked: false };
@@ -53,6 +71,7 @@ function navigate(name, params = {}) {
     return navigate('dashboard');
   }
   lastNav = { name, params };
+  detailOpen = !!(params && params.id); // a view entered with an id opens a detail
   renderShell(name, view.render(ctx, params));
 }
 
@@ -60,9 +79,10 @@ function navigate(name, params = {}) {
 // queue visibly "moves through" across stations without a manual refresh.
 if (api.onCloudChanged) {
   api.onCloudChanged(() => {
-    if (!store.user || !LIVE_VIEWS.has(lastNav.name) || (lastNav.params && lastNav.params.id)) return;
-    // Never yank the page out from under someone typing (search box, inline form)
-    // or with a dialog open — wait for the next sync tick instead.
+    if (!store.user || !LIVE_VIEWS.has(lastNav.name)) return;
+    // Never repaint over an open patient detail/chart (whether reached by nav or
+    // an internal detail() call), or someone typing, or with a dialog open.
+    if (detailOpen || (lastNav.params && lastNav.params.id)) return;
     const ae = document.activeElement;
     if (ae && /^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName)) return;
     if (document.querySelector('.modal-overlay, .modal')) return;
@@ -85,12 +105,34 @@ function renderShell(active, contentNode) {
   clear(appRoot);
   appRoot.className = 'app-shell';
 
-  const navItems = Object.entries(VIEWS)
-    .filter(([, v]) => v.roles.includes(store.user.role))
-    .map(([name, v]) => el('button', {
-      class: 'nav-item' + (name === active ? ' nav-item--on' : ''),
-      onClick: () => navigate(name),
-    }, [el('span', { class: 'nav-icon' }, [icon(v.icon, { size: 18 })]), el('span', {}, [v.label()])]));
+  const navButton = (name, v) => el('button', {
+    class: 'nav-item' + (name === active ? ' nav-item--on' : ''),
+    onClick: () => navigate(name),
+  }, [el('span', { class: 'nav-icon' }, [icon(v.icon, { size: 18 })]), el('span', {}, [v.label()])]);
+
+  // Grouped into modules (CLINIC / ADMIN); a module with no role-visible items
+  // (e.g. Admin for a non-admin) is skipped entirely, header and all.
+  const navItems = [];
+  for (const [mod, label] of NAV_MODULES) {
+    const items = Object.entries(VIEWS).filter(([, v]) => v.module === mod && v.roles.includes(store.user.role));
+    if (!items.length) continue;
+    navItems.push(el('div', { class: 'nav-group-label' }, [label]));
+    items.forEach(([name, v]) => navItems.push(navButton(name, v)));
+  }
+
+  // Live cloud-status badge (replaces the old, now-inaccurate "No cloud" label).
+  const cloudBadge = el('div', { class: 'offline-badge' }, [el('span', { class: 'offline-dot' }), 'Cloud sync']);
+  if (api.cloudStatus) {
+    api.cloudStatus().then((st) => {
+      if (!st) return;
+      clear(cloudBadge);
+      if (st.online) {
+        cloudBadge.append(el('span', { class: 'offline-dot', style: 'background:var(--success, #2f8f66)' }), st.lastError ? 'Cloud · reconnecting' : (st.lastOk ? 'Cloud · synced' : 'Cloud · online'));
+      } else {
+        cloudBadge.append(el('span', { class: 'offline-dot', style: 'background:var(--text-subtle)' }), 'Offline mode');
+      }
+    }).catch(() => { /* leave the neutral label */ });
+  }
 
   const verChip = el('button', {
     id: 'ver-chip',
@@ -109,7 +151,7 @@ function renderShell(active, contentNode) {
     ]),
     el('nav', { class: 'nav' }, navItems),
     el('div', { class: 'sidebar-foot' }, [
-      el('div', { class: 'offline-badge' }, [el('span', { class: 'offline-dot' }), 'Offline · No cloud']),
+      cloudBadge,
       verChip,
     ]),
   ]);

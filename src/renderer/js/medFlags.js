@@ -44,6 +44,11 @@ export function bloodThinnerStatus(patient) {
   if (tr.blood_thinner === 'yes' && tr.blood_thinner_detail) {
     String(tr.blood_thinner_detail).split(/,\s*/).forEach((n) => n.trim() && names.add(n.trim()));
   }
-  const onThinner = confirmed === 'yes' || (confirmed == null && detected.length > 0);
-  return { onThinner, confirmed, names: [...names] };
+  // SAFETY: a medication-detected blood thinner ALWAYS raises the flag, even if
+  // the EMT answered "No" (the patient may not know a drug is a thinner, or it
+  // was a misclick). We never let a "no" suppress a detected anticoagulant.
+  // `discrepancy` is true when the EMT said no but meds say otherwise.
+  const onThinner = confirmed === 'yes' || detected.length > 0;
+  const discrepancy = confirmed === 'no' && detected.length > 0;
+  return { onThinner, confirmed, discrepancy, names: [...names] };
 }
