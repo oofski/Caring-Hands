@@ -200,6 +200,11 @@ function migrate() {
     addColumn(tbl, 'synced_rev', 'TEXT');   // sig last confirmed synced (== sig means clean)
     addColumn(tbl, 'content_rev', 'TEXT');  // sig that updated_at currently corresponds to
   }
+  // v1.4.6: which event the clinic is CURRENTLY on is synced across laptops via a
+  // globally-ordered "selected_at" stamp (the event with the greatest one, that is
+  // still turned on, is the active event everywhere). Before this, "Set active" was
+  // a local-only setting, so laptops could sit on different events and split the queue.
+  addColumn('events', 'selected_at', 'TEXT');
   addColumn('patients', 'dismissed_by_name', 'TEXT');
   addColumn('triage', 'triaged_by_name', 'TEXT');
   addColumn('triage', 'vitals_by_name', 'TEXT');
@@ -383,6 +388,8 @@ function seed() {
   // the shared, cross-device identity and the queue is pointed at it.
   convergeDefaultEvent();
   convergeSeedAdmin();
+  // Align this laptop's active event with the clinic-wide selection (synced).
+  resolveActiveEvent();
 
   // v1.0.7: adopt any legacy clinical staff (created before event scoping, so
   // event_id IS NULL) into the active event, so "Start fresh for next event"
@@ -588,9 +595,15 @@ function setActiveEvent(actor, id) {
   const e = db.prepare('SELECT * FROM events WHERE id = ?').get(id);
   if (!e) throw new Error('Event not found.');
   if (!e.active) throw new Error('That event is turned off. Reactivate it first.');
+  // Stamp this event as the clinic's current selection with a globally-ordered
+  // stamp (monotonic time + device id). The event with the greatest selected_at
+  // that is still turned on is the active event on EVERY laptop — so "Set active"
+  // now propagates through cloud sync instead of staying local to this computer.
+  db.prepare('UPDATE events SET selected_at = ? WHERE id = ?').run(stampNow(), id);
+  persistStamp();
   setSetting('active_event_id', String(id));
   audit(actor, 'select', 'event', id, e.name);
-  return e;
+  return db.prepare('SELECT * FROM events WHERE id = ?').get(id);
 }
 
 function updateEvent(actor, id, { name, location, start_date, end_date, languages }) {
@@ -603,16 +616,13 @@ function updateEvent(actor, id, { name, location, start_date, end_date, language
   return db.prepare('SELECT * FROM events WHERE id = ?').get(id);
 }
 
-// Turn an event on/off. Turning off the active event clears the active setting
-// and falls back to the most recent still-active event.
+// Turn an event on/off. Turning off the active event re-resolves the clinic's
+// active event (the most recently selected event that is still on).
 function setEventActive(actor, id, active) {
   const e = db.prepare('SELECT * FROM events WHERE id = ?').get(id);
   if (!e) throw new Error('Event not found.');
   db.prepare('UPDATE events SET active = ? WHERE id = ?').run(active ? 1 : 0, id);
-  if (!active && Number(getSetting('active_event_id')) === id) {
-    const next = db.prepare('SELECT id FROM events WHERE active = 1 ORDER BY created_at DESC').get();
-    setSetting('active_event_id', next ? String(next.id) : '');
-  }
+  resolveActiveEvent();
   audit(actor, active ? 'activate' : 'deactivate', 'event', id, e.name);
   return db.prepare('SELECT * FROM events WHERE id = ?').get(id);
 }
@@ -630,12 +640,26 @@ function deleteEvent(actor, id, { force } = {}) {
     db.prepare('DELETE FROM events WHERE id = ?').run(id);
   });
   tx();
-  if (Number(getSetting('active_event_id')) === id) {
-    const next = db.prepare('SELECT id FROM events WHERE active = 1 ORDER BY created_at DESC').get();
-    setSetting('active_event_id', next ? String(next.id) : '');
-  }
+  if (Number(getSetting('active_event_id')) === id) resolveActiveEvent();
   audit(actor, 'delete', 'event', id, `${e.name} (+${count} patients)`);
   return { deleted: true, patients: count };
+}
+
+// Recompute which event this laptop is on, keeping it in step with every other
+// laptop: the ON event with the greatest selected_at (a globally-ordered stamp)
+// wins, so a "Set active" done on ANY computer becomes the active event here once
+// it syncs. Falls back to the current local event, then any active event.
+function resolveActiveEvent() {
+  const chosen = db.prepare(
+    "SELECT id FROM events WHERE active = 1 AND selected_at IS NOT NULL AND selected_at != '' ORDER BY selected_at DESC LIMIT 1"
+  ).get();
+  if (chosen) { setSetting('active_event_id', String(chosen.id)); return chosen.id; }
+  // No event was ever explicitly selected — keep a valid, still-on local event.
+  const curId = Number(getSetting('active_event_id'));
+  if (curId && db.prepare('SELECT 1 FROM events WHERE id = ? AND active = 1').get(curId)) return curId;
+  const fallback = db.prepare('SELECT id FROM events WHERE active = 1 ORDER BY created_at DESC LIMIT 1').get();
+  setSetting('active_event_id', fallback ? String(fallback.id) : '');
+  return fallback ? fallback.id : null;
 }
 
 function getActiveEvent() {
@@ -1305,7 +1329,7 @@ const ENTITY_TABLE = { event: 'events', user: 'users', patient: 'patients', tria
 const APPLY_ORDER = ['event', 'user', 'patient', 'triage', 'treatment', 'consent', 'xray'];
 // Syncable payload columns per entity (fixed order -> stable content hash).
 const SYNC_COLS = {
-  event: ['name', 'location', 'start_date', 'end_date', 'languages', 'active', 'created_at'],
+  event: ['name', 'location', 'start_date', 'end_date', 'languages', 'active', 'created_at', 'selected_at'],
   // Staff account. salt+hash travel so the account can sign in on every laptop;
   // event scoping travels via event_uid (the parent), NULL for global admins.
   user: ['username', 'full_name', 'role', 'salt', 'hash', 'active', 'created_at'],
@@ -1502,6 +1526,9 @@ function applyRemoteRows(remoteRows) {
     try { db.transaction(applyOne)(env); }
     catch (e) { skipped++; }
   }
+  // If any event synced in, re-resolve the clinic's active event so a "Set active"
+  // performed on another laptop takes effect here too (highest selected_at wins).
+  if (list.some((e) => e.entity === 'event')) resolveActiveEvent();
   // deferredRows = children whose parent wasn't present in THIS batch. The caller
   // (cloud.js) holds the sync cursor back so they are re-pulled, never lost.
   return { applied, skipped, deferred, deferredRows };

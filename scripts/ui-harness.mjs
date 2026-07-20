@@ -477,6 +477,15 @@ async function main() {
   const adminRow = syncRows.find((r) => r.entity === 'user' && r.data && r.data.username === 'admin');
   log(!adminRow || adminRow.uid === '00000000-0000-4000-8000-000000000002', 'v1.4.4: bootstrap admin uses the shared cloud identity (converges, no per-laptop duplicate)');
 
+  // ---- v1.4.6: the active-event SELECTION syncs (stamped on the event row) so a
+  //               "Set active" on one laptop reaches every laptop. ----
+  currentUser = db.login('admin', 'admin');
+  const evSel = db.createEvent(currentUser, { name: 'Sync Event', location: 'X', languages: 'en' });
+  db.setActiveEvent(currentUser, evSel.id);
+  log(db.getActiveEvent().id === evSel.id, 'v1.4.6: Set active selects the event on this device');
+  const evRow = db.collectSyncRows(2000).rows.find((r) => r.entity === 'event' && r.data && r.data.name === 'Sync Event');
+  log(!!evRow && !!evRow.data.selected_at, 'v1.4.6: the active-event selection (selected_at) is a synced field so it reaches other laptops');
+
   await tick();
   if (errors.length) errors.forEach((e) => log(false, 'RUNTIME: ' + e));
   const failed = results.filter((r) => !r[0]).length;

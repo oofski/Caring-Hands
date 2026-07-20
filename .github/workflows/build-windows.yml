@@ -47,16 +47,20 @@ jobs:
       - name: Publish downloadable release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.4.5-build.${{ github.run_number }}
-          name: Caring Hands v1.4.5 (build ${{ github.run_number }})
+          tag_name: v1.4.6-build.${{ github.run_number }}
+          name: Caring Hands v1.4.6 (build ${{ github.run_number }})
           prerelease: false
           make_latest: true
           body: |
-            ## Caring Hands Worldwide — Practice Management Software (v1.4.5)
+            ## Caring Hands Worldwide — Practice Management Software (v1.4.6)
 
             Offline-first dental clinic app for Windows. **Download the installer once — it auto-updates from here on.**
 
-            **New in v1.4.5 — high blood pressure is flagged red**
+            **New in v1.4.6 — the active event now syncs across laptops**
+            - **Fix: setting the clinic event carries to every computer.** Choosing an event under **Admin → Events → Set active** used to only change *that* computer, so laptops could sit on different events and split the patient queue. Now the selection syncs: set the event on one laptop and every other laptop switches to the **same** event automatically, so new check-ins and the queue line up everywhere. If two people pick different events at once, the most recent choice wins on all laptops. (Turning an event off, or creating brand-new events, syncs the same way.)
+            - Nothing to configure — just update every station and pick your event once.
+
+            **From v1.4.5 — high blood pressure is flagged red**
             - A blood-pressure reading now turns **red** the moment it hits hypertensive-crisis levels — **systolic over 180 or diastolic over 100**. At the EMT/vitals station the offending field goes red as you type and a clear warning appears; the dentist's handoff strip and the printed record show the reading in red too. Exactly 180/100 is not flagged (only readings *over* the threshold are).
 
             **From v1.4.4 — staff accounts now sync across every laptop**
@@ -114,8 +118,8 @@ jobs:
 
             Includes everything from v1.0.2–1.1.1 (optional Cloud Sync, triage-free flow, per-event staff, Oregon consent, USB workflow, accountability, Russian, in-app auto-update).
 
-            - **Caring-Hands-Setup-1.4.5.exe** — installer (recommended; required for auto-update).
-            - **Caring-Hands-Portable-1.4.5.exe** — portable (no auto-update).
+            - **Caring-Hands-Setup-1.4.6.exe** — installer (recommended; required for auto-update).
+            - **Caring-Hands-Portable-1.4.6.exe** — portable (no auto-update).
 
             First sign-in: `admin / admin` — then create your staff accounts. All clinical data stays on the device unless you enable Cloud Sync.
           files: |
