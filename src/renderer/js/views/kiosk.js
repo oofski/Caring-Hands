@@ -1,6 +1,6 @@
 import { el, clear, toast } from '../dom.js';
 import { icon } from '../icons.js';
-import { t, tRaw, getLang, setLang, languageList, conditions, allergies, referrals, speak, stopSpeaking } from '../i18n.js';
+import { t, tRaw, getLang, setLang, languageList, conditions, allergies, referrals, visitTypes, visitTypeLabel, speak, stopSpeaking } from '../i18n.js';
 import { textField, textArea, selectField, yesNo, chipGrid, limitDigits } from '../forms.js';
 import { SignaturePad } from '../components/signature.js';
 import { api } from '../api.js';
@@ -323,10 +323,50 @@ export function renderKiosk(ctx) {
     const postExt = yn('post_extraction_bleeding', t('intake.postExtraction'));
     const ortho = yn('ortho', t('intake.ortho'));
     const cosmetic = yn('cosmetic', t('intake.cosmetic'));
-    const mayExtract = yesNo(getLang() === 'es'
-      ? '¿Tiene dolor o cree que puede necesitar una extracción hoy?'
-      : 'Are you in pain or do you think you may need a tooth removed today?',
-      { value: dh.may_need_extraction, yesText: t('common.yes'), noText: t('common.no') });
+    // "What do you need today?" on a 1–4 slider. Options 1 & 2 (extraction) add the
+    // oral-surgery consent (may_need_extraction='yes'); this replaces the old yes/no
+    // "are you in pain" question but drives the exact same consent trigger.
+    const VOPTS = visitTypes();
+    const storedVisitIdx = VOPTS.findIndex((o) => o.key === dh.visit_type);
+    let visitNum = storedVisitIdx >= 0 ? storedVisitIdx + 1 : null; // 1..4, null = not chosen
+    const visitQ = L({ en: 'What do you need today?', es: '¿Qué necesita hoy?', ru: 'Что вам нужно сегодня?' });
+    const slidePrompt = L({ en: 'Slide or tap a number to choose.', es: 'Deslice o toque un número para elegir.', ru: 'Проведите или коснитесь номера, чтобы выбрать.' });
+    const surgeryNote = L({ en: 'An oral surgery consent will be added.', es: 'Se agregará un consentimiento de cirugía oral.', ru: 'Будет добавлено согласие на операцию.' });
+    const visitRange = el('input', { type: 'range', min: '1', max: '4', step: '1', value: String(visitNum || 1), class: 'visit-range', style: 'width:100%;accent-color:var(--accent);height:28px' });
+    const visitDesc = el('div', { class: 'visit-desc', style: 'min-height:26px;margin-top:6px;font-weight:var(--fw-semibold)' });
+    const visitTicks = VOPTS.map((o, i) => el('button', {
+      type: 'button',
+      style: 'flex:1;display:flex;flex-direction:column;align-items:center;gap:4px;padding:8px 4px;border:var(--border-line);border-radius:var(--radius-sm);background:var(--surface);cursor:pointer',
+      onClick: () => setVisit(i + 1),
+    }, [
+      el('span', { style: 'font-size:var(--fs-h3);font-weight:var(--fw-bold)' }, [String(i + 1)]),
+      el('span', { style: 'font-size:var(--fs-2xs);text-align:center;line-height:1.15' }, [o.label]),
+    ]));
+    function paintVisit() {
+      visitTicks.forEach((tk, i) => {
+        const on = visitNum === i + 1;
+        tk.style.borderColor = on ? 'var(--accent)' : '';
+        tk.style.background = on ? 'var(--accent-soft, rgba(20,150,140,0.12))' : 'var(--surface)';
+        tk.style.boxShadow = on ? 'inset 0 0 0 1px var(--accent)' : '';
+      });
+      clear(visitDesc);
+      if (visitNum) {
+        const o = VOPTS[visitNum - 1];
+        visitDesc.append(el('span', {}, [`${visitNum}. ${o.label}`]));
+        if (o.surgery) visitDesc.append(el('span', { class: 'subtle small', style: 'display:block;font-weight:var(--fw-medium);margin-top:2px' }, [surgeryNote]));
+      } else {
+        visitDesc.append(el('span', { class: 'subtle' }, [slidePrompt]));
+      }
+    }
+    function setVisit(n) { visitNum = n; visitRange.value = String(n); paintVisit(); }
+    visitRange.addEventListener('input', () => setVisit(Number(visitRange.value)));
+    paintVisit();
+    const visitField = el('div', { class: 'highlight-field' }, [
+      el('span', { class: 'field-label' }, [visitQ]),
+      visitDesc,
+      visitRange,
+      el('div', { style: 'display:flex;gap:8px;margin-top:10px' }, visitTicks),
+    ]);
 
     const node = el('div', {}, [
       el('div', { class: 'span-2' }, [reason.node]),
@@ -334,18 +374,21 @@ export function renderKiosk(ctx) {
       el('div', { class: 'form-grid' }, [
         prior.node, gum.node, sores.node, jaw.node, grinding.node, postExt.node, ortho.node, cosmetic.node,
       ]),
-      el('div', { class: 'highlight-field' }, [mayExtract.node]),
+      visitField,
     ]);
 
     return {
       title: t('intake.s_dental'),
       node,
       collect: () => {
+        if (!visitNum) { toast(L({ en: 'Please choose what you need today.', es: 'Por favor elija qué necesita hoy.', ru: 'Пожалуйста, выберите, что вам нужно сегодня.' }), 'error'); return false; }
+        const vopt = VOPTS[visitNum - 1];
         Object.assign(dh, {
           reason: reason.get(), goals: goals.get(), prior_dentist: prior.get(),
           gum_bleeding: gum.get(), sores: sores.get(), jaw_injury: jaw.get(), grinding: grinding.get(),
           post_extraction_bleeding: postExt.get(), ortho: ortho.get(), cosmetic: cosmetic.get(),
-          may_need_extraction: mayExtract.get(),
+          visit_type: vopt.key,
+          may_need_extraction: vopt.surgery ? 'yes' : 'no',
         });
         return true;
       },
@@ -563,6 +606,7 @@ export function renderKiosk(ctx) {
         row(t('intake.phone'), data.phone),
         row(t('intake.allergiesTitle'), allergyLabels.join(', ')),
         row(t('intake.conditionsTitle'), condLabels.join(', ')),
+        row(L({ en: 'What you need today', es: 'Qué necesita hoy', ru: 'Что вам нужно сегодня' }), visitTypeLabel(dh.visit_type)),
         row(t('intake.reason'), dh.reason),
         row(
           L({ en: 'Who to see', es: 'A quién ver', ru: 'К кому обратиться' }),

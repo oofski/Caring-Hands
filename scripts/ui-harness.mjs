@@ -222,6 +222,13 @@ async function main() {
   // Step: Dental history — reason
   log(/Dental/i.test($('.kiosk-step-label').textContent), 'on dental history step');
   const ta = $('.kiosk-body textarea'); if (ta) setInput(ta, 'Lower left tooth pain');
+  // v1.4.9: choose a visit type on the required 1–4 scale. Pick 3 = Filling so no
+  // surgery consent is added (keeps this drive on the existing review path).
+  const vrange = $('.visit-range');
+  log(!!vrange, 'dental step has the 1–4 visit-type scale');
+  const vticks = $all('.kiosk-body .highlight-field button');
+  log(vticks.length === 4, 'visit-type scale offers 4 options (' + vticks.length + ')');
+  if (vrange) { vrange.value = '3'; vrange.dispatchEvent(new window.Event('input', { bubbles: true })); }
   clickText('Next');
   await tick();
 
@@ -266,6 +273,7 @@ async function main() {
     log((full.medical_history.allergies || []).includes('penicillin'), 'medical allergies captured: ' + JSON.stringify(full.medical_history.allergies));
     log((full.medical_history.conditions || []).includes('diabetes'), 'medical conditions captured: ' + JSON.stringify(full.medical_history.conditions));
     log(!!full.dental_history.reason, 'dental history captured: reason=' + full.dental_history.reason);
+    log(full.dental_history.visit_type === 'filling' && full.dental_history.may_need_extraction === 'no', 'v1.4.9: visit-type scale captured (filling → no surgery consent)');
     log((full.consents || []).length > 0, 'consent captured: ' + (full.consents || []).length + ' consent(s)');
     // v1.2.0: patient chose a provider at check-in; vitals are NOT collected here.
     log(full.triage && full.triage.route === 'dentist', 'A4: check-in provider choice stored (route=' + (full.triage && full.triage.route) + ')');

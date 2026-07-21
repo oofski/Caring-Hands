@@ -1,4 +1,4 @@
-import { CATALOG, LANGUAGES, CONDITIONS, ALLERGIES, REFERRALS } from '../i18n/strings.js';
+import { CATALOG, LANGUAGES, CONDITIONS, ALLERGIES, REFERRALS, VISIT_TYPES } from '../i18n/strings.js';
 
 let lang = 'en';
 
@@ -45,6 +45,15 @@ export function referrals() {
 export function referralLabel(key) {
   const r = REFERRALS.find((x) => x.key === key);
   return r ? (r[lang] || r.en) : (key || '');
+}
+// Visit-type options for the check-in scale (localized), and a single-key resolver
+// for clinician screens. `surgery` marks the options that trigger oral-surgery consent.
+export function visitTypes() {
+  return VISIT_TYPES.map((v) => ({ key: v.key, label: v[lang] || v.en, surgery: !!v.surgery }));
+}
+export function visitTypeLabel(key) {
+  const v = VISIT_TYPES.find((x) => x.key === key);
+  return v ? (v[lang] || v.en) : '';
 }
 // All known languages, or only those enabled for an event (CSV string of codes).
 export function languageList(enabledCsv) {

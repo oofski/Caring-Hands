@@ -68,6 +68,16 @@ export const ALLERGIES = [
   { key: 'novocain', en: 'Novocain', es: 'Novocaína', intake: false },
 ];
 
+// What the patient needs today — chosen on a 1–4 scale at check-in. Options 1 and
+// 2 (extraction) trigger the oral-surgery consent. Shared so the check-in slider
+// and the clinician screens all use the same labels.
+export const VISIT_TYPES = [
+  { key: 'extraction_pain', en: 'Extraction — in pain', es: 'Extracción — con dolor', ru: 'Удаление — с болью', surgery: true },
+  { key: 'extraction_no_pain', en: 'Extraction — no pain', es: 'Extracción — sin dolor', ru: 'Удаление — без боли', surgery: true },
+  { key: 'filling', en: 'Filling', es: 'Empaste', ru: 'Пломба' },
+  { key: 'cleaning', en: 'Dental cleaning', es: 'Limpieza dental', ru: 'Чистка зубов' },
+];
+
 const en = {
   common: {
     next: 'Next', back: 'Back', save: 'Save', cancel: 'Cancel', submit: 'Submit',

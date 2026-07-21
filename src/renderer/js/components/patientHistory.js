@@ -1,6 +1,6 @@
 import { el } from '../dom.js';
 import { icon } from '../icons.js';
-import { conditions, allergies } from '../i18n.js';
+import { conditions, allergies, visitTypeLabel } from '../i18n.js';
 
 // A record created by the old (v1.0) intake bug has no name / empty histories.
 export function isIncompleteRecord(p) {
@@ -76,7 +76,7 @@ export function patientHistoryCards(p, priorVisits = []) {
 
   out.push(card('tooth', 'Dental history',
     el('div', { class: 'kv-grid' }, [
-      kv('Reason for visit', (p.triage && p.triage.complaint) || dh.reason), kv('Long-term goals', dh.goals),
+      kv('What patient needs', visitTypeLabel(dh.visit_type)), kv('Reason for visit', (p.triage && p.triage.complaint) || dh.reason), kv('Long-term goals', dh.goals),
       kv('Prior dentist', dh.prior_dentist), kv('Gums bleed', dh.gum_bleeding),
       kv('Sores / lumps', dh.sores), kv('Head/neck/jaw injury', dh.jaw_injury),
       kv('Clenching / grinding', dh.grinding), kv('Bleeding after extraction', dh.post_extraction_bleeding),
