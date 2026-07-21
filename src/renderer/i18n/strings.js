@@ -56,12 +56,16 @@ export const CONDITIONS = [
 ];
 
 export const ALLERGIES = [
-  { key: 'novocain', en: 'Novocain', es: 'Novocaína' },
+  { key: 'lidocaine', en: 'Lidocaine', es: 'Lidocaína' },
+  { key: 'articaine', en: 'Articaine', es: 'Articaína' },
   { key: 'penicillin', en: 'Penicillin', es: 'Penicilina' },
   { key: 'codeine', en: 'Codeine', es: 'Codeína' },
   { key: 'erythromycin', en: 'Erythromycin', es: 'Eritromicina' },
   { key: 'nsaids', en: 'NSAIDs (Ibuprofen, Aspirin)', es: 'AINEs (Ibuprofeno, Aspirina)' },
   { key: 'tylenol', en: 'Tylenol (Acetaminophen)', es: 'Tylenol (Acetaminofén)' },
+  // Legacy: no longer offered at check-in, but kept so an older record that
+  // recorded a Novocain allergy still displays it (never hide a logged allergy).
+  { key: 'novocain', en: 'Novocain', es: 'Novocaína', intake: false },
 ];
 
 const en = {

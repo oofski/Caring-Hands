@@ -207,6 +207,10 @@ async function main() {
   log(/Medical|Historia/i.test($('.kiosk-step-label').textContent), 'on medical history step');
   const chips = $all('.kiosk-body .chip-select');
   log(chips.length > 0, 'medical step has condition/allergy chips (' + chips.length + ')');
+  // v1.4.8: allergies offer Lidocaine + Articaine, and no longer Novocain.
+  const chipText = chips.map((c) => c.textContent).join(' | ');
+  log(/Lidocaine/i.test(chipText) && /Articaine/i.test(chipText), 'allergies offer Lidocaine + Articaine at check-in');
+  log(!/Novocain/i.test(chipText), 'allergies no longer offer Novocain at check-in');
   // click a known allergy (Penicillin) and a condition (Diabetes)
   const pen = chips.find((c) => /Penicillin/i.test(c.textContent)); if (pen) pen.click();
   const dia = chips.find((c) => /Diabet/i.test(c.textContent)); if (dia) dia.click();
@@ -546,6 +550,15 @@ async function main() {
     if (completeBtn2) completeBtn2.click();
     await tick(); await tick();
     log(db.getPatient(cp.id).status === 'completed', 'v1.4.7: once the general consent is signed, the dentist can document + complete the visit');
+  }
+
+  // ---- v1.4.8: allergy list — Lidocaine + Articaine in, Novocain out (but a
+  //               legacy Novocain allergy still shows on old records). ----
+  {
+    const al = (await import('../src/renderer/js/i18n.js')).allergies();
+    log(al.some((a) => a.key === 'lidocaine' && a.intake) && al.some((a) => a.key === 'articaine' && a.intake), 'v1.4.8: Lidocaine + Articaine are offered as check-in allergies');
+    const nov = al.find((a) => a.key === 'novocain');
+    log(!!nov && nov.intake === false && /Novocain/i.test(nov.label), 'v1.4.8: a legacy Novocain allergy still resolves for display but is not offered at check-in');
   }
 
   await tick();

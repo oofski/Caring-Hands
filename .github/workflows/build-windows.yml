@@ -47,16 +47,19 @@ jobs:
       - name: Publish downloadable release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.4.7-build.${{ github.run_number }}
-          name: Caring Hands v1.4.7 (build ${{ github.run_number }})
+          tag_name: v1.4.8-build.${{ github.run_number }}
+          name: Caring Hands v1.4.8 (build ${{ github.run_number }})
           prerelease: false
           make_latest: true
           body: |
-            ## Caring Hands Worldwide — Practice Management Software (v1.4.7)
+            ## Caring Hands Worldwide — Practice Management Software (v1.4.8)
 
             Offline-first dental clinic app for Windows. **Download the installer once — it auto-updates from here on.**
 
-            **New in v1.4.7 — updated consent forms, chairside consent, and a few clinical fixes**
+            **New in v1.4.8 — updated check-in allergy list**
+            - The medication-allergy options at check-in now list **Lidocaine** and **Articaine** (the anesthetics actually used) instead of **Novocain**. Any older record that recorded a Novocain allergy still shows it — it's just no longer offered as a new choice.
+
+            **From v1.4.7 — updated consent forms, chairside consent, and a few clinical fixes**
             - **Complete consent wording.** The General consent and the Oral Surgery consent now use the full, updated wording (the oral-surgery form includes the post-op / after-hours call instructions and hold-harmless). Read-aloud still works. Spanish and the other languages keep their existing translations; the new wording is the English authoritative text.
             - **Complete a consent at the dentist's chair.** The dentist's Treat screen now shows a **Consents** card right under patient history. If a patient wanted a filling but the dentist recommends an extraction, the dentist can have the patient complete the **Oral Surgery consent right there** — enter the tooth number(s), have the patient sign, done. (Also works for capturing a General consent if one is somehow missing.)
             - **General consent required before treatment.** The dentist can't document treatment until the General consent is on file. Every check-in already captures it, so nothing changes for normal visits; if it's ever missing, the Consents card lets the patient complete it first.
@@ -125,8 +128,8 @@ jobs:
 
             Includes everything from v1.0.2–1.1.1 (optional Cloud Sync, triage-free flow, per-event staff, Oregon consent, USB workflow, accountability, Russian, in-app auto-update).
 
-            - **Caring-Hands-Setup-1.4.7.exe** — installer (recommended; required for auto-update).
-            - **Caring-Hands-Portable-1.4.7.exe** — portable (no auto-update).
+            - **Caring-Hands-Setup-1.4.8.exe** — installer (recommended; required for auto-update).
+            - **Caring-Hands-Portable-1.4.8.exe** — portable (no auto-update).
 
             First sign-in: `admin / admin` — then create your staff accounts. All clinical data stays on the device unless you enable Cloud Sync.
           files: |

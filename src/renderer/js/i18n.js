@@ -34,7 +34,9 @@ export function conditions() {
   return CONDITIONS.map((c) => ({ key: c.key, flag: c.flag, label: c[lang] || c.en }));
 }
 export function allergies() {
-  return ALLERGIES.map((a) => ({ key: a.key, label: a[lang] || a.en }));
+  // `intake` (default true) marks which allergies are offered at check-in; a
+  // legacy entry with intake:false still resolves for DISPLAY on existing records.
+  return ALLERGIES.map((a) => ({ key: a.key, label: a[lang] || a.en, intake: a.intake !== false }));
 }
 export function referrals() {
   return REFERRALS.map((r) => ({ key: r.key, label: r[lang] || r.en }));

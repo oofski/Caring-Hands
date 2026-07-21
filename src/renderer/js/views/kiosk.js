@@ -219,7 +219,7 @@ export function renderKiosk(ctx) {
 
     // F7 + A3: allergy chips + an "other" chip (free-text) + a "None of the above" chip.
     const allergyItems = [
-      ...allergies().map((a) => ({ key: a.key, label: a.label, flag: true })),
+      ...allergies().filter((a) => a.intake).map((a) => ({ key: a.key, label: a.label, flag: true })),
       { key: 'other', label: t('common.other') },
       { key: 'none', label: noneLabel },
     ];
