@@ -180,6 +180,7 @@ async function main() {
   // Step: Demographics — fill name + a couple fields
   let inputs = $all('.kiosk-body input');
   log(inputs.length > 0, 'demographics step has inputs (' + inputs.length + ')');
+  log(!/Children by age group/i.test($('.kiosk-body').textContent), 'v1.4.9: demographics no longer asks about children');
   // first two text inputs are first/last name
   const textInputs = inputs.filter((i) => i.type === 'text' || !i.type);
   setInput(textInputs[0], 'Maria');
@@ -211,16 +212,23 @@ async function main() {
   const chipText = chips.map((c) => c.textContent).join(' | ');
   log(/Lidocaine/i.test(chipText) && /Articaine/i.test(chipText), 'allergies offer Lidocaine + Articaine at check-in');
   log(!/Novocain/i.test(chipText), 'allergies no longer offer Novocain at check-in');
+  // v1.4.9: allergies / conditions / medications are required (labels marked *).
+  log(/Medication allergies\s*\*/.test($('.kiosk-body').textContent), 'v1.4.9: allergies marked required (*)');
   // click a known allergy (Penicillin) and a condition (Diabetes)
   const pen = chips.find((c) => /Penicillin/i.test(c.textContent)); if (pen) pen.click();
   const dia = chips.find((c) => /Diabet/i.test(c.textContent)); if (dia) dia.click();
   // a yes/no chip (tobacco)
   const yesBtn = $all('.kiosk-body .chip-btn').find((b) => /Yes|S[ií]/.test(b.textContent)); if (yesBtn) yesBtn.click();
+  // v1.4.9: with allergies + conditions answered but MEDICATIONS not, Next is blocked.
+  clickText('Next'); await tick();
+  log(/Medical|Historia/i.test($('.kiosk-step-label').textContent), 'v1.4.9: medical step blocks Next until medications are answered');
+  const noMeds = $('.kiosk-body .big-check'); if (noMeds) { noMeds.checked = true; noMeds.dispatchEvent(new window.Event('change', { bubbles: true })); }
   clickText('Next');
   await tick();
 
   // Step: Dental history — reason
   log(/Dental/i.test($('.kiosk-step-label').textContent), 'on dental history step');
+  log(!/long-term dental goals/i.test($('.kiosk-body').textContent) && !/cosmetic/i.test($('.kiosk-body').textContent), 'v1.4.9: dental step no longer asks long-term goals / cosmetic interest');
   const ta = $('.kiosk-body textarea'); if (ta) setInput(ta, 'Lower left tooth pain');
   // v1.4.9: choose a visit type on the required 1–4 scale. Pick 3 = Filling so no
   // surgery consent is added (keeps this drive on the existing review path).

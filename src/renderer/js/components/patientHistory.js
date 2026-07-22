@@ -52,7 +52,7 @@ export function patientHistoryCards(p, priorVisits = []) {
       kv('Gender', p.gender), kv('Marital status', d.marital_status),
       kv('Phone', p.phone), kv('Email', p.email),
       kv('Address', d.address), kv('Mailing address', d.mailing_address),
-      kv('Children', (d.children || []).join(', ')), kv('Referral', d.referral),
+      kv('Referral', d.referral),
       kv('Emergency contact', d.emergency_name), kv('Emergency phone', d.emergency_phone),
     ])));
 
@@ -76,11 +76,11 @@ export function patientHistoryCards(p, priorVisits = []) {
 
   out.push(card('tooth', 'Dental history',
     el('div', { class: 'kv-grid' }, [
-      kv('What patient needs', visitTypeLabel(dh.visit_type)), kv('Reason for visit', (p.triage && p.triage.complaint) || dh.reason), kv('Long-term goals', dh.goals),
+      kv('What patient needs', visitTypeLabel(dh.visit_type)), kv('Reason for visit', (p.triage && p.triage.complaint) || dh.reason),
       kv('Prior dentist', dh.prior_dentist), kv('Gums bleed', dh.gum_bleeding),
       kv('Sores / lumps', dh.sores), kv('Head/neck/jaw injury', dh.jaw_injury),
       kv('Clenching / grinding', dh.grinding), kv('Bleeding after extraction', dh.post_extraction_bleeding),
-      kv('Orthodontic history', dh.ortho), kv('Cosmetic interest', dh.cosmetic),
+      kv('Orthodontic history', dh.ortho),
     ])));
 
   if ((p.consents || []).length) {

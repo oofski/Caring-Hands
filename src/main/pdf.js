@@ -289,9 +289,9 @@ function fullPacketBody(p) {
       <tr>${field('Age', p.age)}${field('Gender', p.gender)}</tr>
       <tr>${field('Phone', p.phone)}${field('Email', p.email)}</tr>
       <tr>${field('Address', d.address)}${field('Mailing address', d.mailing_address)}</tr>
-      <tr>${field('Marital status', d.marital_status)}${field('Children', (d.children || []).join(', '))}</tr>
-      <tr>${field('Emergency contact', d.emergency_name)}${field('Emergency phone', d.emergency_phone)}</tr>
-      <tr>${field('Referral source', d.referral === 'other' && d.referral_other ? d.referral_other : referralLabel(d.referral))}${field('Preferred language', p.language === 'es' ? 'Spanish' : 'English')}</tr>
+      <tr>${field('Marital status', d.marital_status)}${field('Emergency contact', d.emergency_name)}</tr>
+      <tr>${field('Emergency phone', d.emergency_phone)}${field('Referral source', d.referral === 'other' && d.referral_other ? d.referral_other : referralLabel(d.referral))}</tr>
+      <tr>${field('Preferred language', p.language === 'es' ? 'Spanish' : 'English')}</tr>
     </table>
 
     <h2>Medical History</h2>
@@ -307,11 +307,10 @@ function fullPacketBody(p) {
 
     <h2>Dental History</h2>
     <table class="grid">
-      <tr>${field('Reason for visit', dh.reason)}${field('Long-term goals', dh.goals)}</tr>
-      <tr>${field('Prior dentist', dh.prior_dentist)}${field('Gums bleed', dh.gum_bleeding)}</tr>
-      <tr>${field('Sores / lumps', dh.sores)}${field('Head/neck/jaw injury', dh.jaw_injury)}</tr>
-      <tr>${field('Clenching / grinding', dh.grinding)}${field('Bleeding after extraction', dh.post_extraction_bleeding)}</tr>
-      <tr>${field('Orthodontic history', dh.ortho)}${field('Cosmetic interest', dh.cosmetic)}</tr>
+      <tr>${field('Reason for visit', dh.reason)}${field('Prior dentist', dh.prior_dentist)}</tr>
+      <tr>${field('Gums bleed', dh.gum_bleeding)}${field('Sores / lumps', dh.sores)}</tr>
+      <tr>${field('Head/neck/jaw injury', dh.jaw_injury)}${field('Clenching / grinding', dh.grinding)}</tr>
+      <tr>${field('Bleeding after extraction', dh.post_extraction_bleeding)}${field('Orthodontic history', dh.ortho)}</tr>
     </table>
 
     <h2>Consents & Signatures</h2>

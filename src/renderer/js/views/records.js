@@ -145,7 +145,7 @@ export function renderRecords(ctx, params = {}) {
               kv('Gender', p.gender), kv('Marital status', p.demographics.marital_status),
               kv('Phone', p.phone), kv('Email', p.email),
               kv('Address', p.demographics.address), kv('Mailing address', p.demographics.mailing_address),
-              kv('Children', (p.demographics.children || []).join(', ')), kv('Referral', referralDisplay(p.demographics)),
+              kv('Referral', referralDisplay(p.demographics)),
               kv('Emergency contact', p.demographics.emergency_name), kv('Emergency phone', p.demographics.emergency_phone),
             ]),
           ]),
@@ -170,11 +170,11 @@ export function renderRecords(ctx, params = {}) {
           el('div', { class: 'card' }, [
             el('h3', { class: 'card-title' }, ['Dental history']),
             el('div', { class: 'kv-grid' }, [
-              kv('What patient needs', visitTypeLabel(p.dental_history.visit_type)), kv('Reason', (p.triage && p.triage.complaint) || p.dental_history.reason), kv('Goals', p.dental_history.goals),
+              kv('What patient needs', visitTypeLabel(p.dental_history.visit_type)), kv('Reason', (p.triage && p.triage.complaint) || p.dental_history.reason),
               kv('Prior dentist', p.dental_history.prior_dentist), kv('Gums bleed', p.dental_history.gum_bleeding),
               kv('Sores / lumps', p.dental_history.sores), kv('Head/neck/jaw injury', p.dental_history.jaw_injury),
               kv('Grinding / clenching', p.dental_history.grinding), kv('Bleeding after extraction', p.dental_history.post_extraction_bleeding),
-              kv('Orthodontic history', p.dental_history.ortho), kv('Cosmetic interest', p.dental_history.cosmetic),
+              kv('Orthodontic history', p.dental_history.ortho),
             ]),
           ]),
           el('div', { class: 'card' }, [

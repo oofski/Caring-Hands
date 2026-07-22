@@ -47,18 +47,19 @@ jobs:
       - name: Publish downloadable release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.4.9-build.${{ github.run_number }}
-          name: Caring Hands v1.4.9 (build ${{ github.run_number }})
+          tag_name: v1.4.10-build.${{ github.run_number }}
+          name: Caring Hands v1.4.10 (build ${{ github.run_number }})
           prerelease: false
           make_latest: true
           body: |
-            ## Caring Hands Worldwide — Practice Management Software (v1.4.9)
+            ## Caring Hands Worldwide — Practice Management Software (v1.4.10)
 
             Offline-first dental clinic app for Windows. **Download the installer once — it auto-updates from here on.**
 
-            **New in v1.4.9 — "What do you need today?" scale at check-in**
-            - The dental step now asks **what the patient needs today** on a simple **1–4 slider** (slide or tap a number): **1 = Extraction (in pain), 2 = Extraction (no pain), 3 = Filling, 4 = Dental cleaning**. This replaces the old yes/no "are you in pain?" question.
-            - Choosing **1 or 2 (extraction)** automatically adds the **Oral Surgery consent** to the check-in — so the consent is captured whenever an extraction is expected, not only when the patient says they're in pain. The patient's choice shows on the dentist's chart and the record.
+            **New in v1.4.10 — check-in form updates**
+            - **"What do you need today?" scale.** The dental step asks what the patient needs on a simple **1–4 slider** (slide or tap a number): **1 = Extraction (in pain), 2 = Extraction (no pain), 3 = Filling, 4 = Dental cleaning** — replacing the old yes/no "are you in pain?" question. Choosing **1 or 2 (extraction)** automatically adds the **Oral Surgery consent**, so it's captured whenever an extraction is expected. The choice shows on the dentist's chart and the record.
+            - **Trimmed questions.** Removed **"Children by age group,"** **"Your long-term dental goals,"** and **"Interested in cosmetic improvements?"** from check-in — and from every screen and the printed record.
+            - **Required answers.** **Medication allergies, medical conditions,** and **current medications** must now be answered at check-in (pick an option, "Other," or "None of the above" / "No medications") before the patient can continue.
 
             **From v1.4.8 — updated check-in allergy list**
             - The medication-allergy options at check-in now list **Lidocaine** and **Articaine** (the anesthetics actually used) instead of **Novocain**. Any older record that recorded a Novocain allergy still shows it — it's just no longer offered as a new choice.
@@ -132,8 +133,8 @@ jobs:
 
             Includes everything from v1.0.2–1.1.1 (optional Cloud Sync, triage-free flow, per-event staff, Oregon consent, USB workflow, accountability, Russian, in-app auto-update).
 
-            - **Caring-Hands-Setup-1.4.9.exe** — installer (recommended; required for auto-update).
-            - **Caring-Hands-Portable-1.4.9.exe** — portable (no auto-update).
+            - **Caring-Hands-Setup-1.4.10.exe** — installer (recommended; required for auto-update).
+            - **Caring-Hands-Portable-1.4.10.exe** — portable (no auto-update).
 
             First sign-in: `admin / admin` — then create your staff accounts. All clinical data stays on the device unless you enable Cloud Sync.
           files: |

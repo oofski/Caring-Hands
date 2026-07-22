@@ -131,10 +131,6 @@ export function renderKiosk(ctx) {
       { value: 'divorced', label: t('intake.divorced') },
       { value: 'widowed', label: t('intake.widowed') },
     ], { value: d.marital_status });
-    const children = chipGrid(t('intake.children'), [
-      { key: '0-5', label: t('intake.child0') }, { key: '6-12', label: t('intake.child6') },
-      { key: '13-17', label: t('intake.child13') }, { key: '18+', label: t('intake.child18') },
-    ], { selected: d.children || [] });
     const emName = textField(t('intake.emergencyName'), { value: d.emergency_name, required: true });
     const emPhone = textField(t('intake.emergencyPhone'), { value: d.emergency_phone, type: 'tel', required: true });
     // Phone numbers accept digits only, max 10.
@@ -156,7 +152,7 @@ export function renderKiosk(ctx) {
       first.node, last.node, dob.node, gender.node, phone.node, email.node,
       el('div', { class: 'span-2' }, [address.node]),
       el('div', { class: 'span-2' }, [mailing.node]),
-      marital.node, children.node, emName.node, emPhone.node,
+      marital.node, emName.node, emPhone.node,
       el('div', { class: 'span-2' }, [referral.node]),
       referralOtherWrap,
     ]);
@@ -173,7 +169,7 @@ export function renderKiosk(ctx) {
         data.dob = dob.get(); data.gender = gender.get(); data.phone = phone.get(); data.email = email.get();
         Object.assign(data.demographics, {
           address: address.get(), mailing_address: mailing.get(), marital_status: marital.get(),
-          children: children.get(), emergency_name: emName.get(), emergency_phone: emPhone.get(),
+          emergency_name: emName.get(), emergency_phone: emPhone.get(),
           referral: referral.get(),
           referral_other: referral.get() === 'other' ? referralOther.get() : '',
         });
@@ -223,7 +219,7 @@ export function renderKiosk(ctx) {
       { key: 'other', label: t('common.other') },
       { key: 'none', label: noneLabel },
     ];
-    const allergyGrid = chipGrid(t('intake.allergiesTitle'), allergyItems,
+    const allergyGrid = chipGrid(t('intake.allergiesTitle') + ' *', allergyItems,
       { selected: m.allergies || [], hint: t('intake.allergiesHint') });
     const allergyOther = textField(t('intake.allergyOther'), { value: m.allergies_other });
     const allergyOtherWrap = el('div', { class: 'span-2' }, [allergyOther.node]);
@@ -238,7 +234,7 @@ export function renderKiosk(ctx) {
       { key: 'other', label: t('common.other') },
       { key: 'none', label: noneLabel },
     ];
-    const condGrid = chipGrid(t('intake.conditionsTitle'), condItems,
+    const condGrid = chipGrid(t('intake.conditionsTitle') + ' *', condItems,
       { selected: m.conditions || [], hint: t('intake.conditionsHint') });
     const condOther = textField(t('intake.conditionOther'), { value: m.conditions_other });
     const condOtherWrap = el('div', { class: 'span-2' }, [condOther.node]);
@@ -281,7 +277,7 @@ export function renderKiosk(ctx) {
       el('div', { class: 'span-2' }, [condGrid.node]),
       el('div', { class: 'form-grid' }, [condOtherWrap]),
       el('div', { class: 'field' }, [
-        el('span', { class: 'field-label' }, [t('intake.medsTitle')]),
+        el('span', { class: 'field-label' }, [t('intake.medsTitle') + ' *']),
         el('label', { class: 'agree-row' }, [noMeds, el('span', {}, [noMedsLabel])]),
         medRows,
         addBtn,
@@ -294,12 +290,21 @@ export function renderKiosk(ctx) {
       collect: () => {
         const allergySel = allergyGrid.get();
         const condSel = condGrid.get();
+        const medList = Array.from(medRows.children).map((r) => r._get()).filter((x) => x.name);
+        // Allergies, conditions and medications are REQUIRED — the patient must
+        // actively answer each (a real chip, "Other", or "None of the above" /
+        // "No medications"). A blank section no longer silently passes.
+        if (!allergySel.length) { toast(L({ en: 'Please answer the allergies question — choose an allergy, Other, or None of the above.', es: 'Por favor responda la pregunta de alergias: elija una alergia, Otra o Ninguna de las anteriores.', ru: 'Пожалуйста, ответьте на вопрос об аллергии — выберите аллергию, «Другое» или «Ничего из перечисленного».' }), 'error'); return false; }
+        if (allergySel.includes('other') && !allergyOther.get()) { toast(L({ en: 'Please specify the other allergy.', es: 'Por favor especifique la otra alergia.', ru: 'Пожалуйста, укажите другую аллергию.' }), 'error'); return false; }
+        if (!condSel.length) { toast(L({ en: 'Please answer the conditions question — choose a condition, Other, or None of the above.', es: 'Por favor responda la pregunta de condiciones: elija una condición, Otra o Ninguna de las anteriores.', ru: 'Пожалуйста, ответьте на вопрос о заболеваниях — выберите заболевание, «Другое» или «Ничего из перечисленного».' }), 'error'); return false; }
+        if (condSel.includes('other') && !condOther.get()) { toast(L({ en: 'Please specify the other condition.', es: 'Por favor especifique la otra condición.', ru: 'Пожалуйста, укажите другое заболевание.' }), 'error'); return false; }
+        if (!noMeds.checked && !medList.length) { toast(L({ en: 'Please list your medications, or check "No medications".', es: 'Por favor indique sus medicamentos o marque «Sin medicamentos».', ru: 'Пожалуйста, укажите ваши лекарства или отметьте «Нет лекарств».' }), 'error'); return false; }
         Object.assign(m, {
           under_treatment: underTx.get(), hospitalized: hosp.get(), tobacco: tobacco.get(), pregnancy: pregnancy.get(),
           allergies: allergySel, conditions: condSel,
           allergies_other: allergySel.includes('other') ? allergyOther.get() : '',
           conditions_other: condSel.includes('other') ? condOther.get() : '',
-          medications: noMeds.checked ? [] : Array.from(medRows.children).map((r) => r._get()).filter((x) => x.name),
+          medications: noMeds.checked ? [] : medList,
         });
         // A3: record that a section was actively reviewed as "none".
         if (allergySel.includes('none')) m.allergies_none = true; else delete m.allergies_none;
@@ -313,7 +318,6 @@ export function renderKiosk(ctx) {
   function stepDental() {
     const dh = data.dental_history;
     const reason = textArea(t('intake.reason'), { value: dh.reason, rows: 2 });
-    const goals = textArea(t('intake.goals'), { value: dh.goals, rows: 2 });
     const prior = textField(t('intake.priorDentist'), { value: dh.prior_dentist });
     const yn = (k, label) => yesNo(label, { value: dh[k], yesText: t('common.yes'), noText: t('common.no') });
     const gum = yn('gum_bleeding', t('intake.gumBleeding'));
@@ -322,7 +326,6 @@ export function renderKiosk(ctx) {
     const grinding = yn('grinding', t('intake.grinding'));
     const postExt = yn('post_extraction_bleeding', t('intake.postExtraction'));
     const ortho = yn('ortho', t('intake.ortho'));
-    const cosmetic = yn('cosmetic', t('intake.cosmetic'));
     // "What do you need today?" on a 1–4 slider. Options 1 & 2 (extraction) add the
     // oral-surgery consent (may_need_extraction='yes'); this replaces the old yes/no
     // "are you in pain" question but drives the exact same consent trigger.
@@ -370,9 +373,8 @@ export function renderKiosk(ctx) {
 
     const node = el('div', {}, [
       el('div', { class: 'span-2' }, [reason.node]),
-      el('div', { class: 'span-2' }, [goals.node]),
       el('div', { class: 'form-grid' }, [
-        prior.node, gum.node, sores.node, jaw.node, grinding.node, postExt.node, ortho.node, cosmetic.node,
+        prior.node, gum.node, sores.node, jaw.node, grinding.node, postExt.node, ortho.node,
       ]),
       visitField,
     ]);
@@ -384,9 +386,9 @@ export function renderKiosk(ctx) {
         if (!visitNum) { toast(L({ en: 'Please choose what you need today.', es: 'Por favor elija qué necesita hoy.', ru: 'Пожалуйста, выберите, что вам нужно сегодня.' }), 'error'); return false; }
         const vopt = VOPTS[visitNum - 1];
         Object.assign(dh, {
-          reason: reason.get(), goals: goals.get(), prior_dentist: prior.get(),
+          reason: reason.get(), prior_dentist: prior.get(),
           gum_bleeding: gum.get(), sores: sores.get(), jaw_injury: jaw.get(), grinding: grinding.get(),
-          post_extraction_bleeding: postExt.get(), ortho: ortho.get(), cosmetic: cosmetic.get(),
+          post_extraction_bleeding: postExt.get(), ortho: ortho.get(),
           visit_type: vopt.key,
           may_need_extraction: vopt.surgery ? 'yes' : 'no',
         });
