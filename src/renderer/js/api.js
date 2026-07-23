@@ -62,6 +62,7 @@ export const api = {
   xrayFolderChoose: () => call('xrayFolderChoose', {}),
   xrayFolderLock: (opts) => call('xrayFolderLock', opts || {}),
   xrayFolderDelete: (name) => call('xrayFolderDelete', { name }),
+  deleteDiskFile: (path) => call('xrayDeleteFile', { path }),
   getXray: (id) => call('xrayGet', id),
   listXrays: (patientId) => call('xrayList', patientId),
   deleteXray: (id) => call('xrayDelete', id),

@@ -62,6 +62,7 @@ const PERMS = {
   'xray:folderChoose': ['admin', 'doctor'],
   'xray:folderLock': ['admin', 'doctor'],
   'xray:folderDelete': ['admin', 'doctor'],
+  'xray:deleteFile': ['admin', 'doctor'],
   'xray:get': ['admin', 'doctor', 'triage', 'emt', 'hygienist'],
   'xray:list': ['admin', 'doctor', 'triage', 'emt', 'checkout', 'hygienist'],
   'xray:delete': ['admin', 'doctor', 'triage', 'emt'],
@@ -270,6 +271,19 @@ function register(getMainWindow) {
     try { if (!fs.statSync(target).isFile()) throw new Error('Not a file.'); }
     catch (_) { return { ok: true, alreadyGone: true }; }
     fs.unlinkSync(target);
+    return { ok: true };
+  });
+
+  // Delete a source image file from the computer's drive by its absolute path,
+  // AFTER the doctor's uploaded X-ray has been filed to the chart. Guard to real
+  // image files that exist; a missing file is treated as already done.
+  const XRAY_DISK_EXT = { '.jpg': 1, '.jpeg': 1, '.png': 1, '.gif': 1, '.bmp': 1, '.webp': 1, '.tif': 1, '.tiff': 1, '.dex': 1, '.dexis': 1 };
+  handle('xray:deleteFile', async ({ path: p } = {}) => {
+    if (!p || typeof p !== 'string') throw new Error('No file specified.');
+    if (!XRAY_DISK_EXT[path.extname(p).toLowerCase()]) throw new Error('Refusing to delete a non-image file.');
+    try { if (!fs.statSync(p).isFile()) throw new Error('Not a file.'); }
+    catch (_) { return { ok: true, alreadyGone: true }; }
+    fs.unlinkSync(p);
     return { ok: true };
   });
 

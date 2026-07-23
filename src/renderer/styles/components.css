@@ -380,6 +380,22 @@
 .xray-setup-lock{ display:inline-flex; align-items:center; gap:6px; padding:3px 10px; border:var(--border-line); border-radius:999px; background:var(--surface); color:var(--text-muted); font-size:var(--fs-2xs); font-weight:var(--fw-medium); cursor:pointer; }
 .xray-setup-lock:hover{ color:var(--accent); border-color:var(--accent); }
 
+/* X-ray upload label form (centered popup) */
+.xray-add--primary{ border-style:solid; border-color:var(--accent); color:var(--accent); }
+.xray-form-card{ width:460px; }
+.xray-form-preview{ width:100%; max-height:40vh; object-fit:contain; background:#0d0f12; border-radius:var(--radius-sm); display:block; }
+.xray-form-q{ margin:14px 0 8px; font-weight:var(--fw-semibold); color:var(--text-strong); }
+.xray-form-opts{ display:grid; grid-template-columns:repeat(3,1fr); gap:8px; }
+.xray-opt{ display:flex; flex-direction:column; gap:2px; align-items:flex-start; padding:10px 12px; border:var(--border-line); border-radius:var(--radius-sm); background:var(--surface); cursor:pointer; text-align:left; transition:border-color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease); }
+.xray-opt:hover{ border-color:var(--accent); }
+.xray-opt.is-on{ border-color:var(--accent); background:color-mix(in srgb, var(--accent) 12%, transparent); }
+.xray-opt-title{ font-weight:var(--fw-semibold); color:var(--text-strong); }
+.xray-opt-sub{ font-size:var(--fs-2xs); color:var(--text-muted); }
+.xray-form-extra{ margin-top:12px; }
+.xray-form-extra:empty{ margin-top:0; }
+.xray-form-nameline{ margin-top:14px; font-size:var(--fs-xs); color:var(--text-muted); }
+.xray-form-name{ font-family:var(--font-mono); font-weight:var(--fw-semibold); color:var(--text-strong); word-break:break-all; }
+
 /* X-ray import wizard (centered popup) */
 .xray-wiz-wrap{ width:520px; max-width:100%; }
 .xray-wiz{ display:flex; flex-direction:column; }
