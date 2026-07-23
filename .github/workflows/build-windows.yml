@@ -47,16 +47,16 @@ jobs:
       - name: Publish downloadable release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.5.1-build.${{ github.run_number }}
-          name: Caring Hands v1.5.1 (build ${{ github.run_number }})
+          tag_name: v1.5.2-build.${{ github.run_number }}
+          name: Caring Hands v1.5.2 (build ${{ github.run_number }})
           prerelease: false
           make_latest: true
           body: |
-            ## Caring Hands Worldwide — Practice Management Software (v1.5.1)
+            ## Caring Hands Worldwide — Practice Management Software (v1.5.2)
 
             Offline-first dental clinic app for Windows. **Download the installer once — it auto-updates from here on.**
 
-            **New in v1.5.1 — the DEXIS X-ray import, made dead-simple**
+            **New in v1.5.2 — the complete DEXIS X-ray import workflow, end to end**
             - **Reads DEXIS files directly and converts them to JPEG.** You no longer have to export a JPG by hand. Caring Hands reads the DEXIS **`.dex`** file straight from the folder, pulls the image out, and converts it to a **JPEG** for the chart automatically. *(If a particular `.dex` is a fully proprietary format with no standard image inside, it's clearly flagged and you can fall back to DEXIS's Export-as-JPEG — we never attach an unreadable image.)*
             - **Set up once, then hidden.** At the start of the day, whoever sets up the X-ray computer picks the folder **once** and **locks** it. After that the dentist only ever sees a single **Import X-ray** button — no folder pickers, no confusion.
             - **A clean, center-screen popup.** Tapping Import opens a modern wizard that shows the X-ray **one at a time**, asks just two quick questions — **which tooth?** and **which area/quadrant?** — shows the auto-name live, and files it. A little filmstrip lets you flip through several captures.
@@ -143,8 +143,8 @@ jobs:
 
             Includes everything from v1.0.2–1.1.1 (optional Cloud Sync, triage-free flow, per-event staff, Oregon consent, USB workflow, accountability, Russian, in-app auto-update).
 
-            - **Caring-Hands-Setup-1.5.1.exe** — installer (recommended; required for auto-update).
-            - **Caring-Hands-Portable-1.5.1.exe** — portable (no auto-update).
+            - **Caring-Hands-Setup-1.5.2.exe** — installer (recommended; required for auto-update).
+            - **Caring-Hands-Portable-1.5.2.exe** — portable (no auto-update).
 
             First sign-in: `admin / admin` — then create your staff accounts. All clinical data stays on the device unless you enable Cloud Sync.
           files: |
