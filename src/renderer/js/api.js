@@ -57,7 +57,11 @@ export const api = {
 
   addXray: (p) => call('xrayAdd', p),
   setXrayTooth: (id, tooth) => call('xraySetTooth', { id, tooth }),
-  xrayFolderList: (opts) => call('xrayFolderList', opts || {}),
+  xrayFolderList: () => call('xrayFolderList', {}),
+  xrayFolderConfig: () => call('xrayFolderConfig', {}),
+  xrayFolderChoose: () => call('xrayFolderChoose', {}),
+  xrayFolderLock: (opts) => call('xrayFolderLock', opts || {}),
+  xrayFolderDelete: (name) => call('xrayFolderDelete', { name }),
   getXray: (id) => call('xrayGet', id),
   listXrays: (patientId) => call('xrayList', patientId),
   deleteXray: (id) => call('xrayDelete', id),

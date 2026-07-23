@@ -47,20 +47,24 @@ jobs:
       - name: Publish downloadable release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.5.0-build.${{ github.run_number }}
-          name: Caring Hands v1.5.0 (build ${{ github.run_number }})
+          tag_name: v1.5.1-build.${{ github.run_number }}
+          name: Caring Hands v1.5.1 (build ${{ github.run_number }})
           prerelease: false
           make_latest: true
           body: |
-            ## Caring Hands Worldwide — Practice Management Software (v1.5.0)
+            ## Caring Hands Worldwide — Practice Management Software (v1.5.1)
 
             Offline-first dental clinic app for Windows. **Download the installer once — it auto-updates from here on.**
 
-            **New in v1.5.0 — import X-rays from your imaging software (DEXIS) into the patient chart**
-            - On the **dentist's Treat screen**, the X-ray panel now has an **"Import X-ray"** button. It opens the folder where your imaging software saves images and shows the recent ones as thumbnails.
-            - You can **import several at once** — for each one, fill in the **tooth #** and pick a **quadrant** (Upper/Lower Right/Left), then tap **Add**. Each image is filed to the patient and **named automatically** as `Lastname_Firstname_<quadrant>_T<tooth>`.
-            - The assigned **tooth shows on the chart and prints on the record**, and X-rays sync to every laptop like the rest of the chart. You can re-assign a tooth later by clicking it on the X-ray.
-            - **One-time setup on the X-ray computer:** in DEXIS, export/save the captured image as a **JPG** to a folder, then point Caring Hands at that folder with **"Change folder"** (it remembers it). *Note: Caring Hands imports standard image files (JPG/PNG); it can't read DEXIS's internal ".dex" files directly, so the image needs to be exported as a JPG first.*
+            **New in v1.5.1 — the DEXIS X-ray import, made dead-simple**
+            - **Reads DEXIS files directly and converts them to JPEG.** You no longer have to export a JPG by hand. Caring Hands reads the DEXIS **`.dex`** file straight from the folder, pulls the image out, and converts it to a **JPEG** for the chart automatically. *(If a particular `.dex` is a fully proprietary format with no standard image inside, it's clearly flagged and you can fall back to DEXIS's Export-as-JPEG — we never attach an unreadable image.)*
+            - **Set up once, then hidden.** At the start of the day, whoever sets up the X-ray computer picks the folder **once** and **locks** it. After that the dentist only ever sees a single **Import X-ray** button — no folder pickers, no confusion.
+            - **A clean, center-screen popup.** Tapping Import opens a modern wizard that shows the X-ray **one at a time**, asks just two quick questions — **which tooth?** and **which area/quadrant?** — shows the auto-name live, and files it. A little filmstrip lets you flip through several captures.
+            - **Auto-names and auto-files.** Each image is named **`Lastname_Firstname_<area>_T<tooth>.jpg`** from your answers, attached to the patient, printed on the record, and synced to every laptop. You can re-assign the tooth later by clicking it.
+            - **Keeps the folder clean.** After an image is filed to the chart, Caring Hands **removes it from the folder** (a setting you can turn off), so the next patient's captures are never mixed up with the last patient's.
+
+            **From v1.5.0 — X-rays in the patient chart**
+            - The dentist's Treat screen gained the **X-ray panel** with tooth assignment, auto-naming, PDF printing, and cross-laptop sync — v1.5.1 makes the DEXIS import for it effortless.
 
             **From v1.4.10 — check-in form updates**
             - **"What do you need today?" scale.** The dental step asks what the patient needs on a simple **1–4 slider** (slide or tap a number): **1 = Extraction (in pain), 2 = Extraction (no pain), 3 = Filling, 4 = Dental cleaning** — replacing the old yes/no "are you in pain?" question. Choosing **1 or 2 (extraction)** automatically adds the **Oral Surgery consent**, so it's captured whenever an extraction is expected. The choice shows on the dentist's chart and the record.
@@ -139,8 +143,8 @@ jobs:
 
             Includes everything from v1.0.2–1.1.1 (optional Cloud Sync, triage-free flow, per-event staff, Oregon consent, USB workflow, accountability, Russian, in-app auto-update).
 
-            - **Caring-Hands-Setup-1.5.0.exe** — installer (recommended; required for auto-update).
-            - **Caring-Hands-Portable-1.5.0.exe** — portable (no auto-update).
+            - **Caring-Hands-Setup-1.5.1.exe** — installer (recommended; required for auto-update).
+            - **Caring-Hands-Portable-1.5.1.exe** — portable (no auto-update).
 
             First sign-in: `admin / admin` — then create your staff accounts. All clinical data stays on the device unless you enable Cloud Sync.
           files: |

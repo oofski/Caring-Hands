@@ -374,6 +374,30 @@
 .xray-viewer-img{ max-width:100%; max-height:74vh; display:block; margin:0 auto; border-radius:var(--radius-sm); background:#0d0f12; }
 .xray-count-badge{ display:inline-flex; align-items:center; gap:6px; font-family:var(--font-mono); font-weight:var(--fw-semibold); color:var(--text-strong); }
 
+/* X-ray folder setup (start-of-day) */
+.xray-setup{ margin:0 0 8px; }
+.xray-setup-card{ display:flex; align-items:center; gap:10px; padding:10px 12px; border:1px dashed var(--border-strong); border-radius:var(--radius-sm); background:var(--surface); }
+.xray-setup-lock{ display:inline-flex; align-items:center; gap:6px; padding:3px 10px; border:var(--border-line); border-radius:999px; background:var(--surface); color:var(--text-muted); font-size:var(--fs-2xs); font-weight:var(--fw-medium); cursor:pointer; }
+.xray-setup-lock:hover{ color:var(--accent); border-color:var(--accent); }
+
+/* X-ray import wizard (centered popup) */
+.xray-wiz-wrap{ width:520px; max-width:100%; }
+.xray-wiz{ display:flex; flex-direction:column; }
+.xray-wiz-top{ display:flex; justify-content:space-between; align-items:center; font-size:var(--fs-xs); font-weight:var(--fw-semibold); color:var(--text-strong); margin-bottom:8px; }
+.xray-wiz-preview{ width:100%; max-height:44vh; object-fit:contain; background:#0d0f12; border-radius:var(--radius-sm); cursor:zoom-in; display:block; }
+.xray-wiz-q{ display:flex; gap:12px; margin-top:14px; }
+.xray-wiz-nameline{ margin-top:8px; }
+.xray-wiz-fname{ font-family:var(--font-mono); font-weight:var(--fw-semibold); color:var(--text-strong); word-break:break-all; }
+.xray-wiz-actions{ display:flex; align-items:center; gap:8px; margin-top:16px; }
+.xray-wiz-strip{ display:flex; gap:6px; overflow-x:auto; margin-top:16px; padding-bottom:4px; }
+.xray-wiz-thumb{ width:52px; height:52px; flex:0 0 auto; object-fit:cover; border-radius:6px; cursor:pointer; border:2px solid transparent; opacity:.65; transition:opacity var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease); }
+.xray-wiz-thumb:hover{ opacity:1; }
+.xray-wiz-thumb.is-active{ border-color:var(--accent); opacity:1; }
+.xray-wiz-thumb.is-added{ opacity:.4; border-color:var(--success,#2f8f66); }
+.xray-wiz-msg{ padding:18px 4px; text-align:center; }
+.xray-wiz-done{ display:flex; flex-direction:column; align-items:center; gap:8px; padding:22px 4px; text-align:center; color:var(--success,#2f8f66); }
+.xray-wiz-warn{ display:flex; gap:8px; align-items:flex-start; margin-top:14px; padding:10px 12px; border:var(--border-line); border-left:3px solid var(--warning,#c98a1a); border-radius:var(--radius-sm); background:var(--surface); }
+
 /* ===== Doctor view layout ===== */
 .dv-meta{ display:flex; gap:18px; flex-wrap:wrap; align-items:center; }
 .dv-meta-item{ display:flex; flex-direction:column; }

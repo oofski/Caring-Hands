@@ -54,6 +54,7 @@ const PERMS = {
   'usbLoad': ['admin', 'doctor', 'triage', 'checkout'], 'usbUploadCheckout': ['admin', 'doctor', 'triage', 'checkout'], 'usbClear': ['admin', 'doctor', 'triage', 'checkout'],
   'triageSave': ['admin', 'doctor', 'triage'], 'treatmentSave': ['admin', 'doctor', 'hygienist'],
   'xrayAdd': ['admin', 'doctor', 'triage'], 'xraySetTooth': ['admin', 'doctor'], 'xrayGet': ['admin', 'doctor', 'triage', 'hygienist'], 'xrayList': ['admin', 'doctor', 'triage', 'hygienist'], 'xrayDelete': ['admin', 'doctor', 'triage'],
+  'xrayFolderConfig': ['admin', 'doctor'], 'xrayFolderChoose': ['admin', 'doctor'], 'xrayFolderLock': ['admin', 'doctor'], 'xrayFolderDelete': ['admin', 'doctor'],
   'pdfPreview': ['admin', 'doctor'], 'pdfGenerate': ['admin', 'doctor'], 'pdfPrint': ['admin', 'doctor'],
   'recordExportUsb': ['admin', 'doctor'], 'backupRun': ['admin'], 'exportEvent': ['admin'], 'auditList': ['admin'],
 };
@@ -65,6 +66,8 @@ function guard(name) {
   if (!allowed.includes(currentUser.role)) throw new Error('Your role does not have permission for this action.');
 }
 const okWrap = (fn, name) => async (payload) => { try { if (name) guard(name); return { ok: true, data: await fn(payload) }; } catch (e) { return { ok: false, error: e.message }; } };
+// Mutable stand-in for the DEXIS export folder used by the X-ray import wizard.
+let mockFolder = { dir: '', locked: false, clearAfter: true, images: [] };
 window.api = {
   invoke: async () => ({ ok: true }),
   authLogin: okWrap(({ username, password }) => { const u = db.login(username, password); if (!u) throw new Error('Invalid username or password.'); currentUser = u; return u; }),
@@ -108,7 +111,12 @@ window.api = {
   usbClear: okWrap(() => ({ cleared: 0 }), 'usbClear'),
   xrayAdd: okWrap((p) => db.addXray(currentUser, p.patientId, p), 'xrayAdd'),
   xraySetTooth: okWrap(({ id, tooth }) => db.updateXrayTooth(currentUser, id, tooth), 'xraySetTooth'),
-  xrayFolderList: async () => ({ ok: true, data: { dir: '', images: [] } }),
+  // In-memory stand-in for the DEXIS export folder (the real one lives in main).
+  xrayFolderList: async () => ({ ok: true, data: { dir: mockFolder.dir, locked: mockFolder.locked, clearAfter: mockFolder.clearAfter, needsSetup: !mockFolder.dir, images: mockFolder.images.slice() } }),
+  xrayFolderConfig: okWrap(() => ({ dir: mockFolder.dir, locked: mockFolder.locked, clearAfter: mockFolder.clearAfter }), 'xrayFolderConfig'),
+  xrayFolderChoose: okWrap(() => { mockFolder.dir = 'C:/DEXIS/Images'; return { dir: mockFolder.dir, locked: mockFolder.locked, clearAfter: mockFolder.clearAfter }; }, 'xrayFolderChoose'),
+  xrayFolderLock: okWrap((o) => { if (o.locked !== undefined) mockFolder.locked = !!o.locked; if (o.clearAfter !== undefined) mockFolder.clearAfter = !!o.clearAfter; return { dir: mockFolder.dir, locked: mockFolder.locked, clearAfter: mockFolder.clearAfter }; }, 'xrayFolderLock'),
+  xrayFolderDelete: okWrap(({ name }) => { mockFolder.images = mockFolder.images.filter((im) => im.name !== name); return { ok: true }; }, 'xrayFolderDelete'),
   xrayGet: okWrap((id) => db.getXray(id), 'xrayGet'),
   xrayList: okWrap((id) => db.listXrays(id), 'xrayList'),
   xrayDelete: okWrap((id) => db.deleteXray(currentUser, id), 'xrayDelete'),
@@ -598,6 +606,64 @@ async function main() {
     const provX = (await import('../src/renderer/js/views/provider.js')).renderProvider(ctx5, { id: xp.id }); document.body.append(provX); await tick(); await tick();
     log(/Import X-ray/i.test(provX.textContent), 'v1.5.0: the dentist chart shows an "Import X-ray" action');
     log(/Tooth 14/.test(provX.textContent), 'v1.5.0: the imported x-ray shows its assigned tooth on the chart');
+  }
+
+  // ---- v1.5.1: locked folder setup, .dex→JPEG conversion, center wizard, auto-clear ----
+  {
+    const xf = (await import('../src/main/xrayFolder.js')).default;
+    // A DEXIS .dex wrapping an embedded JPEG is extracted losslessly.
+    const jpeg = Buffer.from([0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46, 0x00, 0x01, 0xFF, 0xD9]);
+    const dex = Buffer.concat([Buffer.from([0x44, 0x45, 0x58, 0x00, 0, 1, 2, 3]), jpeg, Buffer.from([9, 9, 9])]);
+    const ex = xf.extractStandardImage(dex);
+    log(!!ex && ex.mime === 'image/jpeg' && ex.buf.length === jpeg.length, 'v1.5.1: an embedded JPEG is extracted from a DEXIS .dex file');
+    log(xf.extractStandardImage(Buffer.from([1, 2, 3, 4, 5, 6, 7, 8, 9, 10])) === null, 'v1.5.1: a .dex with no standard image is reported unreadable (never attached as garbage)');
+    // Auto-clear path guard: only a bare image basename inside the folder is deletable.
+    let guarded = 0;
+    for (const bad of ['../secret.jpg', 'sub/a.jpg', 'notes.txt']) { try { xf.resolveFolderTarget('C:/DEXIS', bad); } catch (_) { guarded++; } }
+    log(guarded === 3, 'v1.5.1: folder auto-clear refuses path traversal, nested paths, and non-image files');
+    log(typeof xf.resolveFolderTarget('C:/DEXIS', 'Xu_Ada_UR_T9.jpg') === 'string', 'v1.5.1: a plain image basename inside the folder is a valid delete target');
+
+    currentUser = db.login('admin', 'admin');
+    const store51 = (await import('../src/renderer/js/store.js')).store; store51.setUser(currentUser);
+    const ctx51 = { navigate: () => {}, toast: () => {}, store: store51, setDetail: () => {} };
+    const renderProvider = (await import('../src/renderer/js/views/provider.js')).renderProvider;
+    const yp = db.createPatient(currentUser, { first_name: 'Ada', last_name: 'Xu', demographics: {}, medical_history: {}, dental_history: {}, consents: [] });
+    db.saveVitals(currentUser, yp.id, { bp_systolic: '118', bp_diastolic: '76', heart_rate: '66' });
+    db.routePatient(currentUser, yp.id, 'dentist');
+
+    // (a) not configured → setup prompt; (b) locked → prompt hidden, chip only.
+    mockFolder = { dir: '', locked: false, clearAfter: true, images: [] };
+    let pv = renderProvider(ctx51, { id: yp.id }); document.body.append(pv); await tick(); await tick();
+    log(/Set up the X-ray folder/i.test(pv.textContent), 'v1.5.1: with no folder set, the dentist chart shows a "Set up the X-ray folder" prompt');
+    mockFolder = { dir: 'C:/DEXIS/Images', locked: true, clearAfter: true, images: [] };
+    pv = renderProvider(ctx51, { id: yp.id }); document.body.append(pv); await tick(); await tick();
+    log(/X-ray folder ready/i.test(pv.textContent) && !/Set up the X-ray folder/i.test(pv.textContent), 'v1.5.1: once locked, the setup prompt is hidden — only a small "folder ready" chip remains');
+
+    // The center import wizard.
+    const jdu = 'data:image/jpeg;base64,/9j/AAAA';
+    mockFolder = { dir: 'C:/DEXIS/Images', locked: true, clearAfter: true, images: [
+      { name: 'shot1.jpg', kind: 'image', from: '.jpg', dataUrl: jdu },
+      { name: 'scan2.dex', kind: 'converted', from: '.dex', dataUrl: jdu },
+      { name: 'bad3.dex', kind: 'unreadable', from: '.dex', reason: 'no embedded image' },
+    ] };
+    pv = renderProvider(ctx51, { id: yp.id }); document.body.append(pv); await tick(); await tick();
+    const importTile = Array.from(pv.querySelectorAll('.xray-add')).find((tl) => /Import X-ray/i.test(tl.textContent));
+    importTile.click(); await tick(); await tick(); await tick();
+    const wiz = document.querySelector('.xray-wiz');
+    log(!!wiz && !!wiz.querySelector('.xray-wiz-preview'), 'v1.5.1: tapping Import opens a centered wizard with a large image preview');
+    log(/Which tooth\?/i.test(wiz.textContent) && /Area \/ quadrant/i.test(wiz.textContent), 'v1.5.1: the wizard asks a couple of quick questions (tooth + area)');
+    log(wiz.querySelectorAll('.xray-wiz-thumb').length === 2, 'v1.5.1: only the two readable images appear in the wizard (the unreadable .dex is excluded)');
+    log(/couldn’t be read/i.test(wiz.textContent), 'v1.5.1: the unreadable DEXIS file is flagged with export-as-JPEG guidance');
+    const toothIn = wiz.querySelector('input');
+    toothIn.value = '9'; toothIn.dispatchEvent(new window.Event('input', { bubbles: true }));
+    const quadSel = wiz.querySelector('select'); quadSel.value = 'UR'; quadSel.dispatchEvent(new window.Event('change', { bubbles: true }));
+    log(/Xu_Ada_UR_T9\.jpg/.test(wiz.textContent), 'v1.5.1: the file is auto-named Lastname_Firstname_area_tooth.jpg from the answers');
+    const before = db.listXrays(yp.id).length;
+    const addBtn = Array.from(wiz.querySelectorAll('button')).find((b) => /Add to chart/i.test(b.textContent));
+    addBtn.click(); await tick(); await tick(); await tick();
+    const afterX = db.listXrays(yp.id);
+    log(afterX.length === before + 1 && /_UR_T9\.jpg$/.test(afterX[afterX.length - 1].note), 'v1.5.1: Add files the x-ray to the chart under its .jpg name');
+    log(!mockFolder.images.some((im) => im.name === 'shot1.jpg'), 'v1.5.1: after import the source file is removed from the folder (auto-clear keeps it clean)');
   }
 
   await tick();
