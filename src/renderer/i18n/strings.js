@@ -53,6 +53,8 @@ export const CONDITIONS = [
   { key: 'latex', flag: true, en: 'Latex allergy', es: 'Alergia al látex' },
   { key: 'anesthesia_reaction', flag: true, en: 'Reaction to anesthesia', es: 'Reacción a la anestesia' },
   { key: 'pregnant', flag: true, en: 'Currently pregnant', es: 'Actualmente embarazada' },
+  { key: 'pain_mgmt', flag: false, en: 'Pain management program', es: 'Programa de manejo del dolor' },
+  { key: 'weight_mgmt', flag: false, en: 'Weight management program', es: 'Programa de manejo de peso' },
 ];
 
 export const ALLERGIES = [

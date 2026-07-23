@@ -335,6 +335,64 @@
 .awareness strong{ font-family:var(--font-mono); font-size:var(--fs-h2); color:var(--warning); }
 .num-col{ text-align:right; }
 
+/* ===== Reports dashboard ===== */
+.kpi-grid{ display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:14px; margin-bottom:18px; }
+.kpi{ position:relative; padding:16px 18px; border-radius:var(--radius-lg); border:var(--border-line); background:var(--surface-raised); box-shadow:var(--shadow-xs); display:flex; flex-direction:column; gap:2px; }
+.kpi-ico{ width:34px; height:34px; border-radius:var(--radius-md); display:grid; place-items:center; background:var(--surface-sunken); color:var(--accent); margin-bottom:8px; }
+.kpi-val{ font-size:var(--fs-h1); line-height:1.05; font-weight:var(--fw-bold); color:var(--text-strong); font-family:var(--font-mono); }
+.kpi-label{ font-size:var(--fs-sm); color:var(--text-muted); }
+.kpi-sub{ font-size:var(--fs-2xs); color:var(--text-subtle); margin-top:2px; }
+.kpi--accent{ background:var(--accent); border-color:transparent; color:#fff; }
+.kpi--accent .kpi-ico{ background:rgba(255,255,255,.18); color:#fff; }
+.kpi--accent .kpi-val{ color:#fff; }
+.kpi--accent .kpi-label{ color:rgba(255,255,255,.88); }
+.kpi--accent .kpi-sub{ color:rgba(255,255,255,.72); }
+
+.dash-grid{ display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-bottom:16px; }
+@media (max-width:820px){ .dash-grid{ grid-template-columns:1fr; } }
+.card-sub-title{ font-size:var(--fs-2xs); text-transform:uppercase; letter-spacing:.06em; color:var(--text-subtle); font-weight:var(--fw-semibold); margin:16px 0 8px; }
+
+.ring-wrap{ display:flex; align-items:center; gap:20px; flex-wrap:wrap; }
+.ring-track{ width:132px; height:132px; border-radius:50%; display:grid; place-items:center; flex:none; }
+.ring-hole{ width:98px; height:98px; border-radius:50%; background:var(--surface-raised); display:grid; place-items:center; text-align:center; }
+.ring-top{ font-size:var(--fs-h2); font-weight:var(--fw-bold); color:var(--text-strong); font-family:var(--font-mono); }
+.ring-sub{ font-size:var(--fs-2xs); color:var(--text-muted); }
+.ring-legend{ display:flex; flex-direction:column; gap:8px; flex:1; min-width:130px; }
+.ring-leg{ display:flex; align-items:center; gap:8px; font-size:var(--fs-sm); }
+.ring-leg-label{ color:var(--text-muted); }
+.ring-leg-val{ margin-left:auto; font-weight:var(--fw-semibold); color:var(--text-strong); }
+
+.demo-group{ margin-top:6px; }
+.demo-group + .demo-group{ margin-top:16px; }
+.demo-h{ font-size:var(--fs-2xs); text-transform:uppercase; letter-spacing:.06em; color:var(--text-subtle); font-weight:var(--fw-semibold); margin-bottom:8px; }
+.demo-group .bar-row{ grid-template-columns:110px 1fr 30px; }
+
+/* ===== Clinic dashboard: clickable KPIs + live CRM stage board ===== */
+.stat-card--link{ cursor:pointer; text-align:left; font:inherit; transition:border-color var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease); }
+.stat-card--link:hover{ border-color:var(--accent); transform:translateY(-1px); box-shadow:var(--shadow-sm); }
+
+.live-badge{ display:inline-flex; align-items:center; gap:6px; font-size:var(--fs-2xs); text-transform:uppercase; letter-spacing:.05em; color:var(--success); font-weight:var(--fw-bold); }
+.live-badge .dot{ width:8px; height:8px; border-radius:50%; background:var(--success); animation:livepulse 1.8s ease-in-out infinite; }
+@keyframes livepulse{ 0%,100%{ opacity:.3 } 50%{ opacity:1 } }
+
+.crm-card-wrap{ padding:14px; }
+.crm-board{ display:flex; gap:14px; overflow-x:auto; padding-bottom:6px; }
+.crm-col{ flex:0 0 236px; width:236px; background:var(--surface-sunken); border:1px solid var(--border-subtle); border-radius:var(--radius-md); display:flex; flex-direction:column; max-height:62vh; }
+.crm-col-head{ display:flex; align-items:center; gap:8px; padding:10px 12px; border-bottom:1px solid var(--border-subtle); }
+.crm-col-dot{ width:9px; height:9px; border-radius:50%; flex:none; }
+.crm-col-label{ font-size:var(--fs-2xs); text-transform:uppercase; letter-spacing:.04em; font-weight:var(--fw-bold); color:var(--text-strong); }
+.crm-col-count{ margin-left:auto; font-family:var(--font-mono); font-size:var(--fs-2xs); font-weight:var(--fw-semibold); color:var(--text-muted); background:var(--surface-raised); border-radius:999px; padding:1px 8px; }
+.crm-col-body{ display:flex; flex-direction:column; gap:8px; padding:10px; overflow-y:auto; }
+.crm-card{ display:flex; flex-direction:column; gap:4px; padding:10px; border:var(--border-line); border-radius:var(--radius-sm); background:var(--surface-raised); cursor:pointer; text-align:left; width:100%; font:inherit; transition:border-color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease); }
+.crm-card:hover{ border-color:var(--accent); box-shadow:var(--shadow-xs); }
+.crm-card-top{ display:flex; align-items:center; justify-content:space-between; gap:6px; }
+.crm-card-name{ font-size:var(--fs-sm); color:var(--text-strong); }
+.crm-card-meta{ font-size:var(--fs-2xs); color:var(--text-muted); }
+.crm-card-foot{ display:flex; gap:6px; align-items:center; margin-top:2px; flex-wrap:wrap; }
+.crm-chip{ display:inline-flex; align-items:center; gap:3px; font-size:var(--fs-2xs); color:var(--text-subtle); background:var(--surface-sunken); border-radius:999px; padding:1px 7px; }
+.crm-chip--warn{ color:var(--danger); background:color-mix(in srgb, var(--danger) 12%, transparent); font-weight:var(--fw-semibold); }
+.crm-empty{ font-size:var(--fs-2xs); color:var(--text-subtle); text-align:center; padding:16px 0; }
+
 /* v1.0.6: vitals grid, generic box, quadrant control */
 .vitals-grid{ display:grid; grid-template-columns:repeat(3,1fr); gap:12px; }
 @media (max-width:640px){ .vitals-grid{ grid-template-columns:1fr; } }

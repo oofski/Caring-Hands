@@ -594,6 +594,56 @@ async function main() {
     log(!!nov && nov.intake === false && /Novocain/i.test(nov.label), 'v1.4.8: a legacy Novocain allergy still resolves for display but is not offered at check-in');
   }
 
+  // ---- Health History: pain-management + weight-management program checkboxes ----
+  {
+    const cs = (await import('../src/renderer/js/i18n.js')).conditions();
+    const pain = cs.find((c) => c.key === 'pain_mgmt');
+    const weight = cs.find((c) => c.key === 'weight_mgmt');
+    log(!!pain && /pain management/i.test(pain.label) && pain.flag !== true, 'health history: "Pain management program" is offered as a condition checkbox (not a red flag)');
+    log(!!weight && /weight management/i.test(weight.label) && weight.flag !== true, 'health history: "Weight management program" is offered as a condition checkbox (not a red flag)');
+    // A patient can check them and they persist on the record.
+    currentUser = db.login('admin', 'admin');
+    const hp = db.createPatient(currentUser, { first_name: 'Pat', last_name: 'Hh', demographics: {}, medical_history: { conditions: ['pain_mgmt', 'weight_mgmt'] }, dental_history: {}, consents: [] });
+    log((db.getPatient(hp.id).medical_history.conditions || []).includes('pain_mgmt') && (db.getPatient(hp.id).medical_history.conditions || []).includes('weight_mgmt'), 'health history: the two program selections save on the patient record');
+  }
+
+  // ---- v1.5.14: dashboard live CRM board + clickable KPIs; reports dashboard ----
+  {
+    currentUser = db.login('admin', 'admin');
+    const store14 = (await import('../src/renderer/js/store.js')).store; store14.setUser(currentUser);
+    let navTo = null;
+    const ctx14 = { navigate: (v) => { navTo = v; }, toast: () => {}, store: store14, setDetail: () => {} };
+
+    // Patients spread across the pipeline stages.
+    const a = db.createPatient(currentUser, { first_name: 'Al', last_name: 'Aa', demographics: {}, medical_history: {}, dental_history: {}, consents: [] }); // checked in, no vitals
+    const b = db.createPatient(currentUser, { first_name: 'Bo', last_name: 'Bb', demographics: {}, medical_history: {}, dental_history: {}, consents: [] });
+    db.saveVitals(currentUser, b.id, { bp_systolic: '120', bp_diastolic: '80', heart_rate: '70' }); // vitals in, not routed
+    const c = db.createPatient(currentUser, { first_name: 'Cy', last_name: 'Cc', demographics: {}, medical_history: {}, dental_history: {}, consents: [] });
+    db.saveVitals(currentUser, c.id, { bp_systolic: '118', bp_diastolic: '76', heart_rate: '66' }); db.routePatient(currentUser, c.id, 'dentist'); // ready
+
+    const dash = (await import('../src/renderer/js/views/dashboard.js')).renderDashboard(ctx14);
+    document.body.append(dash); await tick(); await tick();
+    const txt = dash.textContent;
+    log(['Checked in', 'Vitals', 'Ready for treatment', 'Hygienist', 'Dentist', 'Checked out'].every((s) => txt.includes(s)), 'v1.5.14: dashboard shows the live stage board with all six columns');
+    log(/Aa, Al/.test(txt) && /Bb, Bo/.test(txt) && /Cc, Cy/.test(txt), 'v1.5.14: patients appear as cards on the board');
+    log(/Start patient check-in/i.test(txt) && /Live/.test(txt), 'v1.5.14: check-in moved to the header and the board is marked Live');
+    log(!/Quick actions/i.test(txt) && !/Back up to USB/i.test(txt), 'v1.5.14: the old Quick Actions grid and dashboard USB backup are gone');
+    // A KPI card is clickable and navigates.
+    const linkCard = dash.querySelector('.stat-card--link');
+    log(!!linkCard, 'v1.5.14: KPI stat cards are clickable');
+    linkCard.click(); await tick();
+    log(!!navTo, 'v1.5.14: clicking a KPI card navigates to its station');
+
+    // Reports dashboard renders its KPIs + demographics.
+    navTo = null;
+    const rep = (await import('../src/renderer/js/views/reports.js')).renderReports(ctx14);
+    document.body.append(rep); await tick(); await tick();
+    const rtxt = rep.textContent;
+    log(/Patients seen/i.test(rtxt) && /X-rays uploaded/i.test(rtxt), 'v1.5.14: reports shows KPI cards (patients, X-ray uploads, procedures)');
+    log(/Patient demographics/i.test(rtxt) && /By gender/i.test(rtxt) && /By age/i.test(rtxt), 'v1.5.14: reports breaks patients down by demographics');
+    log(!!rep.querySelector('.ring-track') && !!rep.querySelector('.kpi-grid'), 'v1.5.14: reports renders the completion ring + KPI grid');
+  }
+
   // ---- v1.5.0: X-ray import — per-x-ray tooth + auto-name, synced; import tile. ----
   {
     currentUser = db.login('admin', 'admin');

@@ -4,6 +4,30 @@ import { api } from '../api.js';
 import { store } from '../store.js';
 import { icon } from '../icons.js';
 
+// The clinic pipeline as visual columns — where every patient physically is,
+// live. Computed from each patient's status + route + whether vitals are in.
+const STAGES = [
+  { key: 'checkin', label: 'Checked in', color: 'var(--info)' },
+  { key: 'vitals', label: 'Vitals', color: 'var(--accent)' },
+  { key: 'ready', label: 'Ready for treatment', color: 'var(--accent)' },
+  { key: 'hygienist', label: 'Hygienist', color: 'var(--warning)' },
+  { key: 'dentist', label: 'Dentist', color: 'var(--warning)' },
+  { key: 'done', label: 'Checked out', color: 'var(--success)' },
+];
+function stageOf(p) {
+  if (p.status === 'completed' || p.status === 'dismissed') return 'done';
+  if (p.status === 'in_treatment') return p.route === 'hygienist' ? 'hygienist' : 'dentist';
+  if (p.status === 'triaged') return 'ready';
+  return p.has_vitals ? 'vitals' : 'checkin'; // checked_in
+}
+function minsSince(iso) {
+  if (!iso) return null;
+  const ms = Date.now() - new Date(iso).getTime();
+  if (isNaN(ms)) return null;
+  return Math.max(0, Math.round(ms / 60000));
+}
+const waitLabel = (m) => (m == null ? '' : (m < 60 ? `${m}m` : `${Math.floor(m / 60)}h ${m % 60}m`));
+
 export function renderDashboard(ctx) {
   const root = el('div', { class: 'view' });
 
@@ -13,45 +37,35 @@ export function renderDashboard(ctx) {
     ]);
     store.setEvent(event);
 
+    // Which view each KPI card opens, for the current role (null = not clickable).
+    const can = (...r) => store.can(...r);
+    function navFor(kind) {
+      if (kind === 'vitals') return can('admin', 'emt', 'triage') ? 'emt' : null;
+      if (kind === 'ready' || kind === 'treatment') {
+        if (can('admin', 'doctor')) return 'provider';
+        if (can('hygienist')) return 'hygienist';
+        if (can('emt', 'triage')) return 'emt';
+        return null;
+      }
+      if (kind === 'done') return can('admin', 'checkout') ? 'checkout' : (can('doctor') ? 'records' : null);
+      // 'all' → the role's live patient list
+      if (store.is('admin')) return 'management';
+      if (can('emt', 'triage')) return 'emt';
+      if (can('doctor')) return 'provider';
+      if (can('hygienist')) return 'hygienist';
+      if (can('checkout')) return 'checkout';
+      return null;
+    }
+
     const statCards = [
-      { label: t('dash.total'), value: stats.total, ic: 'users' },
-      { label: t('dash.waiting'), value: stats.waiting_triage, ic: 'syringe', warn: stats.waiting_triage > 0 },
-      { label: t('dash.triaged'), value: stats.triaged, ic: 'clipboard' },
-      { label: t('dash.inTreatment'), value: stats.in_treatment, ic: 'tooth' },
-      { label: t('dash.completed'), value: stats.completed, ic: 'checkCircle' },
+      { label: t('dash.total'), value: stats.total, ic: 'users', kind: 'all' },
+      { label: t('dash.waiting'), value: stats.waiting_triage, ic: 'syringe', warn: stats.waiting_triage > 0, kind: 'vitals' },
+      { label: t('dash.triaged'), value: stats.triaged, ic: 'clipboard', kind: 'ready' },
+      { label: t('dash.inTreatment'), value: stats.in_treatment, ic: 'tooth', kind: 'treatment' },
+      { label: t('dash.completed'), value: stats.completed, ic: 'checkCircle', kind: 'done' },
     ];
 
-    const qa = (cls, ic, title, sub, onClick) => el('button', { class: 'qa-card' + cls, onClick }, [
-      el('span', { class: 'qa-icon' }, [icon(ic, { size: 18 })]),
-      el('span', {}, [el('strong', {}, [title]), el('small', {}, [sub])]),
-    ]);
-    const quick = el('div', { class: 'quick-actions' }, [
-      qa(' qa-card--primary', 'clipboard', t('dash.startCheckin'), 'Hand the device to a patient', () => ctx.navigate('kiosk')),
-      store.can('admin', 'emt', 'triage') ? qa('', 'syringe', t('dash.viewQueue'), `${stats.waiting_triage} waiting`, () => ctx.navigate('emt')) : null,
-      store.can('admin', 'emt') ? qa('', 'syringe', 'Record vitals', 'Enter BP & heart rate', () => ctx.navigate('emt')) : null,
-      store.can('admin', 'doctor') ? qa('', 'tooth', t('nav.provider'), `${stats.triaged} ready`, () => ctx.navigate('provider')) : null,
-      store.can('admin', 'hygienist') ? qa('', 'sparkle', t('nav.hygienist'), `${stats.triaged} ready`, () => ctx.navigate('hygienist')) : null,
-      store.can('admin', 'checkout') ? qa('', 'checkCircle', 'Check-out', `${stats.completed} completed`, () => ctx.navigate('checkout')) : null,
-      store.can('admin') ? qa('', 'database', 'Back up to USB', 'Save a full database copy', async () => {
-        try { const r = await api.backup(); if (r.saved) ctx.toast(`Backed up to ${r.path}`, 'success'); } catch (e) { ctx.toast(e.message, 'error'); }
-      }) : null,
-    ]);
-
-    const recent = el('table', { class: 'data-table' }, [
-      el('thead', {}, [el('tr', {}, ['Patient', 'Age', 'Complaint', 'Status', ''].map((h) => el('th', {}, [h])))]),
-      el('tbody', {}, patients.slice(0, 12).map((p) => el('tr', {}, [
-        el('td', {}, [el('strong', {}, [`${p.last_name}, ${p.first_name}`]),
-          (p.flags && p.flags.length) ? el('span', { class: 'flag-dot', title: `${p.flags.length} medical flag(s)` }, [icon('flag', { size: 13 }), String(p.flags.length)]) : null]),
-        el('td', { class: 'num' }, [p.age != null ? String(p.age) : '—']),
-        el('td', {}, [p.complaint || '—']),
-        el('td', {}, [statusPill(p.status)]),
-        el('td', {}, [el('button', { class: 'btn btn--ghost btn--sm', onClick: () => openByStatus(p) }, ['Open'])]),
-      ]))),
-    ]);
-    if (!patients.length) recent.querySelector('tbody').append(el('tr', {}, [el('td', { colspan: 5, class: 'empty' }, ['No patients checked in yet.'])]));
-
-    // Route "Open" to a view the current role is actually allowed to see —
-    // never to an unregistered view that would bounce back with access denied.
+    // Route "open" to a view the current role may actually see.
     function openByStatus(p) {
       const go = (view) => ctx.navigate(view, { id: p.id });
       const canEmt = store.can('admin', 'emt', 'triage');
@@ -66,7 +80,7 @@ export function renderDashboard(ctx) {
         else if (canEmt) go('emt');
         else if (canRecords) go('records');
         else ctx.toast('This patient is with a treatment provider.', 'info');
-      } else { // completed / dismissed
+      } else {
         if (store.can('admin', 'checkout')) go('checkout');
         else if (canRecords) go('records');
         else if (store.can('admin', 'doctor')) go('provider');
@@ -74,8 +88,34 @@ export function renderDashboard(ctx) {
       }
     }
 
-    // mount() clears and skips null children — root.append(null) would render
-    // a literal "null" text node for non-admin roles (backup banner below).
+    // ---- Live CRM board ----
+    const groups = {}; STAGES.forEach((s) => { groups[s.key] = []; });
+    patients.forEach((p) => { groups[stageOf(p)].push(p); });
+
+    const crmCard = (p) => {
+      const foot = [];
+      const wl = waitLabel(minsSince(p.created_at));
+      if (wl) foot.push(el('span', { class: 'crm-chip', title: 'Time since check-in' }, [icon('calendar', { size: 10 }), wl]));
+      if (p.on_thinner) foot.push(el('span', { class: 'crm-chip crm-chip--warn', title: 'On blood thinner — verify before extraction' }, ['Thinner']));
+      return el('button', { class: 'crm-card', onClick: () => openByStatus(p) }, [
+        el('div', { class: 'crm-card-top' }, [
+          el('strong', { class: 'crm-card-name' }, [`${p.last_name}, ${p.first_name}`]),
+          (p.flags && p.flags.length) ? el('span', { class: 'flag-dot', title: `${p.flags.length} medical flag(s)` }, [icon('flag', { size: 11 }), String(p.flags.length)]) : null,
+        ]),
+        el('div', { class: 'crm-card-meta' }, [`${p.age != null ? p.age + ' yrs' : ''}${p.complaint ? (p.age != null ? ' · ' : '') + p.complaint : ''}` || '—']),
+        foot.length ? el('div', { class: 'crm-card-foot' }, foot) : null,
+      ]);
+    };
+    const board = el('div', { class: 'crm-board' }, STAGES.map((s) => el('div', { class: 'crm-col' }, [
+      el('div', { class: 'crm-col-head' }, [
+        el('span', { class: 'crm-col-dot', style: `background:${s.color}` }),
+        el('span', { class: 'crm-col-label' }, [s.label]),
+        el('span', { class: 'crm-col-count' }, [String(groups[s.key].length)]),
+      ]),
+      el('div', { class: 'crm-col-body' }, groups[s.key].length ? groups[s.key].map(crmCard) : [el('div', { class: 'crm-empty' }, ['No patients here.'])]),
+    ])));
+
+    // mount() clears + skips null children.
     mount(root,
       el('div', { class: 'view-head' }, [
         el('div', {}, [
@@ -89,26 +129,42 @@ export function renderDashboard(ctx) {
             event && event.location ? ` · ${event.location}` : '',
           ]),
         ]),
+        el('div', { class: 'view-head-actions' }, [
+          el('button', { class: 'btn btn--primary', onClick: () => ctx.navigate('kiosk') }, [icon('clipboard', { size: 16 }), t('dash.startCheckin')]),
+          el('button', { class: 'btn btn--ghost btn--sm', onClick: load }, [icon('refresh', { size: 15 }), 'Refresh']),
+        ]),
       ]),
-      el('div', { class: 'stat-row' }, statCards.map((s) =>
-        el('div', { class: 'stat-card' }, [
+
+      // Clickable KPI cards — each opens its stage's station.
+      el('div', { class: 'stat-row' }, statCards.map((s) => {
+        const target = navFor(s.kind);
+        const kids = [
           el('div', { class: 'stat-head' }, [icon(s.ic, { size: 16 })]),
           el('div', { class: 'stat-value' + (s.warn ? ' stat-value--warn' : '') }, [String(s.value)]),
           el('div', { class: 'stat-label' }, [s.label]),
-        ])
-      )),
-      el('h2', { class: 'section-title' }, [t('dash.quick')]),
-      quick,
+        ];
+        return target
+          ? el('button', { class: 'stat-card stat-card--link', title: `Open ${s.label}`, onClick: () => ctx.navigate(target) }, kids)
+          : el('div', { class: 'stat-card' }, kids);
+      })),
+
       el('div', { class: 'section-title-row' }, [
-        el('h2', { class: 'section-title' }, [t('dash.recent')]),
-        el('button', { class: 'btn btn--ghost btn--sm', onClick: load }, [icon('refresh', { size: 15 }), 'Refresh']),
+        el('h2', { class: 'section-title' }, ['Patient flow']),
+        el('span', { class: 'live-badge' }, [el('span', { class: 'dot' }), 'Live']),
       ]),
-      el('div', { class: 'card' }, [el('div', { class: 'data-table-wrap' }, [recent])]),
-      store.can('admin') ? el('div', { class: 'note-banner' }, [icon('database', { size: 16 }), t('dash.backupPrompt')]) : null,
+      el('div', { class: 'card crm-card-wrap' }, [board]),
+      !patients.length ? el('p', { class: 'muted', style: 'margin-top:10px' }, ['No patients checked in yet — tap “Start patient check-in” to begin.']) : null,
     );
   }
 
   load().catch((e) => ctx.toast(e.message, 'error'));
+  // Live refresh so the board reflects where patients are without a manual reload.
+  // unref() keeps this from holding the process open in the test harness.
+  const timer = setInterval(() => {
+    if (!root.isConnected) { clearInterval(timer); return; }
+    load().catch(() => {});
+  }, 15000);
+  if (timer && typeof timer.unref === 'function') timer.unref();
   return root;
 }
 

@@ -47,16 +47,23 @@ jobs:
       - name: Publish downloadable release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.5.13-build.${{ github.run_number }}
-          name: Caring Hands v1.5.13 (build ${{ github.run_number }})
+          tag_name: v1.5.14-build.${{ github.run_number }}
+          name: Caring Hands v1.5.14 (build ${{ github.run_number }})
           prerelease: false
           make_latest: true
           body: |
-            ## Caring Hands Worldwide — Practice Management Software (v1.5.13)
+            ## Caring Hands Worldwide — Practice Management Software (v1.5.14)
 
             Offline-first dental clinic app for Windows. **Download the installer once — it auto-updates from here on.**
 
-            **New in v1.5.13 — a simple, reliable X-ray upload**
+            **New in v1.5.14 — a live dashboard, a real reports dashboard, and more**
+            - **Live patient-flow board on the dashboard.** The dashboard now shows a **live board** of where every patient physically is in the clinic — columns for **Checked in → Vitals → Ready for treatment → Hygienist → Dentist → Checked out** — with a card per patient (name, age, complaint, wait time, medical-flag and blood-thinner markers). It refreshes on its own, so anyone can glance at it and see the whole floor at a moment.
+            - **Tap a number to jump there.** The top stat cards are now buttons — tap **Waiting for vitals** to open the vitals station, **Ready for treatment** to open the dentist, and so on. The old "Quick actions" strip is gone; the cards *are* the actions.
+            - **Start check-in is front-and-center.** The **Start patient check-in** button now sits in the **top-right** of the dashboard. **Back up to USB** moved to **Admin → Backup & export** (where the export tools already live), keeping the dashboard clean.
+            - **Reports is now a real analytics dashboard.** The Reports tab was redesigned: headline **KPI cards** (patients seen, completed, **X-rays uploaded**, extractions, fillings, cleanings), a **visit-completion ring**, a **patient demographics** breakdown (by **gender, age, and language**), a **procedures & imaging** breakdown, most-common conditions, and a per-day table. Everything is pulled live from the records; use the event selector to scope it, or **Export JSON** (admin).
+            - **Health history:** added **Pain management program** and **Weight management program** as check-in condition checkboxes.
+
+            **From v1.5.13 — a simple, reliable X-ray upload**
             - **One button: Add X-ray.** On the dentist's Treat screen, tap **Add X-ray** and pick the image (a **JPG** you exported from DEXIS). You can also drag the image straight onto the gallery.
             - **A clean center-screen form.** As soon as the image uploads, a form pops up in the middle of the screen with the picture and three simple choices:
               - **Tooth** — type the tooth number,
@@ -146,8 +153,8 @@ jobs:
 
             Includes everything from v1.0.2–1.1.1 (optional Cloud Sync, triage-free flow, per-event staff, Oregon consent, USB workflow, accountability, Russian, in-app auto-update).
 
-            - **Caring-Hands-Setup-1.5.13.exe** — installer (recommended; required for auto-update).
-            - **Caring-Hands-Portable-1.5.13.exe** — portable (no auto-update).
+            - **Caring-Hands-Setup-1.5.14.exe** — installer (recommended; required for auto-update).
+            - **Caring-Hands-Portable-1.5.14.exe** — portable (no auto-update).
 
             First sign-in: `admin / admin` — then create your staff accounts. All clinical data stays on the device unless you enable Cloud Sync.
           files: |
