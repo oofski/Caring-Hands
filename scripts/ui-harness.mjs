@@ -53,7 +53,7 @@ const PERMS = {
   'vitalsSave': ['admin', 'doctor', 'triage', 'emt'], 'patientsRoute': ['admin', 'doctor', 'triage', 'emt'], 'consentSetTeeth': ['admin', 'doctor'], 'consentAdd': ['admin', 'doctor'],
   'usbLoad': ['admin', 'doctor', 'triage', 'checkout'], 'usbUploadCheckout': ['admin', 'doctor', 'triage', 'checkout'], 'usbClear': ['admin', 'doctor', 'triage', 'checkout'],
   'triageSave': ['admin', 'doctor', 'triage'], 'treatmentSave': ['admin', 'doctor', 'hygienist'],
-  'xrayAdd': ['admin', 'doctor', 'triage'], 'xrayGet': ['admin', 'doctor', 'triage', 'hygienist'], 'xrayList': ['admin', 'doctor', 'triage', 'hygienist'], 'xrayDelete': ['admin', 'doctor', 'triage'],
+  'xrayAdd': ['admin', 'doctor', 'triage'], 'xraySetTooth': ['admin', 'doctor'], 'xrayGet': ['admin', 'doctor', 'triage', 'hygienist'], 'xrayList': ['admin', 'doctor', 'triage', 'hygienist'], 'xrayDelete': ['admin', 'doctor', 'triage'],
   'pdfPreview': ['admin', 'doctor'], 'pdfGenerate': ['admin', 'doctor'], 'pdfPrint': ['admin', 'doctor'],
   'recordExportUsb': ['admin', 'doctor'], 'backupRun': ['admin'], 'exportEvent': ['admin'], 'auditList': ['admin'],
 };
@@ -107,6 +107,8 @@ window.api = {
   usbUploadCheckout: okWrap(() => ({ uploaded: 0 }), 'usbUploadCheckout'),
   usbClear: okWrap(() => ({ cleared: 0 }), 'usbClear'),
   xrayAdd: okWrap((p) => db.addXray(currentUser, p.patientId, p), 'xrayAdd'),
+  xraySetTooth: okWrap(({ id, tooth }) => db.updateXrayTooth(currentUser, id, tooth), 'xraySetTooth'),
+  xrayFolderList: async () => ({ ok: true, data: { dir: '', images: [] } }),
   xrayGet: okWrap((id) => db.getXray(id), 'xrayGet'),
   xrayList: okWrap((id) => db.listXrays(id), 'xrayList'),
   xrayDelete: okWrap((id) => db.deleteXray(currentUser, id), 'xrayDelete'),
@@ -575,6 +577,27 @@ async function main() {
     log(al.some((a) => a.key === 'lidocaine' && a.intake) && al.some((a) => a.key === 'articaine' && a.intake), 'v1.4.8: Lidocaine + Articaine are offered as check-in allergies');
     const nov = al.find((a) => a.key === 'novocain');
     log(!!nov && nov.intake === false && /Novocain/i.test(nov.label), 'v1.4.8: a legacy Novocain allergy still resolves for display but is not offered at check-in');
+  }
+
+  // ---- v1.5.0: X-ray import — per-x-ray tooth + auto-name, synced; import tile. ----
+  {
+    currentUser = db.login('admin', 'admin');
+    const xp = db.createPatient(currentUser, { first_name: 'Ex', last_name: 'Ray', demographics: {}, medical_history: {}, dental_history: {}, consents: [] });
+    const added = db.addXray(currentUser, xp.id, { image_png: 'data:image/png;base64,AAAA', note: 'Ray_Ex_UR_T3', tooth: '3' });
+    let xl = db.listXrays(xp.id);
+    log(xl.length === 1 && xl[0].tooth === '3' && xl[0].note === 'Ray_Ex_UR_T3', 'v1.5.0: an x-ray stores its tooth + auto-name (Lastname_Firstname_area_tooth)');
+    db.updateXrayTooth(currentUser, added.id, '14');
+    log(db.listXrays(xp.id)[0].tooth === '14', 'v1.5.0: an x-ray tooth can be re-assigned');
+    // tooth travels in the sync payload
+    log(db.collectSyncRows(4000).rows.some((r) => r.entity === 'xray' && r.data && r.data.tooth === '14'), 'v1.5.0: the x-ray tooth is a synced field (reaches other laptops)');
+    // provider detail renders the Import tile
+    const store5 = (await import('../src/renderer/js/store.js')).store; store5.setUser(currentUser);
+    const ctx5 = { navigate: () => {}, toast: () => {}, store: store5, setDetail: () => {} };
+    db.saveVitals(currentUser, xp.id, { bp_systolic: '120', bp_diastolic: '80', heart_rate: '70' });
+    db.routePatient(currentUser, xp.id, 'dentist');
+    const provX = (await import('../src/renderer/js/views/provider.js')).renderProvider(ctx5, { id: xp.id }); document.body.append(provX); await tick(); await tick();
+    log(/Import X-ray/i.test(provX.textContent), 'v1.5.0: the dentist chart shows an "Import X-ray" action');
+    log(/Tooth 14/.test(provX.textContent), 'v1.5.0: the imported x-ray shows its assigned tooth on the chart');
   }
 
   await tick();

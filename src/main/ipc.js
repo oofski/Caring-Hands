@@ -55,6 +55,8 @@ const PERMS = {
   'consent:setTeeth': ['admin', 'doctor'],
   'consent:add': ['admin', 'doctor'],
   'xray:add': ['admin', 'doctor', 'triage', 'emt'],
+  'xray:setTooth': ['admin', 'doctor'],
+  'xray:folderList': ['admin', 'doctor'],
   'xray:get': ['admin', 'doctor', 'triage', 'emt', 'hygienist'],
   'xray:list': ['admin', 'doctor', 'triage', 'emt', 'checkout', 'hygienist'],
   'xray:delete': ['admin', 'doctor', 'triage', 'emt'],
@@ -182,11 +184,49 @@ function register(getMainWindow) {
   handle('patients:audit', (id) => db.patientAudit(id));
 
   /* ---- X-rays ---- */
-  handle('xray:add', ({ patientId, station, image_png, note }) =>
-    db.addXray(currentUser, patientId, { station, image_png, note }));
+  handle('xray:add', ({ patientId, station, image_png, note, tooth }) =>
+    db.addXray(currentUser, patientId, { station, image_png, note, tooth }));
+  handle('xray:setTooth', ({ id, tooth }) => db.updateXrayTooth(currentUser, id, tooth));
   handle('xray:get', (id) => db.getXray(id));
   handle('xray:list', (patientId) => db.listXrays(patientId));
   handle('xray:delete', (id) => db.deleteXray(currentUser, id));
+
+  // Import: list recent standard image files (JPG/PNG/…) from the folder where the
+  // imaging software (e.g. DEXIS) exports/saves images, as data URLs the renderer
+  // can show as thumbnails and attach to the patient. Remembers the folder per PC.
+  const XRAY_IMG_EXT = { '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.gif': 'image/gif', '.bmp': 'image/bmp', '.webp': 'image/webp' };
+  handle('xray:folderList', async ({ dir, choose } = {}) => {
+    let d = dir || db.getSetting('xray_import_dir') || '';
+    if (choose || !d) {
+      const res = await dialog.showOpenDialog(getMainWindow(), {
+        title: 'Choose the folder where the X-ray images are saved',
+        properties: ['openDirectory'],
+        defaultPath: d || undefined,
+      });
+      if (res.canceled || !res.filePaths.length) return { dir: d, images: [], canceled: true };
+      d = res.filePaths[0];
+      db.setSetting('xray_import_dir', d);
+    }
+    if (!d || !fs.existsSync(d)) return { dir: d, images: [], error: 'That folder was not found on this computer.' };
+    let files = [];
+    try {
+      files = fs.readdirSync(d, { withFileTypes: true })
+        .filter((e) => e.isFile() && XRAY_IMG_EXT[path.extname(e.name).toLowerCase()])
+        .map((e) => { const fp = path.join(d, e.name); let st = null; try { st = fs.statSync(fp); } catch (_) { /* skip */ } return st ? { name: e.name, fp, mt: st.mtimeMs, size: st.size } : null; })
+        .filter(Boolean)
+        .sort((a, b) => b.mt - a.mt)
+        .slice(0, 24);
+    } catch (e) { return { dir: d, images: [], error: e.message }; }
+    const images = files.map((f) => {
+      if (f.size > 20 * 1024 * 1024) return null; // skip oversized files
+      try {
+        const buf = fs.readFileSync(f.fp);
+        const mime = XRAY_IMG_EXT[path.extname(f.name).toLowerCase()] || 'image/png';
+        return { name: f.name, mtime: f.mt, dataUrl: `data:${mime};base64,${buf.toString('base64')}` };
+      } catch (_) { return null; }
+    }).filter(Boolean);
+    return { dir: d, images };
+  });
 
   /* ---- Dashboard / audit ---- */
   ipcMain.handle('stats:dashboard', async () => {

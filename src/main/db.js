@@ -171,6 +171,8 @@ function migrate() {
   addColumn('patients', 'dismissed_by', 'INTEGER');
   addColumn('patients', 'dismissed_at', 'TEXT');
   addColumn('xrays', 'updated_at', 'TEXT');
+  // v1.5.0: an x-ray can be assigned to a specific tooth (e.g. imported from DEXIS).
+  addColumn('xrays', 'tooth', 'TEXT');
   // v1.0.7: event-scoped staff. NULL = global (e.g. administrators) so they
   // survive every event. Existing rows default to NULL and stay global.
   addColumn('users', 'event_id', 'INTEGER');
@@ -1276,13 +1278,23 @@ function recountXrays(patientId) {
   return cnt;
 }
 
-function addXray(actor, patientId, { station, image_png, note }) {
+function addXray(actor, patientId, { station, image_png, note, tooth }) {
   const info = db.prepare(
-    `INSERT INTO xrays (patient_id, station, image_png, note, created_at, updated_at) VALUES (?,?,?,?,?,?)`
-  ).run(patientId, station || null, image_png, note || null, now(), now());
+    `INSERT INTO xrays (patient_id, station, image_png, note, tooth, created_at, updated_at) VALUES (?,?,?,?,?,?,?)`
+  ).run(patientId, station || null, image_png, note || null, tooth != null && String(tooth).trim() ? String(tooth).trim() : null, now(), now());
   recountXrays(patientId);
-  audit(actor, 'xray', 'patient', patientId, station ? `station ${station}` : 'uploaded');
+  audit(actor, 'xray', 'patient', patientId, [station ? `station ${station}` : 'uploaded', tooth ? `tooth ${tooth}` : null].filter(Boolean).join(' · '));
   return { id: info.lastInsertRowid, count: recountXrays(patientId) };
+}
+
+// Assign / change the tooth an x-ray belongs to (dentist, chairside).
+function updateXrayTooth(actor, id, tooth) {
+  const row = db.prepare('SELECT patient_id FROM xrays WHERE id = ?').get(id);
+  if (!row) throw new Error('X-ray not found.');
+  const t = tooth != null && String(tooth).trim() ? String(tooth).trim() : null;
+  db.prepare('UPDATE xrays SET tooth = ?, updated_at = ? WHERE id = ?').run(t, now(), id);
+  audit(actor, 'xray_tooth', 'patient', row.patient_id, `#${id} → ${t || '—'}`);
+  return { id, tooth: t };
 }
 
 function getXray(id) {
@@ -1292,7 +1304,7 @@ function getXray(id) {
 // Full x-ray list WITH image data — used by the provider gallery.
 function listXrays(patientId) {
   return db.prepare(
-    'SELECT id, patient_id, station, note, image_png, created_at FROM xrays WHERE patient_id = ? ORDER BY id'
+    'SELECT id, patient_id, station, note, tooth, image_png, created_at FROM xrays WHERE patient_id = ? ORDER BY id'
   ).all(patientId);
 }
 
@@ -1370,7 +1382,7 @@ const SYNC_COLS = {
   triage: ['complaint', 'flags', 'checklist', 'teeth', 'teeth_notes', 'notes', 'xray_count', 'xray_station', 'assigned_to', 'status', 'triage_signature', 'triage_signer_name', 'triaged_at', 'bp_systolic', 'bp_diastolic', 'heart_rate', 'vitals_at', 'blood_thinner', 'blood_thinner_detail', 'route', 'routed_at', 'emt_review', 'emt_signed_off', 'bp_rechecks', 'triaged_by_name', 'vitals_by_name', 'routed_by_name'],
   treatment: ['fillings', 'extractions', 'cleaning', 'anesthetic', 'other_procedures', 'clinical_notes', 'provider_name', 'provider_signature', 'locked', 'completed_at', 'completed_by_name'],
   consent: ['type', 'version', 'language', 'signer_name', 'relationship', 'signature_png', 'signed_at', 'tooth_numbers', 'amended_by', 'amended_at'],
-  xray: ['station', 'image_png', 'note', 'created_at'],
+  xray: ['station', 'image_png', 'note', 'created_at', 'tooth'],
 };
 // Denormalized name field -> the local user-id column it is resolved from.
 const NAME_SOURCE = {
@@ -1634,7 +1646,7 @@ module.exports = {
   listIncompletePatients, deleteIncompletePatients,
   saveVitals, routePatient, updateConsentTeeth, addPatientConsent, dismissPatient, adminMovePatient, patientAudit, importPatientFromPortable,
   saveTriage, saveTreatment,
-  addXray, getXray, listXrays, deleteXray,
+  addXray, updateXrayTooth, getXray, listXrays, deleteXray,
   dashboardStats, listAudit, audit,
   backupTo, exportEventJson,
   getSetting, setSetting,

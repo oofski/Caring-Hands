@@ -38,7 +38,7 @@ function xrayGallery(p) {
   return (p._xrays || []).filter((x) => x && x.image_png).map((x) => `
     <div class="xray">
       <img src="${imgSrc(x.image_png)}"/>
-      <div class="cap">${x.station ? 'Station ' + esc(x.station) : 'X-ray'}${x.note ? ' · ' + esc(x.note) : ''}</div>
+      <div class="cap">${x.tooth ? 'Tooth ' + esc(x.tooth) : (x.station ? 'Station ' + esc(x.station) : 'X-ray')}${x.note ? ' · ' + esc(x.note) : ''}</div>
     </div>`).join('');
 }
 

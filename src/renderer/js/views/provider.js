@@ -343,25 +343,107 @@ export function renderProvider(ctx, params = {}) {
     /* ---------- X-ray panel ---------- */
     const gallery = el('div', { class: 'xray-gallery' });
     const fileInput = el('input', { type: 'file', accept: 'image/*', multiple: true, style: 'display:none' });
+    // Auto-name imported/attached x-rays after the patient: Lastname_Firstname,
+    // with the quadrant/tooth appended when chosen (e.g. Smith_John_UR_14).
+    const xrayBase = [(p.last_name || '').trim(), (p.first_name || '').trim()].filter(Boolean).join('_').replace(/\s+/g, '') || 'patient';
+    const XRAY_QUADRANTS = [['', '—'], ['UR', 'Upper right (UR)'], ['UL', 'Upper left (UL)'], ['LR', 'Lower right (LR)'], ['LL', 'Lower left (LL)'], ['FM', 'Full mouth']];
+    const xrayFileName = (tooth, quad) => [xrayBase, quad, tooth ? `T${tooth}` : ''].filter(Boolean).join('_');
     function renderGallery() {
       clear(gallery);
       xrays.forEach((x) => {
-        const card = el('div', { class: 'xray-card', onClick: () => viewXray(x) }, [
-          el('img', { src: x.image_png, alt: 'x-ray' }),
-          el('div', { class: 'xray-card-meta' }, [el('span', {}, [x.station ? `St ${x.station}` : '—']), el('span', {}, [`#${x.id}`])]),
+        const toothLabel = x.tooth ? `Tooth ${x.tooth}` : (locked ? (x.station ? `St ${x.station}` : '—') : 'Set tooth');
+        const toothEl = locked
+          ? el('span', {}, [toothLabel])
+          : el('span', { class: 'xray-tooth-set' + (x.tooth ? '' : ' subtle'), style: 'cursor:pointer;text-decoration:underline', title: 'Assign this x-ray to a tooth', onClick: (e) => { e.stopPropagation(); setToothFor(x); } }, [toothLabel]);
+        const card = el('div', { class: 'xray-card' }, [
+          el('img', { src: x.image_png, alt: 'x-ray', title: x.note || 'View x-ray', onClick: () => viewXray(x) }),
+          el('div', { class: 'xray-card-meta' }, [toothEl, el('span', {}, [`#${x.id}`])]),
           locked ? null : el('button', { class: 'xray-del', title: 'Delete x-ray', onClick: async (e) => { e.stopPropagation(); await delXray(x.id); } }, [icon('trash', { size: 14 })]),
         ]);
         gallery.append(card);
       });
       if (!locked) {
+        gallery.append(el('div', { class: 'xray-add', title: 'Import an x-ray your imaging software (e.g. DEXIS) saved to a folder', onClick: () => openImport() }, [
+          icon('download', { size: 20 }),
+          el('span', {}, ['Import X-ray']),
+          el('span', { class: 'subtle', style: 'font-size:var(--fs-2xs);font-weight:var(--fw-medium)' }, ['from the DEXIS export folder']),
+        ]));
         gallery.append(el('div', { class: 'xray-add', title: 'Capture or attach an x-ray image', onClick: () => fileInput.click() }, [
           icon('upload', { size: 20 }),
-          el('span', {}, ['Capture / Attach X-ray']),
+          el('span', {}, ['Attach a file']),
           el('span', { class: 'subtle', style: 'font-size:var(--fs-2xs);font-weight:var(--fw-medium)' }, ['or drag an image here']),
         ]));
       }
       if (!xrays.length && locked) gallery.append(el('span', { class: 'subtle' }, ['No x-rays on file.']));
       xrayCountEl.lastChild.textContent = String(xrays.length);
+    }
+
+    // Assign / change the tooth an x-ray belongs to.
+    async function setToothFor(x) {
+      const inp = el('input', { class: 'input', list: TEETH_LIST_ID, inputmode: 'numeric', placeholder: 'Tooth # (1–32 or A–T)', value: x.tooth || '' });
+      const ok = await modal({ title: `Assign tooth — x-ray #${x.id}`, body: el('div', {}, [el('p', { class: 'subtle small', style: 'margin:0 0 8px' }, ['Enter the tooth this x-ray shows (leave blank to clear).']), inp]), confirmText: 'Save', cancelText: 'Cancel' });
+      if (!ok) return;
+      try { await api.setXrayTooth(x.id, inp.value.trim()); xrays = await api.listXrays(id); renderGallery(); toast('Tooth assigned', 'success'); }
+      catch (e) { toast(e.message, 'error'); }
+    }
+
+    // Import x-rays from the imaging software's export folder (DEXIS). Shows the
+    // recent images as thumbnails; for EACH, the dentist fills in the tooth and/or
+    // quadrant and taps "Add ✓". Multiple can be added in one go, and each is
+    // auto-named Lastname_Firstname_<quadrant>_T<tooth> from what was entered.
+    async function openImport() {
+      const dirLine = el('div', { class: 'subtle small', style: 'margin:6px 0' }, ['Loading…']);
+      const grid = el('div', { style: 'display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:12px;max-height:52vh;overflow:auto;margin-top:6px' });
+      const changeBtn = el('button', { class: 'btn btn--ghost btn--sm', type: 'button', onClick: () => load(true) }, [icon('records', { size: 14 }), 'Change folder']);
+      const refreshBtn = el('button', { class: 'btn btn--ghost btn--sm', type: 'button', onClick: () => load(false) }, [icon('refresh', { size: 14 }), 'Refresh']);
+      async function load(choose) {
+        clear(grid); dirLine.textContent = 'Loading…';
+        let res;
+        try { res = await api.xrayFolderList(choose ? { choose: true } : {}); }
+        catch (e) { dirLine.textContent = e.message; return; }
+        dirLine.textContent = res.error ? res.error : (res.dir ? `Folder: ${res.dir}` : 'No folder set — use “Change folder”.');
+        if (!res.images || !res.images.length) {
+          grid.append(el('div', { class: 'subtle small' }, ['No images here yet. In DEXIS, Export/Save the x-ray(s) as JPG to this folder, then tap Refresh. Use “Change folder” to point at a different location.']));
+          return;
+        }
+        res.images.forEach((im) => {
+          const toothInput = el('input', { class: 'input input--sm num', list: TEETH_LIST_ID, inputmode: 'numeric', placeholder: 'Tooth #', style: 'flex:1;min-width:0' });
+          const quadSel = el('select', { class: 'input input--sm', style: 'flex:1;min-width:0' }, XRAY_QUADRANTS.map(([v, l]) => el('option', { value: v }, [l])));
+          const nameHint = el('div', { class: 'subtle', style: 'font-size:var(--fs-2xs);word-break:break-all' }, []);
+          const refreshName = () => { nameHint.textContent = xrayFileName(toothInput.value.trim(), quadSel.value) || xrayBase; };
+          toothInput.addEventListener('input', refreshName); quadSel.addEventListener('change', refreshName); refreshName();
+          const addBtn = el('button', { class: 'btn btn--primary btn--sm btn--block', type: 'button' }, [icon('check', { size: 14 }), 'Add']);
+          addBtn.addEventListener('click', async () => {
+            addBtn.disabled = true;
+            const tooth = toothInput.value.trim();
+            try {
+              await api.addXray({ patientId: id, image_png: im.dataUrl, note: xrayFileName(tooth, quadSel.value), tooth, station: station.input ? station.input.value.trim() : '' });
+              xrays = await api.listXrays(id); renderGallery();
+              cell.style.borderColor = 'var(--success, #2f8f66)';
+              addBtn.className = 'btn btn--success btn--sm btn--block'; addBtn.textContent = ''; addBtn.append(icon('checkCircle', { size: 14 }), 'Added');
+              toothInput.disabled = true; quadSel.disabled = true;
+              toast('X-ray imported', 'success');
+            } catch (e) { addBtn.disabled = false; toast(e.message, 'error'); }
+          });
+          const cell = el('div', { style: 'display:flex;flex-direction:column;gap:6px;padding:8px;border:var(--border-line);border-radius:var(--radius-sm);background:var(--surface)' }, [
+            el('img', { src: im.dataUrl, title: 'Click to enlarge', style: 'width:100%;height:110px;object-fit:cover;border-radius:4px;cursor:pointer', onClick: () => modal({ title: im.name, body: el('img', { class: 'xray-viewer-img', src: im.dataUrl }), confirmText: t('common.close') }) }),
+            el('div', { style: 'display:flex;gap:6px' }, [toothInput, quadSel]),
+            nameHint,
+            addBtn,
+          ]);
+          grid.append(cell);
+        });
+      }
+      load(false);
+      await modal({
+        title: 'Import X-rays',
+        body: el('div', {}, [
+          el('p', { class: 'subtle small', style: 'margin:0' }, ['For each x-ray you captured in DEXIS, fill in the tooth and/or quadrant, then tap Add. Each is saved to this patient and named automatically.']),
+          el('div', { class: 'inline-row', style: 'gap:8px;margin-top:8px;flex-wrap:wrap' }, [changeBtn, refreshBtn]),
+          dirLine, grid,
+        ]),
+        confirmText: 'Done',
+      });
     }
     // E1/E2: single robust attach path shared by the file picker AND drag-and-drop.
     async function addXrayFiles(fileList) {
@@ -372,7 +454,7 @@ export function renderProvider(ctx, params = {}) {
         await new Promise((res) => {
           const reader = new FileReader();
           reader.onload = async () => {
-            try { await api.addXray({ patientId: id, station: station.input ? station.input.value.trim() : '', image_png: reader.result, note: '' }); added++; }
+            try { await api.addXray({ patientId: id, station: station.input ? station.input.value.trim() : '', image_png: reader.result, note: xrayBase }); added++; }
             catch (e) { toast(e.message, 'error'); }
             res();
           };

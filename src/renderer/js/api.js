@@ -56,6 +56,8 @@ export const api = {
   usbClear: (dir) => call('usbClear', { dir, choose: !dir }),
 
   addXray: (p) => call('xrayAdd', p),
+  setXrayTooth: (id, tooth) => call('xraySetTooth', { id, tooth }),
+  xrayFolderList: (opts) => call('xrayFolderList', opts || {}),
   getXray: (id) => call('xrayGet', id),
   listXrays: (patientId) => call('xrayList', patientId),
   deleteXray: (id) => call('xrayDelete', id),
