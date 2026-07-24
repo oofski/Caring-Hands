@@ -33,6 +33,26 @@ function load() {
   return autoUpdater;
 }
 
+// GitHub's release-download edge intermittently returns 504 Gateway Time-out
+// (and networks throw timeouts/resets). electron-updater does NOT retry — it
+// surfaces the first failure. These helpers retry transient network errors with
+// backoff so a momentary 504 doesn't break the update check/download.
+const TRANSIENT_RE = /\b5\d\d\b|gateway time|timed? ?out|ETIMEDOUT|ECONNRESET|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|socket hang up|network|aborted/i;
+function isTransient(e) { return TRANSIENT_RE.test((e && (e.message || String(e))) || ''); }
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+async function withRetry(fn, attempts = 4, baseMs = 1500) {
+  let lastErr;
+  for (let i = 0; i < attempts; i++) {
+    try { return await fn(); }
+    catch (e) {
+      lastErr = e;
+      if (!isTransient(e) || i === attempts - 1) throw e;
+      await sleep(baseMs * Math.pow(2, i)); // 1.5s, 3s, 6s
+    }
+  }
+  throw lastErr;
+}
+
 function emit(status) {
   state.status = status;
   state.currentVersion = app.getVersion();
@@ -57,19 +77,22 @@ async function check() {
   const u = load();
   if (!u) return { supported: false, reason: 'Updater unavailable.' };
   try {
-    const r = await u.checkForUpdates();
+    const r = await withRetry(() => u.checkForUpdates());
     const latest = r && r.updateInfo ? r.updateInfo.version : null;
     const cur = app.getVersion();
     return { supported: true, currentVersion: cur, latestVersion: latest, hasUpdate: !!latest && latest !== cur };
   } catch (e) {
-    return { supported: true, error: (e && e.message) || String(e) };
+    const msg = (e && e.message) || String(e);
+    // Give a plain-language hint for the common GitHub 504 so staff aren't alarmed.
+    const friendly = isTransient(e) ? 'Could not reach the update server (it timed out after several tries). This is usually a brief network hiccup — try again in a minute, or install the latest version manually from the release page.' : msg;
+    return { supported: true, error: friendly, raw: msg };
   }
 }
 
 async function download() {
   const u = load();
   if (!u) throw new Error('Updater unavailable.');
-  await u.downloadUpdate();
+  await withRetry(() => u.downloadUpdate());
   return { downloading: true };
 }
 
@@ -84,7 +107,7 @@ function quitAndInstall() {
 function checkSilently() {
   if (!app.isPackaged) return;
   const u = load();
-  if (u) { try { u.checkForUpdates().catch(() => {}); } catch (e) { /* ignore */ } }
+  if (u) { try { withRetry(() => u.checkForUpdates(), 5, 4000).catch(() => {}); } catch (e) { /* ignore */ } }
 }
 
-module.exports = { init, available, check, download, quitAndInstall, checkSilently, state: () => state };
+module.exports = { init, available, check, download, quitAndInstall, checkSilently, state: () => state, withRetry, isTransient };

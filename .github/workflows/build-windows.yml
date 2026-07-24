@@ -50,16 +50,20 @@ jobs:
       - name: Publish downloadable release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.5.18-build.${{ github.run_number }}
-          name: Caring Hands v1.5.18 (build ${{ github.run_number }})
+          tag_name: v1.5.19-build.${{ github.run_number }}
+          name: Caring Hands v1.5.19 (build ${{ github.run_number }})
           prerelease: false
           make_latest: true
           body: |
-            ## Caring Hands Worldwide — Practice Management Software (v1.5.18)
+            ## Caring Hands Worldwide — Practice Management Software (v1.5.19)
 
             Offline-first dental clinic app for Windows. **Download the installer once — it auto-updates from here on.**
 
-            **New in v1.5.18 — returning patients, a one-file clinic export, and a follow-up email list**
+            **New in v1.5.19 — resilient auto-update**
+            - **The updater now retries automatically** when the update server returns a temporary error (GitHub occasionally returns a **504 Gateway Time-out** on release downloads). It backs off and tries several times, so a brief network hiccup no longer shows a scary failure or blocks the update.
+            - If it genuinely can't reach the server after all retries, it now shows a **plain-language message** ("try again in a minute, or install the latest version manually") instead of a raw error.
+
+            **From v1.5.18 — returning patients, a one-file clinic export, and a follow-up email list**
             - **Returning patients / multiple visits.** The dashboard has a new **Returning patient** button (front desk / registration): search by **name, phone, or date of birth**, tap **Start new visit**, and their details carry over — no re-typing a whole new patient. A person can have as many visits as they need.
             - **Export the whole clinic as one ZIP.** Under **Admin → Backup & export**, the new **Export clinic ZIP** button bundles the **full database + all records + a README** into a single `.zip` to drop onto a hard drive at the end of a clinic.
             - **Follow-up email list.** The **Reports** tab now lists every **checked-out patient who left an email**, with a one-click **Email** and **Copy all emails**, so you can send summaries a couple of days later. *(Emailing opens your mail app with a ready draft to attach the summary PDF; truly automatic delayed sending would need a mail service — ask your admin.)*
@@ -183,8 +187,8 @@ jobs:
 
             Includes everything from v1.0.2–1.1.1 (optional Cloud Sync, triage-free flow, per-event staff, Oregon consent, USB workflow, accountability, Russian, in-app auto-update).
 
-            - **Caring-Hands-Setup-1.5.18.exe** — installer (recommended; required for auto-update).
-            - **Caring-Hands-Portable-1.5.18.exe** — portable (no auto-update).
+            - **Caring-Hands-Setup-1.5.19.exe** — installer (recommended; required for auto-update).
+            - **Caring-Hands-Portable-1.5.19.exe** — portable (no auto-update).
 
             First sign-in: `admin / admin` — then create your staff accounts. All clinical data stays on the device unless you enable Cloud Sync.
           files: |
