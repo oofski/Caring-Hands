@@ -744,6 +744,41 @@ async function main() {
     log((full17.medical_history.conditions || []).includes('diabetes') && full17.medical_history.under_treatment === 'yes' && full17.dental_history.visit_type === 'filling', 'v1.5.17: the extra check-in-parity answers (medical + dental history) carry through');
   }
 
+  // ---- v1.5.18: returning-patient new visit, ZIP export, reports email list ----
+  {
+    currentUser = db.login('admin', 'admin');
+
+    // #1: start a new visit from an existing record — details carry over, fresh visit.
+    const src = db.createPatient(currentUser, { first_name: 'Rita', last_name: 'Returns', dob: '1980-05-05', gender: 'female', phone: '5551234567', email: 'rita@example.com', demographics: { address: '5 Elm St' }, medical_history: { conditions: ['diabetes'], allergies: ['penicillin'] }, dental_history: { reason: 'old reason', visit_type: 'extraction_pain', prior_dentist: 'Dr. Prior' }, consents: [] });
+    const nv = db.startVisitFromExisting(currentUser, src.id);
+    log(nv.id !== src.id && nv.first_name === 'Rita' && nv.last_name === 'Returns' && nv.dob === '1980-05-05' && nv.email === 'rita@example.com', 'v1.5.18: a returning patient starts a NEW visit with their details carried over');
+    log((nv.medical_history.conditions || []).includes('diabetes') && nv.demographics.address === '5 Elm St' && nv.dental_history.prior_dentist === 'Dr. Prior', 'v1.5.18: the new visit keeps medical + demographics (no re-typing)');
+    log(!nv.dental_history.reason && !nv.dental_history.visit_type && nv.status === 'checked_in', 'v1.5.18: the visit-specific reason/need starts fresh and enters the check-in queue');
+    log(db.searchAllPatients('Returns').length >= 1, 'v1.5.18: returning patients are findable via the cross-event search');
+
+    // #5: the clinic ZIP export is a valid archive (DB + records + README).
+    const zipStore = (await import('../src/main/zipStore.js')).default;
+    const z = zipStore.zip([{ name: 'database.db', data: Buffer.from('SQLite format 3 rest') }, { name: 'records.json', data: Buffer.from('{"a":1}') }, { name: 'README.txt', data: Buffer.from('hello') }]);
+    log(Buffer.isBuffer(z) && z.length > 60 && z.readUInt32LE(0) === 0x04034b50 && z.includes(Buffer.from('records.json')) && z.subarray(z.length - 22).readUInt32LE(0) === 0x06054b50, 'v1.5.18: the clinic ZIP export is a valid PK archive with the expected files');
+    log(zipStore.crc32(Buffer.from('123456789')) === 0xCBF43926, 'v1.5.18: the ZIP writer computes a correct CRC-32');
+
+    // #4: checked-out patients with an email appear in Reports' email list.
+    const store18 = (await import('../src/renderer/js/store.js')).store; store18.setUser(currentUser);
+    const ctx18 = { navigate: () => {}, toast: () => {}, store: store18, setDetail: () => {} };
+    const ep = db.createPatient(currentUser, { first_name: 'Ed', last_name: 'Mailer', email: 'ed@example.com', demographics: {}, medical_history: {}, dental_history: {}, consents: [] });
+    db.saveVitals(currentUser, ep.id, { bp_systolic: '120', bp_diastolic: '80', heart_rate: '70' });
+    db.routePatient(currentUser, ep.id, 'dentist');
+    db.dismissPatient(currentUser, ep.id);
+    const rep18 = (await import('../src/renderer/js/views/reports.js')).renderReports(ctx18);
+    document.body.append(rep18); await tick(); await tick();
+    log(/Email visit summaries/.test(rep18.textContent) && /ed@example\.com/.test(rep18.textContent), 'v1.5.18: Reports lists checked-out patients who left an email, for follow-up');
+
+    // Dashboard offers the returning-patient lookup for the front desk.
+    const dash18 = (await import('../src/renderer/js/views/dashboard.js')).renderDashboard(ctx18);
+    document.body.append(dash18); await tick(); await tick();
+    log(/Returning patient/.test(dash18.textContent), 'v1.5.18: the dashboard offers a "Returning patient" lookup');
+  }
+
   // ---- v1.5.0: X-ray import — per-x-ray tooth + auto-name, synced; import tile. ----
   {
     currentUser = db.login('admin', 'admin');

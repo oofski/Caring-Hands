@@ -143,6 +143,9 @@ export function renderReports(ctx) {
         ]),
       ]),
 
+      // ---- Email visit summaries (patients who left an email) ----
+      emailCard(full),
+
       // ---- Daily breakdown ----
       el('div', { class: 'card' }, [
         el('div', { class: 'card-title' }, [icon('calendar', { size: 15 }), 'Daily breakdown']),
@@ -239,4 +242,31 @@ function barList(obj) {
     el('span', { class: 'bar-track' }, [el('span', { class: 'bar-fill', style: `width:${Math.round((v / max) * 100)}%` })]),
     el('span', { class: 'bar-val' }, [String(v)]),
   ])));
+}
+
+// ---- Email visit summaries: checked-out patients who left an email ----
+function patientEmail(p) { return p.email || (p.demographics && p.demographics.email) || ''; }
+function emailCard(full) {
+  const list = (full || []).filter((p) => patientEmail(p) && (p.status === 'completed' || p.status === 'dismissed'));
+  const head = el('div', { class: 'card-head-row' }, [
+    el('h3', { class: 'card-title' }, [icon('mail', { size: 15 }), 'Email visit summaries']),
+    list.length ? el('button', { class: 'btn btn--ghost btn--sm', onClick: async () => {
+      const emails = list.map(patientEmail).join(', ');
+      try { if (navigator.clipboard && navigator.clipboard.writeText) await navigator.clipboard.writeText(emails); toast('All emails copied', 'success'); }
+      catch (_) { toast(emails, 'info'); }
+    } }, [icon('save', { size: 14 }), 'Copy all emails']) : null,
+  ]);
+  const rows = list.map((p) => el('div', { class: 'lookup-row' }, [
+    el('div', { style: 'min-width:0' }, [el('strong', {}, [`${p.last_name}, ${p.first_name}`]), el('div', { class: 'subtle small' }, [patientEmail(p)])]),
+    el('button', { class: 'btn btn--ghost btn--sm', onClick: () => {
+      const mail = `mailto:${encodeURIComponent(patientEmail(p))}?subject=${encodeURIComponent('Your Caring Hands visit summary')}&body=${encodeURIComponent('Your visit summary from Caring Hands Worldwide is attached.')}`;
+      api.openExternal(mail);
+    } }, [icon('mail', { size: 14 }), 'Email']),
+  ]));
+  return el('div', { class: 'card' }, [
+    head,
+    el('p', { class: 'subtle small', style: 'margin:0 0 10px' }, [`${list.length} checked-out patient(s) left an email address — email their summary a couple of days after the clinic.`]),
+    list.length ? el('div', { class: 'lookup-results', style: 'max-height:40vh' }, rows) : el('p', { class: 'muted' }, ['No checked-out patients with an email yet.']),
+    el('p', { class: 'subtle', style: 'font-size:var(--fs-2xs);margin-top:10px' }, ['Emailing opens your mail app with a ready draft — attach the patient’s summary PDF (from Records, or the clinic ZIP export). Fully automatic delayed sending needs a mail service; ask your admin.']),
+  ]);
 }

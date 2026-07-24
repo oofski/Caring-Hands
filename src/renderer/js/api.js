@@ -35,6 +35,7 @@ export const api = {
   listPatients: (opts) => call('patientsList', opts),
   records: (opts) => call('patientsRecords', opts),
   searchAll: (term) => call('patientsSearchAll', term),
+  newVisit: (sourceId) => call('patientsNewVisit', sourceId),
   patientHistory: (id) => call('patientsHistory', id),
   listIncomplete: () => call('patientsIncomplete'),
   cleanupIncomplete: () => call('patientsCleanupIncomplete'),
@@ -77,6 +78,7 @@ export const api = {
 
   backup: () => call('backupRun'),
   exportEvent: () => call('exportEvent'),
+  exportZip: () => call('exportZip'),
 
   appVersion: () => call('appVersion'),
   checkUpdate: (opts) => call('updateCheck', opts || {}),

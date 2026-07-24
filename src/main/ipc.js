@@ -18,6 +18,8 @@ const autoupdate = require('./autoupdate');
 const cloud = require('./cloud');
 const usb = require('./usb');
 const xrayFolder = require('./xrayFolder');
+const zipStore = require('./zipStore');
+const os = require('os');
 
 let currentUser = null;
 
@@ -38,6 +40,7 @@ const PERMS = {
   // raw (ungated, like the kiosk) so it can start check-ins; this list is the
   // documented intent.
   'patients:create': ['admin', 'doctor', 'triage', 'emt', 'registration'],
+  'patients:newVisit': ['admin', 'doctor', 'triage', 'emt', 'registration'],
   'patients:update': ['admin', 'triage', 'doctor'],
   'patients:get': ['admin', 'doctor', 'triage', 'emt', 'checkout', 'hygienist'],
   'patients:list': ['admin', 'doctor', 'triage', 'emt', 'checkout', 'hygienist', 'registration'],
@@ -75,6 +78,7 @@ const PERMS = {
   'usb:uploadCheckout': ['admin', 'doctor', 'triage', 'checkout'],
   'usb:clear': ['admin', 'doctor', 'triage', 'checkout'],
   'backup:run': ['admin'],
+  'export:zip': ['admin'],
   'export:event': ['admin'],
   'audit:list': ['admin'],
   'cloud:config': ['admin'],
@@ -169,6 +173,7 @@ function register(getMainWindow) {
   handle('patients:list', (opts) => db.listPatients(opts || {}));
   handle('patients:records', (opts) => db.listPatients(opts || {}));
   handle('patients:searchAll', (term) => db.searchAllPatients(term));
+  handle('patients:newVisit', (sourceId) => db.startVisitFromExisting(currentUser, sourceId));
   handle('patients:history', (id) => db.patientHistory(id));
   handle('patients:incomplete', () => db.listIncompletePatients());
   handle('patients:cleanupIncomplete', () => db.deleteIncompletePatients(currentUser));
@@ -371,6 +376,45 @@ function register(getMainWindow) {
     fs.writeFileSync(res.filePath, JSON.stringify(data, null, 2));
     db.audit(currentUser, 'export_event', 'event', data.event ? data.event.id : null, path.basename(res.filePath));
     return { saved: true, path: res.filePath, count: data.patients.length };
+  });
+
+  // Offload the whole clinic as ONE .zip for a hard drive: the full SQLite
+  // database (restorable) + a human-readable records JSON + a README.
+  handle('export:zip', async () => {
+    const data = db.exportEventJson();
+    const evName = (data.event ? data.event.name : 'clinic').replace(/[^a-z0-9]+/gi, '-');
+    const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+    const res = await dialog.showSaveDialog(getMainWindow(), {
+      title: 'Export clinic data as a ZIP (for a hard drive)',
+      defaultPath: `caring-hands-${evName}-${stamp}.zip`,
+      filters: [{ name: 'ZIP archive', extensions: ['zip'] }],
+    });
+    if (res.canceled || !res.filePath) return { saved: false };
+    // Consistent DB snapshot into a temp file, then fold it into the zip.
+    const tmp = path.join(os.tmpdir(), `ch-backup-${Date.now()}.db`);
+    let dbBuf;
+    try { await db.backupTo(tmp); dbBuf = fs.readFileSync(tmp); }
+    finally { try { fs.unlinkSync(tmp); } catch (_) { /* ignore */ } }
+    const readme = [
+      'Caring Hands Worldwide — clinic data export',
+      'Event: ' + (data.event ? data.event.name : '(none)'),
+      'Exported: ' + new Date().toISOString(),
+      'Patients in this event: ' + (data.patients ? data.patients.length : 0),
+      '',
+      'Contents:',
+      '  database.db   full SQLite database — the complete clinic (open in Caring Hands or any SQLite tool)',
+      '  records.json  all patient records for this event, human-readable',
+      '',
+      'This archive contains protected health information. Store it securely.',
+    ].join('\r\n');
+    const buf = zipStore.zip([
+      { name: 'database.db', data: dbBuf },
+      { name: 'records.json', data: Buffer.from(JSON.stringify(data, null, 2), 'utf8') },
+      { name: 'README.txt', data: Buffer.from(readme, 'utf8') },
+    ]);
+    fs.writeFileSync(res.filePath, buf);
+    db.audit(currentUser, 'export_zip', 'event', data.event ? data.event.id : null, path.basename(res.filePath));
+    return { saved: true, path: res.filePath, count: data.patients ? data.patients.length : 0 };
   });
 
   /* ---- Patient-portable record (USB the patient carries) ---- */

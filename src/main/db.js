@@ -751,6 +751,23 @@ function createPatient(actor, data) {
   return getPatient(id);
 }
 
+// Returning patient: start a NEW visit (new patient row) in the active event,
+// pre-filled from an existing record so the front desk doesn't re-type. Carries
+// demographics + medical history; the visit-specific bits (reason / what they
+// need / prior signed consents) start fresh so this visit is captured cleanly.
+function startVisitFromExisting(actor, sourceId) {
+  const src = getPatient(sourceId);
+  if (!src) throw new Error('Patient not found.');
+  const dental = Object.assign({}, src.dental_history || {});
+  delete dental.reason; delete dental.visit_type; delete dental.may_need_extraction;
+  return createPatient(actor, {
+    first_name: src.first_name, last_name: src.last_name, dob: src.dob, gender: src.gender,
+    phone: src.phone, email: src.email, language: src.language,
+    demographics: src.demographics || {}, medical_history: src.medical_history || {},
+    dental_history: dental, consents: [],
+  });
+}
+
 function updatePatient(actor, id, data) {
   const p = db.prepare('SELECT * FROM patients WHERE id = ?').get(id);
   if (!p) throw new Error('Patient not found.');
@@ -1652,7 +1669,7 @@ module.exports = {
   init, close,
   login, listUsers, createUser, updateUser, deleteUser, clearEventStaff,
   listEvents, createEvent, updateEvent, setActiveEvent, setEventActive, deleteEvent, getActiveEvent,
-  createPatient, updatePatient, deletePatient, getPatient, listPatients, searchAllPatients, patientHistory,
+  createPatient, startVisitFromExisting, updatePatient, deletePatient, getPatient, listPatients, searchAllPatients, patientHistory,
   listIncompletePatients, deleteIncompletePatients,
   saveVitals, routePatient, updateConsentTeeth, addPatientConsent, dismissPatient, adminMovePatient, patientAudit, importPatientFromPortable,
   saveTriage, saveTreatment,

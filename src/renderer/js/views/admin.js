@@ -404,7 +404,15 @@ export function renderAdmin(ctx, params = {}) {
         el('h3', { class: 'card-title' }, [icon('database', { size: 15 }), 'Backup & export']),
         el('p', { class: 'muted', style: 'margin:0 0 var(--space-4);' }, ['All data lives only on this device. Back up regularly to a USB drive or encrypted external drive, especially after each event.']),
         el('div', { class: 'action-row', style: 'margin-top:0;' }, [
-          el('button', { class: 'btn btn--primary', onClick: async () => {
+          // End-of-clinic offload: one .zip with the whole database + records to
+          // drop onto a hard drive.
+          el('button', { class: 'btn btn--primary', onClick: async (e) => {
+            const btn = e.currentTarget; const prev = btn.textContent; btn.disabled = true; btn.textContent = 'Building ZIP…';
+            try { const r = await api.exportZip(); if (r.saved) toast(`Clinic exported (${r.count} patient record(s)) to ${r.path}`, 'success'); }
+            catch (err) { toast(err.message, 'error'); }
+            finally { btn.disabled = false; btn.textContent = prev; }
+          } }, [icon('download', { size: 16 }), 'Export clinic ZIP (for a hard drive)']),
+          el('button', { class: 'btn btn--ghost', onClick: async () => {
             try { const r = await api.backup(); if (r.saved) toast(`Database backed up to ${r.path}`, 'success'); } catch (e) { toast(e.message, 'error'); }
           } }, [icon('database', { size: 16 }), 'Back up database (.db)']),
           el('button', { class: 'btn btn--ghost', onClick: async () => {

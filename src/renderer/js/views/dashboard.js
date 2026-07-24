@@ -1,4 +1,4 @@
-import { el, mount } from '../dom.js';
+import { el, mount, modal, clear } from '../dom.js';
 import { t } from '../i18n.js';
 import { api } from '../api.js';
 import { store } from '../store.js';
@@ -105,6 +105,53 @@ export function renderDashboard(ctx) {
       }
     }
 
+    // Returning patient: search anyone seen before and start a fresh visit that
+    // carries over their details (no re-typing a whole new patient).
+    function returningPatient() {
+      return new Promise((resolve) => {
+        const overlay = el('div', { class: 'modal-overlay' });
+        const card = el('div', { class: 'modal-card' });
+        const done = (v) => { overlay.remove(); resolve(v); };
+        const input = el('input', { class: 'input', placeholder: 'Search name, phone, or date of birth…' });
+        const results = el('div', { class: 'lookup-results' });
+        let timer = null;
+        async function search() {
+          const term = input.value.trim();
+          clear(results);
+          if (term.length < 2) { results.append(el('p', { class: 'subtle small', style: 'margin:8px 0 0' }, ['Type at least 2 characters to search.'])); return; }
+          let list = [];
+          try { list = await api.searchAll(term); } catch (err) { results.append(el('p', { class: 'subtle small' }, [err.message])); return; }
+          if (!list.length) { results.append(el('p', { class: 'subtle small', style: 'margin:8px 0 0' }, ['No match. Use “Start patient check-in” for a brand-new patient.'])); return; }
+          list.slice(0, 12).forEach((p) => {
+            results.append(el('div', { class: 'lookup-row' }, [
+              el('div', { style: 'min-width:0' }, [
+                el('strong', {}, [`${p.last_name}, ${p.first_name}`]),
+                el('div', { class: 'subtle small' }, [`${p.dob ? 'DOB ' + p.dob + ' · ' : ''}${p.event_name || ''}`]),
+              ]),
+              el('button', { class: 'btn btn--primary btn--sm', onClick: async (ev) => {
+                ev.currentTarget.disabled = true;
+                try { const np = await api.newVisit(p.id); ctx.toast(`New visit started for ${np.first_name} ${np.last_name}`, 'success'); done(true); load(); }
+                catch (err) { ctx.toast(err.message, 'error'); ev.currentTarget.disabled = false; }
+              } }, ['Start new visit']),
+            ]));
+          });
+        }
+        input.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(search, 250); });
+        card.append(
+          el('h3', { class: 'modal-title' }, ['Returning patient — look up']),
+          el('div', { class: 'modal-body' }, [
+            el('p', { class: 'subtle small', style: 'margin:0 0 8px' }, ['Find someone seen before and start a fresh visit — their details carry over so you don’t re-type everything.']),
+            input, results,
+          ]),
+          el('div', { class: 'modal-actions' }, [el('button', { class: 'btn btn--ghost', type: 'button', onClick: () => done(false) }, ['Close'])]),
+        );
+        overlay.append(card);
+        overlay.addEventListener('click', (ev) => { if (ev.target === overlay) done(false); });
+        document.body.append(overlay);
+        setTimeout(() => input.focus(), 0);
+      });
+    }
+
     // ---- Live CRM board ----
     const groups = {}; STAGES.forEach((s) => { groups[s.key] = []; });
     patients.forEach((p) => { groups[stageOf(p)].push(p); });
@@ -154,6 +201,8 @@ export function renderDashboard(ctx) {
         ]),
         el('div', { class: 'view-head-actions' }, [
           el('button', { class: 'btn btn--primary', onClick: () => ctx.navigate('kiosk') }, [icon('clipboard', { size: 16 }), t('dash.startCheckin')]),
+          can('admin', 'registration', 'triage', 'emt', 'doctor')
+            ? el('button', { class: 'btn btn--ghost', title: 'Look up a patient who has been seen before and start a new visit', onClick: () => returningPatient() }, [icon('search', { size: 15 }), 'Returning patient']) : null,
           el('button', { class: 'btn btn--ghost btn--sm', onClick: load }, [icon('refresh', { size: 15 }), 'Refresh']),
         ]),
       ]),
