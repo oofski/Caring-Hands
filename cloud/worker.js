@@ -1,4 +1,4 @@
-// Caring Hands — Cloud Sync Worker (v1.3.0)
+// Caring Hands — Cloud Sync Worker (v1.3.1)
 // =============================================================================
 // NO INSTALLS NEEDED. To deploy: create a Worker in the Cloudflare dashboard,
 // paste THIS ENTIRE FILE into its code editor, then:
@@ -15,7 +15,7 @@
 // See ./SYNC_CONTRACT.md for the exact API + schema this implements.
 
 const SERVICE = 'caring-hands-sync';
-const VERSION = '1.3.0';
+const VERSION = '1.3.1';
 const DEFAULT_LIMIT = 500;
 const MAX_LIMIT = 1000;
 
@@ -397,18 +397,19 @@ const FORM_CONDITIONS = [
   ['ulcers', 'Stomach ulcers'], ['respiratory', 'Respiratory problems'], ['mental_health', 'Mental health condition'], ['latex', 'Latex allergy'],
   ['anesthesia_reaction', 'Reaction to anesthesia'], ['pregnant', 'Currently pregnant'], ['pain_mgmt', 'Pain management program'], ['weight_mgmt', 'Weight management program'],
 ];
+// Exact wording matches the in-person check-in (renderer/i18n/strings.js).
 const FORM_VISITS = [
-  ['extraction_pain', 'Extraction — in pain'], ['extraction_no_pain', 'Extraction — not in pain'],
+  ['extraction_pain', 'Extraction — in pain'], ['extraction_no_pain', 'Extraction — no pain'],
   ['filling', 'Filling'], ['cleaning', 'Dental cleaning'],
 ];
-// Extra yes/no medical + dental questions (parity with the in-person check-in).
+// Extra yes/no medical + dental questions — verbatim from the app's check-in.
 const FORM_MED_YESNO = [
-  ['under_treatment', 'Are you under the care of a physician?'], ['hospitalized', 'Hospitalized / serious illness in the last 5 years?'],
-  ['tobacco', 'Do you use tobacco?'], ['pregnancy', 'Are you pregnant or nursing?'],
+  ['under_treatment', 'Are you currently under a doctor’s care?'], ['hospitalized', 'Hospitalized in the last 2 years?'],
+  ['tobacco', 'Do you use tobacco?'], ['pregnancy', 'Pregnant, nursing, or taking contraceptives?'],
 ];
 const FORM_DENTAL_YESNO = [
-  ['gum_bleeding', 'Do your gums bleed?'], ['sores', 'Sores or lumps in your mouth?'], ['jaw_injury', 'Head / neck / jaw injury?'],
-  ['grinding', 'Do you clench or grind your teeth?'], ['post_extraction_bleeding', 'Prolonged bleeding after an extraction?'], ['ortho', 'Orthodontic (braces) history?'],
+  ['gum_bleeding', 'Do your gums bleed?'], ['sores', 'Any sores or lumps in your mouth?'], ['jaw_injury', 'Any head, neck, or jaw injury?'],
+  ['grinding', 'Do you clench or grind your teeth?'], ['post_extraction_bleeding', 'History of bleeding after a tooth was pulled?'], ['ortho', 'Have you had braces or orthodontics?'],
 ];
 // Consent wording (English authoritative) — mirrors renderer/i18n/strings.js so a
 // patient can read and sign remotely the SAME forms they would in person.
@@ -496,35 +497,35 @@ function checkinFormPage(eventUid, eventName) {
     '<p>Fill this out ahead of time and sign your consent to save time at the clinic. Your answers go straight to the front desk.</p></div>' +
     '<form id="f">' +
 
-    '<div class="card"><h2>About you</h2>' +
+    '<div class="card"><h2>About You</h2>' +
     '<div class="row"><div><label>First name <span class="req">*</span></label><input type="text" id="first_name" autocomplete="given-name"></div>' +
     '<div><label>Last name <span class="req">*</span></label><input type="text" id="last_name" autocomplete="family-name"></div></div>' +
     '<div class="row"><div><label>Date of birth</label><input type="date" id="dob"></div>' +
-    '<div><label>Gender</label><select id="gender"><option value="">—</option><option value="female">Female</option><option value="male">Male</option><option value="other">Other</option></select></div></div>' +
-    '<div class="row"><div><label>Phone</label><input type="tel" id="phone" inputmode="numeric" autocomplete="tel"></div>' +
+    '<div><label>Gender</label><select id="gender"><option value="">—</option><option value="male">Male</option><option value="female">Female</option><option value="other">Other</option></select></div></div>' +
+    '<div class="row"><div><label>Phone number</label><input type="tel" id="phone" inputmode="numeric" autocomplete="tel"></div>' +
     '<div><label>Email</label><input type="email" id="email" autocomplete="email"></div></div>' +
-    '<label>Address</label><input type="text" id="address" autocomplete="street-address">' +
-    '<div class="row"><div><label>Emergency contact</label><input type="text" id="emergency_name"></div>' +
-    '<div><label>Emergency phone</label><input type="tel" id="emergency_phone" inputmode="numeric"></div></div>' +
+    '<label>Home address</label><input type="text" id="address" autocomplete="street-address">' +
+    '<div class="row"><div><label>Emergency contact name</label><input type="text" id="emergency_name"></div>' +
+    '<div><label>Emergency contact phone</label><input type="tel" id="emergency_phone" inputmode="numeric"></div></div>' +
     '<label>Preferred language</label><select id="language"><option value="en">English</option><option value="es">Español</option></select>' +
     '</div>' +
 
-    '<div class="card"><h2>What do you need?</h2><div class="chips">' + visitOpts + '</div>' +
-    '<label style="margin-top:12px">Reason for your visit</label><textarea id="reason" placeholder="Tell us what is bothering you"></textarea></div>' +
+    '<div class="card"><h2>What do you need today?</h2><div class="chips">' + visitOpts + '</div>' +
+    '<label style="margin-top:12px">Reason for today’s visit</label><textarea id="reason" placeholder="Tell us what is bothering you"></textarea></div>' +
 
-    '<div class="card"><h2>Medication allergies</h2><div class="chips" id="allergies">' + allergyChips + '</div>' +
-    '<input type="text" id="allergies_other" placeholder="Other allergies" style="margin-top:8px"></div>' +
+    '<div class="card"><h2>Medication allergies</h2><p class="hint" style="margin:0 0 6px">Select all that apply</p><div class="chips" id="allergies">' + allergyChips + '</div>' +
+    '<input type="text" id="allergies_other" placeholder="Other allergy (specify)" style="margin-top:8px"></div>' +
 
-    '<div class="card"><h2>Do you have any of these conditions?</h2><div class="chips" id="conditions">' + condChips + '</div>' +
-    '<input type="text" id="conditions_other" placeholder="Other conditions" style="margin-top:8px"></div>' +
+    '<div class="card"><h2>Do you have any of these conditions?</h2><p class="hint" style="margin:0 0 6px">Select all that apply</p><div class="chips" id="conditions">' + condChips + '</div>' +
+    '<input type="text" id="conditions_other" placeholder="Other condition (specify)" style="margin-top:8px"></div>' +
 
     '<div class="card"><h2>Current medications</h2><div id="meds"></div>' +
-    '<button type="button" class="addbtn" id="addmed">+ Add a medication</button>' +
-    '<label class="chip" style="margin-top:10px"><input type="checkbox" id="medications_none">I take no medications</label></div>' +
+    '<button type="button" class="addbtn" id="addmed">+ Add medication</button>' +
+    '<label class="chip" style="margin-top:10px"><input type="checkbox" id="medications_none">No medications</label></div>' +
 
-    '<div class="card"><h2>Medical history</h2>' + medYesNo + '</div>' +
+    '<div class="card"><h2>Medical History</h2>' + medYesNo + '</div>' +
 
-    '<div class="card"><h2>Dental history</h2><label>Prior dentist (name / clinic)</label><input type="text" id="prior_dentist">' + dentalYesNo + '</div>' +
+    '<div class="card"><h2>Dental History</h2><label>When did you last see a dentist?</label><input type="text" id="prior_dentist">' + dentalYesNo + '</div>' +
 
     '<div class="card"><h2>Consent</h2><div class="consent">' + genConsent + '</div>' +
     '<div class="row" style="margin-top:10px"><div><label>Your name (for the signature)</label><input type="text" id="signer"></div>' +
@@ -533,7 +534,7 @@ function checkinFormPage(eventUid, eventName) {
     '<label style="margin-top:10px">Signature (optional)</label><canvas id="gsig" class="sig"></canvas>' +
     '<div class="sigbar"><span class="hint">Sign with your finger or a stylus.</span><a id="gclear">Clear</a></div></div>' +
 
-    '<div class="card" id="surgeryCard" style="display:none"><h2>Oral Surgery consent</h2>' +
+    '<div class="card" id="surgeryCard" style="display:none"><h2>Surgery Consent</h2>' +
     '<p class="hint" style="margin:0 0 8px">Because an extraction may be done, please also read and sign this.</p>' +
     '<div class="consent">' + surConsent + '</div>' +
     '<label style="margin-top:10px">Tooth number(s), if known</label><input type="text" id="steeth" placeholder="e.g. 14, 15">' +
@@ -554,7 +555,7 @@ function checkinFormPage(eventUid, eventName) {
     "function mkpad(id){var c=el(id);if(!c)return null;var ctx=c.getContext('2d');var drawing=false,empty=true;function fit(){var r=c.getBoundingClientRect();if(!r.width)return;c.width=r.width;c.height=150;ctx.lineWidth=2.2;ctx.lineCap='round';ctx.strokeStyle='#12303f';}fit();window.addEventListener('resize',fit);function pt(e){var r=c.getBoundingClientRect();var t=(e.touches&&e.touches[0])?e.touches[0]:e;return{x:t.clientX-r.left,y:t.clientY-r.top};}function down(e){drawing=true;empty=false;var p=pt(e);ctx.beginPath();ctx.moveTo(p.x,p.y);e.preventDefault();}function mv(e){if(!drawing)return;var p=pt(e);ctx.lineTo(p.x,p.y);ctx.stroke();e.preventDefault();}function up(){drawing=false;}c.addEventListener('pointerdown',down);c.addEventListener('pointermove',mv);window.addEventListener('pointerup',up);return{data:function(){return empty?null:c.toDataURL('image/png');},clear:function(){ctx.clearRect(0,0,c.width,c.height);empty=true;},fit:fit};}" +
     "var gpad=mkpad('gsig');var spad=mkpad('ssig');el('gclear').onclick=function(){if(gpad)gpad.clear();};if(el('sclear'))el('sclear').onclick=function(){if(spad)spad.clear();};" +
     "document.querySelectorAll('input[name=visit]').forEach(function(i){i.addEventListener('change',function(){document.querySelectorAll('input[name=visit]').forEach(function(r){r.closest('.chip').classList.toggle('on',r.checked);});var v=(document.querySelector('input[name=visit]:checked')||{}).value||'';var ex=(v==='extraction_pain'||v==='extraction_no_pain');el('surgeryCard').style.display=ex?'block':'none';if(ex&&spad)setTimeout(function(){spad.fit();},0);});});" +
-    "var meds=el('meds');function addmed(){var d=document.createElement('div');d.className='med-row';d.innerHTML='<input type=\"text\" placeholder=\"Medication name\"><button type=\"button\">✕</button>';d.querySelector('button').onclick=function(){d.remove();};meds.appendChild(d);}el('addmed').onclick=addmed;" +
+    "var meds=el('meds');function addmed(){var d=document.createElement('div');d.className='med-row';d.innerHTML='<input type=\"text\" placeholder=\"Medication\"><button type=\"button\">✕</button>';d.querySelector('button').onclick=function(){d.remove();};meds.appendChild(d);}el('addmed').onclick=addmed;" +
     "el('f').addEventListener('submit',function(e){e.preventDefault();var err=el('err');err.textContent='';" +
     "var fn=val('first_name').trim(),ln=val('last_name').trim();if(!fn||!ln){err.textContent='Please enter your first and last name.';window.scrollTo(0,0);return;}" +
     "if(!el('cagree').checked){err.textContent='Please read and agree to the consent to finish.';return;}" +

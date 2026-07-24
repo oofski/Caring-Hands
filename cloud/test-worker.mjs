@@ -134,7 +134,7 @@ async function main() {
       h.data &&
       h.data.ok === true &&
       h.data.service === 'caring-hands-sync' &&
-      h.data.version === '1.3.0' &&
+      h.data.version === '1.3.1' &&
       typeof h.data.time === 'string'
   );
 
@@ -441,7 +441,18 @@ async function main() {
   const fullForm = await getText('/checkin/evt-1');
   check('the pre-registration form carries the full check-in options + consent to sign',
     /Erythromycin/.test(fullForm.text) && /Rheumatic fever/.test(fullForm.text) && /Weight management program/.test(fullForm.text) &&
-    /Hold Harmless/.test(fullForm.text) && /Oral Surgery/i.test(fullForm.text) && /id="gsig"/.test(fullForm.text));
+    /Hold Harmless/.test(fullForm.text) && /Consent for Oral Surgery/.test(fullForm.text) && /id="gsig"/.test(fullForm.text));
+  // The question wording must match the app's in-person check-in EXACTLY.
+  check('the pre-registration questions use the app\'s exact wording',
+    fullForm.text.includes('What do you need today?') &&
+    fullForm.text.includes('Reason for today’s visit') &&
+    fullForm.text.includes('Are you currently under a doctor’s care?') &&
+    fullForm.text.includes('Hospitalized in the last 2 years?') &&
+    fullForm.text.includes('When did you last see a dentist?') &&
+    fullForm.text.includes('History of bleeding after a tooth was pulled?') &&
+    fullForm.text.includes('Extraction — no pain') &&
+    fullForm.text.includes('Select all that apply') &&
+    fullForm.text.includes('I have read and understand the above, and I consent.'));
 
   // --- summary ---
   console.log('');
