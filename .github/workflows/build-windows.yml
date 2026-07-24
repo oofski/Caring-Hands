@@ -47,16 +47,22 @@ jobs:
       - name: Publish downloadable release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.5.16-build.${{ github.run_number }}
-          name: Caring Hands v1.5.16 (build ${{ github.run_number }})
+          tag_name: v1.5.17-build.${{ github.run_number }}
+          name: Caring Hands v1.5.17 (build ${{ github.run_number }})
           prerelease: false
           make_latest: true
           body: |
-            ## Caring Hands Worldwide — Practice Management Software (v1.5.16)
+            ## Caring Hands Worldwide — Practice Management Software (v1.5.17)
 
             Offline-first dental clinic app for Windows. **Download the installer once — it auto-updates from here on.**
 
-            **New in v1.5.16 — data-consistency fixes + live time tracking**
+            **New in v1.5.17 — online pre-registration now mirrors the full check-in, with consent signing**
+            - **Same questions as in person.** The pre-registration link now asks everything the in-person check-in does — the **full** allergy and medical-condition lists, medications, the extra medical history (under a physician's care, recent hospitalization, tobacco, pregnancy), dental history, and emergency contact.
+            - **Patients can sign the consent forms on the link.** They read and sign the full **General consent** (required, the same wording used in person) and — when they choose an extraction — the **Oral Surgery consent** with tooth number(s). Signatures are captured by finger or stylus.
+            - **The signed consent routes into the chart.** It arrives attached to the patient, so the dentist's "General consent required before treatment" is already satisfied for anyone who pre-registered — nothing to re-capture at the chair.
+            - *This upgrade is delivered by the pre-registration server: it needs the same one-time refresh as before (now server v1.3.0 — see the note your admin received). The desktop app itself is unchanged from 1.5.16.*
+
+            **From v1.5.16 — data-consistency fixes + live time tracking**
             - **Safety fix — "Bleeding disorder" now warns on the EMT & dentist screens.** A patient who reports a bleeding disorder at check-in already showed the blood-thinner alert in the queues and on the printed record, but the EMT and dentist detail screens were silent. Now all screens agree, so the two stations where an extraction is decided can't under-warn.
             - **Main record PDF now prints written-in answers.** The "Save record PDF" (full packet) now includes typed **"Other"** allergies/conditions (e.g. a hand-written **"Sulfa"** allergy), shows readable labels instead of raw codes, and prints **what the patient said they need** (extraction/filling/cleaning). It now matches the summary PDF.
             - **Records screen shows vitals + blood-thinner on screen.** The record now displays the reconciled blood-thinner status and the BP/vitals reading (with re-checks, in red if high) — previously those were only on the printout.
@@ -168,8 +174,8 @@ jobs:
 
             Includes everything from v1.0.2–1.1.1 (optional Cloud Sync, triage-free flow, per-event staff, Oregon consent, USB workflow, accountability, Russian, in-app auto-update).
 
-            - **Caring-Hands-Setup-1.5.16.exe** — installer (recommended; required for auto-update).
-            - **Caring-Hands-Portable-1.5.16.exe** — portable (no auto-update).
+            - **Caring-Hands-Setup-1.5.17.exe** — installer (recommended; required for auto-update).
+            - **Caring-Hands-Portable-1.5.17.exe** — portable (no auto-update).
 
             First sign-in: `admin / admin` — then create your staff accounts. All clinical data stays on the device unless you enable Cloud Sync.
           files: |

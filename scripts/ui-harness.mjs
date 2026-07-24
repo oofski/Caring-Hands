@@ -720,6 +720,30 @@ async function main() {
     log(/Mujer/.test(rep16.textContent) && !/>\s*Male\s*</.test(rep16.textContent.replace(/\s+/g, ' ')) , 'v1.5.16: reports shows a localized gender ("Mujer") verbatim instead of guessing "Male"');
   }
 
+  // ---- v1.5.17: pre-registration carries a SIGNED consent into the chart ----
+  {
+    currentUser = db.login('admin', 'admin');
+    const ev17 = db.listEvents().find((e) => e.active) || db.listEvents()[0];
+    const puid = 'prereg17-patient';
+    const iso = '2099-02-01T00:00:00.000Z';
+    // Exactly what the Worker writes: a checked-in patient + a signed general
+    // consent bound to it, applied through the normal sync path.
+    db.applyRemoteRows([
+      { entity: 'patient', uid: puid, event_uid: ev17.uid, patient_uid: null, deleted: 0, updated_at: iso + '@prereg', data: {
+        language: 'en', first_name: 'Signed', last_name: 'Consent', dob: null, gender: 'female', phone: null, email: null,
+        demographics: JSON.stringify({ preregistered: true }), medical_history: JSON.stringify({ conditions: ['diabetes'], under_treatment: 'yes' }),
+        dental_history: JSON.stringify({ reason: 'exam', visit_type: 'filling', gum_bleeding: 'no' }), status: 'checked_in', created_at: iso, dismissed_at: null, dismissed_by_name: null } },
+      { entity: 'consent', uid: 'prereg17-consent', event_uid: ev17.uid, patient_uid: puid, deleted: 0, updated_at: iso + '@prereg-c1', data: {
+        type: 'general', version: 'general-oregon-en-v1+covid', language: 'en', signer_name: 'Signed Consent', relationship: 'Self',
+        signature_png: 'data:image/png;base64,AAAA', signed_at: iso, tooth_numbers: null, amended_by: null, amended_at: null } },
+    ]);
+    const sp = db.listPatients({}).find((p) => p.first_name === 'Signed' && p.last_name === 'Consent');
+    log(!!sp && sp.preregistered === true && sp.status === 'checked_in', 'v1.5.17: a full-parity pre-registration lands as a checked-in patient');
+    const full17 = db.getPatient(sp.id);
+    log((full17.consents || []).some((c) => c.type === 'general' && c.signer_name === 'Signed Consent' && c.signature_png), 'v1.5.17: the consent SIGNED on the pre-registration link is attached to the chart');
+    log((full17.medical_history.conditions || []).includes('diabetes') && full17.medical_history.under_treatment === 'yes' && full17.dental_history.visit_type === 'filling', 'v1.5.17: the extra check-in-parity answers (medical + dental history) carry through');
+  }
+
   // ---- v1.5.0: X-ray import — per-x-ray tooth + auto-name, synced; import tile. ----
   {
     currentUser = db.login('admin', 'admin');

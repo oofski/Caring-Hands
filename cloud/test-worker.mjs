@@ -134,7 +134,7 @@ async function main() {
       h.data &&
       h.data.ok === true &&
       h.data.service === 'caring-hands-sync' &&
-      h.data.version === '1.2.0' &&
+      h.data.version === '1.3.0' &&
       typeof h.data.time === 'string'
   );
 
@@ -385,12 +385,19 @@ async function main() {
   const badGet = await getText('/checkin/does-not-exist');
   check('GET /checkin/<unknown> -> 404 error page', badGet.status === 404 && /not valid|not found/i.test(badGet.text));
 
+  // Full check-in-parity submission WITH a signed general consent.
   const preReg = await call(env, 'POST', '/checkin/evt-1', {
-    body: { first_name: 'Pre', last_name: 'Reg', dob: '1990-01-02', gender: 'female', phone: '(555) 123-4567', language: 'es', reason: 'tooth hurts', visit_type: 'filling', allergies: ['penicillin', 'other'], allergies_other: 'shellfish', conditions: ['diabetes'], medications: ['Metformin', 'Lisinopril'] },
+    body: {
+      first_name: 'Pre', last_name: 'Reg', dob: '1990-01-02', gender: 'female', phone: '(555) 123-4567', language: 'es',
+      address: '1 Main St', emergency_name: 'Kin', emergency_phone: '5550001111',
+      reason: 'tooth hurts', visit_type: 'filling', allergies: ['penicillin', 'other'], allergies_other: 'shellfish',
+      conditions: ['diabetes', 'pain_mgmt'], medications: ['Metformin', 'Lisinopril'],
+      under_treatment: 'yes', tobacco: 'no', gum_bleeding: 'yes', prior_dentist: 'Dr. Smith',
+      consent_agree: true, signer_name: 'Pre Reg', relationship: 'Self', signature_png: 'data:image/png;base64,AAAA',
+    },
   });
-  check('POST /checkin/<event> accepts a submission', preReg.status === 200 && preReg.data && preReg.data.ok === true);
+  check('POST /checkin/<event> accepts a full submission with a signed consent', preReg.status === 200 && preReg.data && preReg.data.ok === true);
 
-  // The submission must have been written as a checked-in patient row for evt-1.
   const stored = Array.from(env.DB._store.values()).find((r) => r.entity === 'patient' && r.event_uid === 'evt-1' && /@prereg$/.test(String(r.updated_at)));
   const pd = stored ? JSON.parse(stored.data) : null;
   check('pre-registration is stored as a checked-in patient row scoped to the event',
@@ -398,16 +405,43 @@ async function main() {
   const demo = pd ? JSON.parse(pd.demographics) : null;
   const mh = pd ? JSON.parse(pd.medical_history) : null;
   const dh = pd ? JSON.parse(pd.dental_history) : null;
-  check('pre-registration is tagged preregistered + phone digits-only + answers mapped natively',
-    !!demo && demo.preregistered === true && pd.phone === '5551234567' &&
-    !!mh && mh.allergies.includes('penicillin') && mh.allergies_other === 'shellfish' && mh.conditions.includes('diabetes') && mh.medications.length === 2 &&
-    !!dh && dh.reason === 'tooth hurts' && dh.visit_type === 'filling');
+  check('pre-registration maps ALL the in-person options natively (parity)',
+    !!demo && demo.preregistered === true && demo.address === '1 Main St' && demo.emergency_name === 'Kin' && pd.phone === '5551234567' &&
+    !!mh && mh.allergies.includes('penicillin') && mh.allergies_other === 'shellfish' && mh.conditions.includes('diabetes') && mh.conditions.includes('pain_mgmt') && mh.medications.length === 2 && mh.under_treatment === 'yes' && mh.tobacco === 'no' &&
+    !!dh && dh.reason === 'tooth hurts' && dh.visit_type === 'filling' && dh.gum_bleeding === 'yes' && dh.prior_dentist === 'Dr. Smith');
 
-  const noName = await call(env, 'POST', '/checkin/evt-1', { body: { first_name: '', last_name: '' } });
+  // The general consent must be written as a consent row bound to that patient.
+  const gConsent = Array.from(env.DB._store.values()).find((r) => r.entity === 'consent' && r.patient_uid === stored.uid && JSON.parse(r.data).type === 'general');
+  const gc = gConsent ? JSON.parse(gConsent.data) : null;
+  check('a SIGNED general consent is filed with the patient (routes into the chart)',
+    !!gc && gc.type === 'general' && gc.signer_name === 'Pre Reg' && gc.relationship === 'Self' && typeof gc.signature_png === 'string' && /^general-oregon-es/.test(gc.version) && gConsent.event_uid === 'evt-1');
+
+  // General consent is REQUIRED — a submission without it is rejected.
+  const noConsent = await call(env, 'POST', '/checkin/evt-1', { body: { first_name: 'No', last_name: 'Consent', visit_type: 'cleaning' } });
+  check('POST /checkin without agreeing to the consent -> 400', noConsent.status === 400 && /consent/i.test(noConsent.data.error));
+
+  // An extraction visit also requires (and files) the Oral Surgery consent.
+  const noSurgery = await call(env, 'POST', '/checkin/evt-1', { body: { first_name: 'Ex', last_name: 'Tract', visit_type: 'extraction_pain', consent_agree: true } });
+  check('POST /checkin extraction without surgery consent -> 400', noSurgery.status === 400 && /surgery/i.test(noSurgery.data.error));
+  const withSurgery = await call(env, 'POST', '/checkin/evt-1', { body: { first_name: 'Ex', last_name: 'Tract', visit_type: 'extraction_pain', consent_agree: true, surgery_agree: true, surgery_teeth: '14, 15', signature_png: 'data:image/png;base64,BBBB', surgery_signature_png: 'data:image/png;base64,CCCC' } });
+  check('POST /checkin extraction WITH surgery consent -> 200', withSurgery.status === 200 && withSurgery.data.ok === true);
+  const exPatient = Array.from(env.DB._store.values()).find((r) => r.entity === 'patient' && JSON.parse(r.data).last_name === 'Tract');
+  const surgeryRow = Array.from(env.DB._store.values()).find((r) => r.entity === 'consent' && r.patient_uid === exPatient.uid && JSON.parse(r.data).type === 'oral_surgery');
+  const sc = surgeryRow ? JSON.parse(surgeryRow.data) : null;
+  check('the Oral Surgery consent is filed with tooth numbers + signature',
+    !!sc && sc.type === 'oral_surgery' && sc.tooth_numbers === '14, 15' && typeof sc.signature_png === 'string');
+
+  const noName = await call(env, 'POST', '/checkin/evt-1', { body: { first_name: '', last_name: '', consent_agree: true } });
   check('POST /checkin with no name -> 400', noName.status === 400 && noName.data.ok === false);
 
-  const postBadEvent = await call(env, 'POST', '/checkin/does-not-exist', { body: { first_name: 'A', last_name: 'B' } });
+  const postBadEvent = await call(env, 'POST', '/checkin/does-not-exist', { body: { first_name: 'A', last_name: 'B', consent_agree: true } });
   check('POST /checkin/<unknown> -> 404 (only real events accept submissions)', postBadEvent.status === 404 && postBadEvent.data.ok === false);
+
+  // The GET form now carries the FULL option set + consent text.
+  const fullForm = await getText('/checkin/evt-1');
+  check('the pre-registration form carries the full check-in options + consent to sign',
+    /Erythromycin/.test(fullForm.text) && /Rheumatic fever/.test(fullForm.text) && /Weight management program/.test(fullForm.text) &&
+    /Hold Harmless/.test(fullForm.text) && /Oral Surgery/i.test(fullForm.text) && /id="gsig"/.test(fullForm.text));
 
   // --- summary ---
   console.log('');
