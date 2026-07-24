@@ -94,6 +94,7 @@ export function renderDashboard(ctx) {
 
     const crmCard = (p) => {
       const foot = [];
+      if (p.preregistered) foot.push(el('span', { class: 'crm-chip crm-chip--prereg', title: 'Pre-registered online — confirm arrival' }, ['Pre-reg']));
       const wl = waitLabel(minsSince(p.created_at));
       if (wl) foot.push(el('span', { class: 'crm-chip', title: 'Time since check-in' }, [icon('calendar', { size: 10 }), wl]));
       if (p.on_thinner) foot.push(el('span', { class: 'crm-chip crm-chip--warn', title: 'On blood thinner — verify before extraction' }, ['Thinner']));

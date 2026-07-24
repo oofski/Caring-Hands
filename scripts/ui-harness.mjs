@@ -644,6 +644,44 @@ async function main() {
     log(!!rep.querySelector('.ring-track') && !!rep.querySelector('.kpi-grid'), 'v1.5.14: reports renders the completion ring + KPI grid');
   }
 
+  // ---- v1.5.15: patient pre-registration (public link → routed into the event) ----
+  {
+    currentUser = db.login('admin', 'admin');
+    // Every event exposes a per-event pre-registration link on its current cloud.
+    const evs = db.listEvents();
+    const activeEv = evs.find((e) => e.active) || evs[0];
+    log(!!activeEv && typeof activeEv.prereg_url === 'string' && /\/checkin\//.test(activeEv.prereg_url) && activeEv.prereg_url.includes(activeEv.uid), 'v1.5.15: each event exposes a unique /checkin/<event-uid> pre-registration link');
+
+    // Simulate what the Worker writes when a patient pre-registers: a checked-in
+    // patient row scoped to the event, applied through the normal sync path.
+    const iso = '2099-01-01T00:00:00.000Z';
+    const remoteRow = {
+      entity: 'patient', uid: 'prereg-test-uid-1', event_uid: activeEv.uid, patient_uid: null, deleted: 0,
+      updated_at: iso + '@prereg',
+      data: {
+        language: 'es', first_name: 'Pilar', last_name: 'Nuevo', dob: '1988-03-03', gender: 'female', phone: '5551234567', email: null,
+        demographics: JSON.stringify({ preregistered: true, prereg_at: iso }),
+        medical_history: JSON.stringify({ allergies: ['penicillin'], conditions: ['diabetes'], medications: [{ name: 'Metformin', dose: '', reason: '' }] }),
+        dental_history: JSON.stringify({ reason: 'broken tooth', visit_type: 'filling' }),
+        status: 'checked_in', created_at: iso, dismissed_at: null, dismissed_by_name: null,
+      },
+    };
+    const res15 = db.applyRemoteRows([remoteRow]);
+    log(res15.applied === 1, 'v1.5.15: a pre-registration row applies through the normal sync path');
+    const pre = db.listPatients({}).find((p) => p.first_name === 'Pilar' && p.last_name === 'Nuevo');
+    log(!!pre && pre.status === 'checked_in' && pre.preregistered === true, 'v1.5.15: it lands as a checked-in patient in that event, tagged preregistered');
+    const full15 = db.getPatient(pre.id);
+    log((full15.medical_history.allergies || []).includes('penicillin') && (full15.medical_history.conditions || []).includes('diabetes') && full15.dental_history.reason === 'broken tooth', 'v1.5.15: the pre-registered answers render natively (allergies, conditions, reason)');
+
+    // The dashboard board shows the pre-registered patient with a "Pre-reg" tag.
+    const store15 = (await import('../src/renderer/js/store.js')).store; store15.setUser(currentUser);
+    const ctx15 = { navigate: () => {}, toast: () => {}, store: store15, setDetail: () => {} };
+    const dash15 = (await import('../src/renderer/js/views/dashboard.js')).renderDashboard(ctx15);
+    document.body.append(dash15); await tick(); await tick();
+    const card = Array.from(dash15.querySelectorAll('.crm-card')).find((c) => /Nuevo, Pilar/.test(c.textContent));
+    log(!!card && /Pre-reg/.test(card.textContent), 'v1.5.15: the pre-registered patient shows on the live board with a “Pre-reg” tag');
+  }
+
   // ---- v1.5.0: X-ray import — per-x-ray tooth + auto-name, synced; import tile. ----
   {
     currentUser = db.login('admin', 'admin');

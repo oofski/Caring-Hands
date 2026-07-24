@@ -265,6 +265,7 @@ export function renderAdmin(ctx, params = {}) {
       const isActive = active && active.id === e.id;
       const actions = el('div', { class: 'inline-row', style: 'margin:0; justify-content:flex-end;' });
       if (e.active && !isActive) actions.append(el('button', { class: 'btn btn--ghost btn--sm', onClick: () => setActive(e) }, ['Set active']));
+      if (e.prereg_url) actions.append(el('button', { class: 'btn btn--ghost btn--sm', title: 'Patient pre-registration link', onClick: () => preregLink(e) }, [icon('globe', { size: 14 }), 'Pre-reg link']));
       actions.append(el('button', { class: 'btn btn--ghost btn--sm', onClick: () => editEvent(e) }, [icon('pen', { size: 14 }), 'Edit']));
       if (e.active) actions.append(el('button', { class: 'btn btn--ghost btn--sm', onClick: () => setState(e, false) }, ['Turn off']));
       else actions.append(el('button', { class: 'btn btn--ghost btn--sm', onClick: () => setState(e, true) }, ['Reactivate']));
@@ -298,6 +299,25 @@ export function renderAdmin(ctx, params = {}) {
 
     async function setActive(e) {
       try { const ev = await api.setActiveEvent(e.id); store.setEvent(ev); toast('Active event set', 'success'); paint(); } catch (err) { toast(err.message, 'error'); }
+    }
+    // Share the per-event pre-registration link. Patients open it ahead of time,
+    // answer the check-in questions, and appear in THIS event's queue.
+    async function preregLink(e) {
+      const input = el('input', { class: 'input', readonly: true, value: e.prereg_url, style: 'font-family:var(--font-mono);font-size:var(--fs-sm)' });
+      const copyBtn = el('button', { class: 'btn btn--primary', type: 'button' }, [icon('save', { size: 14 }), 'Copy link']);
+      copyBtn.addEventListener('click', async () => {
+        try { input.select(); if (navigator.clipboard && navigator.clipboard.writeText) await navigator.clipboard.writeText(e.prereg_url); else document.execCommand('copy'); toast('Link copied', 'success'); }
+        catch (_) { input.select(); document.execCommand('copy'); toast('Link copied', 'success'); }
+      });
+      await modal({
+        title: `Pre-registration link — ${e.name}`,
+        body: el('div', {}, [
+          el('p', { class: 'subtle small', style: 'margin:0 0 10px' }, ['Share this link with patients (text, email, flyer QR). Anyone who fills it out is added to this event’s check-in queue with a “Pre-reg” tag. The link is unique to this event.']),
+          el('div', { class: 'inline-row', style: 'gap:8px' }, [input, copyBtn]),
+          el('p', { class: 'subtle', style: 'font-size:var(--fs-2xs);margin:12px 0 0' }, ['Note: pre-registration needs the clinic to be Online (Admin → Cloud). Submissions arrive on the next sync.']),
+        ]),
+        confirmText: 'Done',
+      });
     }
     async function setState(e, on) {
       try { await api.setEventState(e.id, on); store.setEvent(await api.activeEvent()); toast(on ? 'Event reactivated' : 'Event turned off', 'success'); paint(); } catch (err) { toast(err.message, 'error'); }

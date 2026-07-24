@@ -39,6 +39,12 @@ function makeFakeD1() {
           const row = store.get(uid);
           return row ? { updated_at: row.updated_at } : null;
         }
+        // Pre-registration: look up an event row by uid (must exist, not deleted).
+        if (/SELECT data FROM sync_rows WHERE uid = \? AND entity = 'event' AND deleted = 0/.test(s)) {
+          const uid = this._binds[0];
+          const row = store.get(uid);
+          return row && row.entity === 'event' && !row.deleted ? { data: row.data } : null;
+        }
         throw new Error('fake D1: unsupported first() SQL: ' + s);
       },
       async run() {
@@ -128,7 +134,7 @@ async function main() {
       h.data &&
       h.data.ok === true &&
       h.data.service === 'caring-hands-sync' &&
-      h.data.version === '1.1.0' &&
+      h.data.version === '1.2.0' &&
       typeof h.data.time === 'string'
   );
 
@@ -366,6 +372,42 @@ async function main() {
       typeof triRow.data === 'object' &&
       triRow.data.bp === '120/80'
   );
+
+  // --- Pre-registration (public /checkin) — event 'evt-1' was pushed above ---
+  async function getText(path) {
+    const res = await worker.fetch(new Request('https://sync.example.com' + path, { method: 'GET' }), env, {});
+    return { status: res.status, ctype: res.headers.get('content-type') || '', text: await res.text() };
+  }
+  const formGet = await getText('/checkin/evt-1');
+  check('GET /checkin/<event> serves the HTML form for that event',
+    formGet.status === 200 && /text\/html/.test(formGet.ctype) && formGet.text.includes('Field Day Clinic') && /Pre-registration/i.test(formGet.text));
+
+  const badGet = await getText('/checkin/does-not-exist');
+  check('GET /checkin/<unknown> -> 404 error page', badGet.status === 404 && /not valid|not found/i.test(badGet.text));
+
+  const preReg = await call(env, 'POST', '/checkin/evt-1', {
+    body: { first_name: 'Pre', last_name: 'Reg', dob: '1990-01-02', gender: 'female', phone: '(555) 123-4567', language: 'es', reason: 'tooth hurts', visit_type: 'filling', allergies: ['penicillin', 'other'], allergies_other: 'shellfish', conditions: ['diabetes'], medications: ['Metformin', 'Lisinopril'] },
+  });
+  check('POST /checkin/<event> accepts a submission', preReg.status === 200 && preReg.data && preReg.data.ok === true);
+
+  // The submission must have been written as a checked-in patient row for evt-1.
+  const stored = Array.from(env.DB._store.values()).find((r) => r.entity === 'patient' && r.event_uid === 'evt-1' && /@prereg$/.test(String(r.updated_at)));
+  const pd = stored ? JSON.parse(stored.data) : null;
+  check('pre-registration is stored as a checked-in patient row scoped to the event',
+    !!pd && pd.status === 'checked_in' && pd.first_name === 'Pre' && pd.last_name === 'Reg');
+  const demo = pd ? JSON.parse(pd.demographics) : null;
+  const mh = pd ? JSON.parse(pd.medical_history) : null;
+  const dh = pd ? JSON.parse(pd.dental_history) : null;
+  check('pre-registration is tagged preregistered + phone digits-only + answers mapped natively',
+    !!demo && demo.preregistered === true && pd.phone === '5551234567' &&
+    !!mh && mh.allergies.includes('penicillin') && mh.allergies_other === 'shellfish' && mh.conditions.includes('diabetes') && mh.medications.length === 2 &&
+    !!dh && dh.reason === 'tooth hurts' && dh.visit_type === 'filling');
+
+  const noName = await call(env, 'POST', '/checkin/evt-1', { body: { first_name: '', last_name: '' } });
+  check('POST /checkin with no name -> 400', noName.status === 400 && noName.data.ok === false);
+
+  const postBadEvent = await call(env, 'POST', '/checkin/does-not-exist', { body: { first_name: 'A', last_name: 'B' } });
+  check('POST /checkin/<unknown> -> 404 (only real events accept submissions)', postBadEvent.status === 404 && postBadEvent.data.ok === false);
 
   // --- summary ---
   console.log('');

@@ -579,10 +579,15 @@ function deleteUser(actor, id) {
 
 function listEvents() {
   const rows = db.prepare('SELECT * FROM events ORDER BY active DESC, created_at DESC').all();
+  // Per-event public pre-registration link: patients open it ahead of time, fill
+  // the check-in questions, and the submission is routed into THIS event. The
+  // link lives on the same cloud server the app already syncs against.
+  const base = (getSyncMeta().url || '').replace(/\/+$/, '');
   return rows.map((e) => ({
     ...e,
     active: !!e.active,
     patient_count: db.prepare('SELECT COUNT(*) AS n FROM patients WHERE event_id = ?').get(e.id).n,
+    prereg_url: (base && e.uid) ? `${base}/checkin/${e.uid}` : null,
   }));
 }
 
@@ -1111,6 +1116,7 @@ function listPatients({ eventId, search } = {}) {
       assigned_to: tr ? tr.assigned_to : null,
       route: tr ? tr.route : null,
       has_vitals: !!(tr && (tr.bp_systolic != null || tr.heart_rate != null)),
+      preregistered: !!(pt.demographics && pt.demographics.preregistered),
       emt_signed_off: !!(tr && tr.emt_signed_off),
       blood_thinner: tr ? tr.blood_thinner : null,
       // Reconciled thinner signal so the QUEUES can't understate the risk: true if
