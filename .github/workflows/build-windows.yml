@@ -47,16 +47,22 @@ jobs:
       - name: Publish downloadable release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.5.14-build.${{ github.run_number }}
-          name: Caring Hands v1.5.14 (build ${{ github.run_number }})
+          tag_name: v1.5.15-build.${{ github.run_number }}
+          name: Caring Hands v1.5.15 (build ${{ github.run_number }})
           prerelease: false
           make_latest: true
           body: |
-            ## Caring Hands Worldwide — Practice Management Software (v1.5.14)
+            ## Caring Hands Worldwide — Practice Management Software (v1.5.15)
 
             Offline-first dental clinic app for Windows. **Download the installer once — it auto-updates from here on.**
 
-            **New in v1.5.14 — a live dashboard, a real reports dashboard, and more**
+            **New in v1.5.15 — patients can pre-register online, ahead of time**
+            - **A unique link per event.** Under **Admin → Events**, each event now has a **"Pre-reg link"** button. Share that link (text, email, or a printed QR code) and patients can fill out the check-in questions on their phone **before** they arrive.
+            - **It routes straight into that event.** Anyone who submits from an event's link is added to **that** event's queue automatically — they appear in the **"Checked in"** column of the live board with a blue **"Pre-reg"** tag, and their answers (allergies, conditions, medications, reason for visit) show up on the EMT and dentist screens with no retyping.
+            - **No new setup for most clinics** — it runs on the same clinic cloud you already sync with. *(One-time: the sync server needs its code refreshed to turn this on — see the note your admin received.)*
+            - The link only works while the clinic is **Online** (Admin → Cloud), and a pre-registered patient can be dismissed like any other if they don't show.
+
+            **From v1.5.14 — a live dashboard, a real reports dashboard, and more**
             - **Live patient-flow board on the dashboard.** The dashboard now shows a **live board** of where every patient physically is in the clinic — columns for **Checked in → Vitals → Ready for treatment → Hygienist → Dentist → Checked out** — with a card per patient (name, age, complaint, wait time, medical-flag and blood-thinner markers). It refreshes on its own, so anyone can glance at it and see the whole floor at a moment.
             - **Tap a number to jump there.** The top stat cards are now buttons — tap **Waiting for vitals** to open the vitals station, **Ready for treatment** to open the dentist, and so on. The old "Quick actions" strip is gone; the cards *are* the actions.
             - **Start check-in is front-and-center.** The **Start patient check-in** button now sits in the **top-right** of the dashboard. **Back up to USB** moved to **Admin → Backup & export** (where the export tools already live), keeping the dashboard clean.
@@ -153,8 +159,8 @@ jobs:
 
             Includes everything from v1.0.2–1.1.1 (optional Cloud Sync, triage-free flow, per-event staff, Oregon consent, USB workflow, accountability, Russian, in-app auto-update).
 
-            - **Caring-Hands-Setup-1.5.14.exe** — installer (recommended; required for auto-update).
-            - **Caring-Hands-Portable-1.5.14.exe** — portable (no auto-update).
+            - **Caring-Hands-Setup-1.5.15.exe** — installer (recommended; required for auto-update).
+            - **Caring-Hands-Portable-1.5.15.exe** — portable (no auto-update).
 
             First sign-in: `admin / admin` — then create your staff accounts. All clinical data stays on the device unless you enable Cloud Sync.
           files: |
