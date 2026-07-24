@@ -35,24 +35,26 @@ export function renderCheckout(ctx, params = {}) {
       el('td', {}, [el('strong', {}, [`${p.last_name}, ${p.first_name}`])]),
       el('td', { class: 'num' }, [p.age != null ? String(p.age) : '—']),
       el('td', {}, [p.complaint || '—']),
-      el('td', {}, [statusPill(p.status)]),
+      el('td', {}, [statusPill(p.status),
+        // Green "Left" tag once the patient has actually been checked out.
+        p.status === 'dismissed' ? el('span', { class: 'pill pill--success', style: 'margin-left:6px', title: 'Checked out — the patient has left' }, [el('span', { class: 'pill-dot' }), 'Left']) : null]),
       el('td', {}, [el('button', { class: 'btn btn--primary btn--sm', onClick: (e) => { e.stopPropagation(); detail(p.id); } }, ['Review', icon('chevron', { size: 15 })])]),
     ]);
     clear(root);
     mount(root,
       el('div', { class: 'view-head' }, [
-        el('div', {}, [el('h1', {}, ['Check-Out']), el('p', { class: 'view-sub' }, [`${ready.length} ready to dismiss · ${done.length} dismissed`])]),
+        el('div', {}, [el('h1', {}, ['Check-Out']), el('p', { class: 'view-sub' }, [`${ready.length} ready to check out · ${done.length} checked out`])]),
         el('div', { class: 'view-head-actions' }, [el('button', { class: 'btn btn--ghost btn--sm', onClick: queue }, [icon('refresh', { size: 15 }), 'Refresh'])]),
       ]),
       el('div', { class: 'card' }, [
-        el('div', { class: 'card-title' }, [icon('checkCircle', { size: 15 }), 'Ready to dismiss']),
+        el('div', { class: 'card-title' }, [icon('checkCircle', { size: 15 }), 'Ready to check out']),
         el('div', { class: 'data-table-wrap' }, [el('table', { class: 'data-table' }, [
           el('thead', {}, [el('tr', {}, ['Patient', 'Age', 'Complaint', 'Status', ''].map((h) => el('th', {}, [h])))]),
           el('tbody', {}, ready.length ? ready.map(rowFor) : [el('tr', {}, [el('td', { colspan: 5, class: 'empty' }, ['No patients waiting for check-out.'])])]),
         ])]),
       ]),
       done.length ? el('div', { class: 'card' }, [
-        el('div', { class: 'card-title' }, ['Dismissed today']),
+        el('div', { class: 'card-title' }, ['Checked out today']),
         el('div', { class: 'data-table-wrap' }, [el('table', { class: 'data-table data-table--mini' }, [
           el('tbody', {}, done.map(rowFor)),
         ])]),

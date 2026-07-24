@@ -17,11 +17,14 @@ const fmtDay = (d) => { const dt = new Date(d + 'T00:00:00'); return isNaN(dt) ?
 const LANG_LABEL = { en: 'English', es: 'Español', ru: 'Русский', fr: 'Français', pt: 'Português' };
 const langLabel = (l) => LANG_LABEL[l] || (l ? String(l).toUpperCase() : 'Unknown');
 function genderLabel(g) {
-  const s = String(g || '').trim().toLowerCase();
+  const s = String(g == null ? '' : g).trim().toLowerCase();
   if (!s) return 'Not recorded';
-  if (s[0] === 'm') return 'Male';
-  if (s[0] === 'f') return 'Female';
-  return g.charAt(0).toUpperCase() + g.slice(1);
+  // Exact code match only — never guess by first letter (that mislabeled
+  // localized values like Spanish "Mujer" as "Male").
+  if (s === 'male' || s === 'm') return 'Male';
+  if (s === 'female' || s === 'f') return 'Female';
+  if (s === 'other') return 'Other';
+  return String(g).charAt(0).toUpperCase() + String(g).slice(1);
 }
 function ageBucket(a) {
   if (a == null || isNaN(a)) return 'Not recorded';

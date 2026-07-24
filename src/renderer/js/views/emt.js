@@ -80,7 +80,9 @@ export function renderEmt(ctx, params = {}) {
       onClick: () => detail(p.id),
     }, [
       el('td', {}, [el('strong', {}, [`${p.last_name}, ${p.first_name}`]),
-        (p.flags && p.flags.length) ? el('span', { class: 'flag-dot' }, [icon('flag', { size: 13 }), String(p.flags.length)]) : null]),
+        (p.flags && p.flags.length) ? el('span', { class: 'flag-dot' }, [icon('flag', { size: 13 }), String(p.flags.length)]) : null,
+        // Pre-registered online — flag it at the FIRST station so staff confirm arrival.
+        p.preregistered ? el('span', { class: 'pill pill--info', style: 'margin-left:6px', title: 'Pre-registered online — confirm arrival' }, ['Pre-reg']) : null]),
       el('td', { class: 'num' }, [p.age != null ? String(p.age) : '—']),
       el('td', {}, [p.complaint || '—']),
       el('td', {}, [p.has_vitals

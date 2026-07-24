@@ -42,7 +42,10 @@ export function bloodThinnerStatus(patient) {
   const detected = bloodThinnerFlags(mh).map((f) => f.replace(PREFIX, ''));
   // The patient may also self-report it as a CONDITION at check-in ("Takes blood
   // thinners") without naming a specific drug — that's an equally valid signal.
-  const conditionThinner = (mh.conditions || []).includes('blood_thinners');
+  // A "Bleeding disorder / bleeds easily" answer is treated the same bleeding
+  // risk here, matching db.js (queue on_thinner) and pdf.js (printed record) so
+  // the EMT/dentist screens can't under-warn relative to the queue and PDF.
+  const conditionThinner = (mh.conditions || []).some((k) => k === 'blood_thinners' || k === 'bleeding');
   const confirmed = tr.blood_thinner === 'yes' || tr.blood_thinner === 'no' ? tr.blood_thinner : null;
   const names = new Set(detected);
   if (tr.blood_thinner === 'yes' && tr.blood_thinner_detail) {

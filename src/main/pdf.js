@@ -243,8 +243,14 @@ function fullPacketBody(p) {
   const m = p.medical_history || {};
   const dh = p.dental_history || {};
 
-  const allergies = (m.allergies || []).map((a) => `<span class="flag">${esc(a)}</span>`).join('') || '<span class="muted">None reported</span>';
-  const conditions = (m.conditions || []).map((c) => `<span>${esc(c)}</span>`).join('') || '<span class="muted">None reported</span>';
+  const aItems = historyItems(m.allergies, m, 'allergies_other');
+  const allergies = aItems.length
+    ? aItems.map((a) => `<span class="flag">${a}</span>`).join('')
+    : `<span class="muted">${(m.allergies || []).includes('none') ? 'None (reviewed)' : 'None reported'}</span>`;
+  const cItems = historyItems(m.conditions, m, 'conditions_other');
+  const conditions = cItems.length
+    ? cItems.map((c) => `<span>${c}</span>`).join('')
+    : `<span class="muted">${(m.conditions || []).includes('none') ? 'None (reviewed)' : 'None reported'}</span>`;
   const meds = (m.medications || []).map(
     (x) => `<tr><td>${esc(x.name)}</td><td>${esc(x.dose || '')}</td><td>${esc(x.reason || '')}</td></tr>`
   ).join('') || '<tr><td colspan="3" class="muted">None reported</td></tr>';
@@ -307,6 +313,7 @@ function fullPacketBody(p) {
 
     <h2>Dental History</h2>
     <table class="grid">
+      <tr>${field('What they need today', VISIT_LABELS[dh.visit_type] || '')}${field('May need extraction', dh.may_need_extraction === 'yes' ? 'Yes' : '')}</tr>
       <tr>${field('Reason for visit', dh.reason)}${field('Prior dentist', dh.prior_dentist)}</tr>
       <tr>${field('Gums bleed', dh.gum_bleeding)}${field('Sores / lumps', dh.sores)}</tr>
       <tr>${field('Head/neck/jaw injury', dh.jaw_injury)}${field('Clenching / grinding', dh.grinding)}</tr>
@@ -329,6 +336,22 @@ function fullPacketBody(p) {
 function titleKey(k) {
   return String(k || '').replace(/[_-]+/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 }
+
+// Display items for an allergies/conditions list, used by BOTH PDF paths so they
+// can never disagree: drop the 'other'/'none' sentinel keys, title-case the real
+// keys, and APPEND the typed "Other" free text — so a written-in allergen (e.g.
+// "Sulfa") is never dropped from the printed record.
+function historyItems(arr, m, otherKey) {
+  const items = (arr || []).filter((x) => x !== 'other' && x !== 'none').map((x) => esc(titleKey(x)));
+  if ((arr || []).includes('other') && m && m[otherKey]) items.push(esc(m[otherKey]));
+  return items;
+}
+
+// The patient's stated need from the 1–4 check-in scale.
+const VISIT_LABELS = {
+  extraction_pain: 'Extraction — in pain', extraction_no_pain: 'Extraction — not in pain',
+  filling: 'Filling', cleaning: 'Dental cleaning',
+};
 
 // Reconcile the blood-thinner status for the RECORD the same way the app screens
 // do (EMT answer + medication list + self-reported condition), so a printed record
@@ -371,10 +394,9 @@ function healthBlock(p) {
     : 'Not recorded';
   const thinner = bloodThinnerLine(p);
   const list = (arr, otherKey) => {
-    // Filter the sentinel keys so an all-'none' section correctly shows the
-    // "reviewed" fallback rather than a literal "None".
-    const items = (arr || []).filter((x) => x !== 'other' && x !== 'none').map((x) => titleKey(x));
-    if ((arr || []).includes('other') && m[otherKey]) items.push(esc(m[otherKey]));
+    // Shared with the full-packet PDF via historyItems() so the two record
+    // formats can never disagree on allergies/conditions.
+    const items = historyItems(arr, m, otherKey);
     return items.length ? items.join(', ') : (arr && arr.includes('none') ? 'None (reviewed)' : 'None reported');
   };
   const allergies = list(m.allergies, 'allergies_other');

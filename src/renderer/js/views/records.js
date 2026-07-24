@@ -6,6 +6,31 @@ import { icon } from '../icons.js';
 import { store } from '../store.js';
 import { statusPill } from './dashboard.js';
 import { incompleteBanner } from '../components/patientHistory.js';
+import { bloodThinnerText, bpStatus } from '../medFlags.js';
+
+// Reconciled vitals + blood-thinner shown ON-SCREEN in the record, the same way
+// the EMT/dentist screens and the PDF do — so the record can't silently disagree
+// with the report it exports.
+function recVitals(p) {
+  const tr = p.triage || {};
+  if (tr.bp_systolic == null && tr.bp_diastolic == null && tr.heart_rate == null) return el('span', { class: 'muted' }, ['Not recorded']);
+  const parts = [];
+  const bp = bpStatus(tr.bp_systolic, tr.bp_diastolic);
+  if (tr.bp_systolic != null || tr.bp_diastolic != null) {
+    parts.push(el('span', { class: bp.high ? 'pill pill--red' : 'small' }, [`BP ${tr.bp_systolic != null ? tr.bp_systolic : '—'}/${tr.bp_diastolic != null ? tr.bp_diastolic : '—'}${bp.high ? ' — HIGH' : ''}`]));
+  }
+  (Array.isArray(tr.bp_rechecks) ? tr.bp_rechecks : []).forEach((r) => {
+    const st = bpStatus(r.bp_systolic, r.bp_diastolic);
+    parts.push(el('span', { class: st.high ? 'pill pill--red' : 'small' }, [`re-check ${r.bp_systolic != null ? r.bp_systolic : '—'}/${r.bp_diastolic != null ? r.bp_diastolic : '—'}${st.high ? ' — HIGH' : ''}`]));
+  });
+  if (tr.heart_rate != null) parts.push(el('span', { class: 'small' }, [`HR ${tr.heart_rate}`]));
+  return el('div', { class: 'chip-row' }, parts);
+}
+function recThinner(p) {
+  const bt = bloodThinnerText(p);
+  const cls = bt.level === 'danger' ? 'pill pill--red' : (bt.level === 'ok' ? 'pill pill--success' : 'muted');
+  return el('span', { class: cls }, [bt.text]);
+}
 
 export function renderRecords(ctx, params = {}) {
   const root = el('div', { class: 'view' });
@@ -91,7 +116,7 @@ export function renderRecords(ctx, params = {}) {
       ['Triaged by', p.triaged_by_name],
       ['Vitals by', p.vitals_by_name],
       ['Completed by', p.completed_by_name],
-      ['Dismissed by', p.dismissed_by_name ? `${p.dismissed_by_name}${p.dismissed_at ? ' · ' + new Date(p.dismissed_at).toLocaleString() : ''}` : null],
+      ['Checked out by', p.dismissed_by_name ? `${p.dismissed_by_name}${p.dismissed_at ? ' · ' + new Date(p.dismissed_at).toLocaleString() : ''}` : null],
     ].filter(([, v]) => v);
     const auditBody = el('tbody', {}, [el('tr', {}, [el('td', { colspan: 4, class: 'subtle small' }, ['Loading history…'])])]);
     const auditCard = el('div', { class: 'card' }, [
@@ -155,6 +180,8 @@ export function renderRecords(ctx, params = {}) {
               kv('Under care', p.medical_history.under_treatment), kv('Hospitalized', p.medical_history.hospitalized),
               kv('Tobacco', p.medical_history.tobacco), kv('Pregnancy', p.medical_history.pregnancy),
             ]),
+            el('div', { class: 'field' }, [el('span', { class: 'field-label' }, ['Vitals']), recVitals(p)]),
+            el('div', { class: 'field' }, [el('span', { class: 'field-label' }, ['Blood thinner']), recThinner(p)]),
             el('div', { class: 'field' }, [el('span', { class: 'field-label' }, ['Allergies']),
               el('div', { class: 'chip-row' }, allergyLabels.length ? allergyLabels.map((a) => el('span', { class: 'pill pill--red' }, [a])) : [el('span', { class: 'muted' }, ['None'])])]),
             el('div', { class: 'field' }, [el('span', { class: 'field-label' }, ['Conditions']),

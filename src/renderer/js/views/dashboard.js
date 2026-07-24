@@ -27,6 +27,20 @@ function minsSince(iso) {
   return Math.max(0, Math.round(ms / 60000));
 }
 const waitLabel = (m) => (m == null ? '' : (m < 60 ? `${m}m` : `${Math.floor(m / 60)}h ${m % 60}m`));
+// Minutes between two timestamps (to defaults to now) — for the board's time tags.
+function elapsedMins(fromIso, toIso) {
+  if (!fromIso) return null;
+  const to = toIso ? new Date(toIso).getTime() : Date.now();
+  const ms = to - new Date(fromIso).getTime();
+  if (isNaN(ms)) return null;
+  return Math.max(0, Math.round(ms / 60000));
+}
+// Best-available timestamp for when the patient entered their CURRENT stage.
+function stageEnteredAt(p) {
+  if (p.status === 'dismissed') return p.dismissed_at || p.routed_at || p.vitals_at || p.created_at;
+  if (p.status === 'completed' || p.status === 'in_treatment' || p.status === 'triaged') return p.routed_at || p.vitals_at || p.created_at;
+  return p.has_vitals ? (p.vitals_at || p.created_at) : p.created_at; // checked_in
+}
 
 export function renderDashboard(ctx) {
   const root = el('div', { class: 'view' });
@@ -57,12 +71,15 @@ export function renderDashboard(ctx) {
       return null;
     }
 
+    // "Checked out" = the board's final column (completed + dismissed), so the
+    // KPI tile and the board column always agree.
+    const checkedOut = patients.filter((p) => p.status === 'completed' || p.status === 'dismissed').length;
     const statCards = [
       { label: t('dash.total'), value: stats.total, ic: 'users', kind: 'all' },
       { label: t('dash.waiting'), value: stats.waiting_triage, ic: 'syringe', warn: stats.waiting_triage > 0, kind: 'vitals' },
       { label: t('dash.triaged'), value: stats.triaged, ic: 'clipboard', kind: 'ready' },
       { label: t('dash.inTreatment'), value: stats.in_treatment, ic: 'tooth', kind: 'treatment' },
-      { label: t('dash.completed'), value: stats.completed, ic: 'checkCircle', kind: 'done' },
+      { label: 'Checked out', value: checkedOut, ic: 'checkCircle', kind: 'done' },
     ];
 
     // Route "open" to a view the current role may actually see.
@@ -95,8 +112,13 @@ export function renderDashboard(ctx) {
     const crmCard = (p) => {
       const foot = [];
       if (p.preregistered) foot.push(el('span', { class: 'crm-chip crm-chip--prereg', title: 'Pre-registered online — confirm arrival' }, ['Pre-reg']));
-      const wl = waitLabel(minsSince(p.created_at));
-      if (wl) foot.push(el('span', { class: 'crm-chip', title: 'Time since check-in' }, [icon('calendar', { size: 10 }), wl]));
+      if (p.status === 'dismissed') foot.push(el('span', { class: 'crm-chip crm-chip--left', title: 'Checked out — the patient has left' }, [icon('check', { size: 10 }), 'Left']));
+      // Two time tags: total time from check-in, and time at the current stage.
+      const endIso = p.status === 'dismissed' ? p.dismissed_at : null;
+      const total = elapsedMins(p.created_at, endIso);
+      const stage = elapsedMins(stageEnteredAt(p), endIso);
+      if (total != null) foot.push(el('span', { class: 'crm-chip', title: 'Total time from check-in' }, [icon('calendar', { size: 10 }), waitLabel(total) + ' total']));
+      if (stage != null) foot.push(el('span', { class: 'crm-chip crm-chip--stage', title: 'Time at this stage' }, [waitLabel(stage) + ' here']));
       if (p.on_thinner) foot.push(el('span', { class: 'crm-chip crm-chip--warn', title: 'On blood thinner — verify before extraction' }, ['Thinner']));
       return el('button', { class: 'crm-card', onClick: () => openByStatus(p) }, [
         el('div', { class: 'crm-card-top' }, [

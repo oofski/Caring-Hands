@@ -47,16 +47,25 @@ jobs:
       - name: Publish downloadable release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.5.15-build.${{ github.run_number }}
-          name: Caring Hands v1.5.15 (build ${{ github.run_number }})
+          tag_name: v1.5.16-build.${{ github.run_number }}
+          name: Caring Hands v1.5.16 (build ${{ github.run_number }})
           prerelease: false
           make_latest: true
           body: |
-            ## Caring Hands Worldwide — Practice Management Software (v1.5.15)
+            ## Caring Hands Worldwide — Practice Management Software (v1.5.16)
 
             Offline-first dental clinic app for Windows. **Download the installer once — it auto-updates from here on.**
 
-            **New in v1.5.15 — patients can pre-register online, ahead of time**
+            **New in v1.5.16 — data-consistency fixes + live time tracking**
+            - **Safety fix — "Bleeding disorder" now warns on the EMT & dentist screens.** A patient who reports a bleeding disorder at check-in already showed the blood-thinner alert in the queues and on the printed record, but the EMT and dentist detail screens were silent. Now all screens agree, so the two stations where an extraction is decided can't under-warn.
+            - **Main record PDF now prints written-in answers.** The "Save record PDF" (full packet) now includes typed **"Other"** allergies/conditions (e.g. a hand-written **"Sulfa"** allergy), shows readable labels instead of raw codes, and prints **what the patient said they need** (extraction/filling/cleaning). It now matches the summary PDF.
+            - **Records screen shows vitals + blood-thinner on screen.** The record now displays the reconciled blood-thinner status and the BP/vitals reading (with re-checks, in red if high) — previously those were only on the printout.
+            - **Live time tracking on the board.** Every patient card now shows **two time tags** — **total time since check-in** and **time at the current stage** — and a green **"Left"** tag once they're checked out. The dashboard's last KPI tile now reads **"Checked out"** to match the board's final column.
+            - **Pre-reg tag on the vitals queue.** Pre-registered patients are now tagged on the **EMT/Vitals** queue too (the arrival station), not just the dashboard board.
+            - **Blood-thinner alert on the hygienist screen** (it can transfer a patient to the dentist for an extraction).
+            - **Consistent wording** ("Checked out" everywhere, was "Dismissed" in a couple of spots) and a small Reports fix so a localized gender value isn't mislabeled.
+
+            **From v1.5.15 — patients can pre-register online, ahead of time**
             - **A unique link per event.** Under **Admin → Events**, each event now has a **"Pre-reg link"** button. Share that link (text, email, or a printed QR code) and patients can fill out the check-in questions on their phone **before** they arrive.
             - **It routes straight into that event.** Anyone who submits from an event's link is added to **that** event's queue automatically — they appear in the **"Checked in"** column of the live board with a blue **"Pre-reg"** tag, and their answers (allergies, conditions, medications, reason for visit) show up on the EMT and dentist screens with no retyping.
             - **No new setup for most clinics** — it runs on the same clinic cloud you already sync with. *(One-time: the sync server needs its code refreshed to turn this on — see the note your admin received.)*
@@ -159,8 +168,8 @@ jobs:
 
             Includes everything from v1.0.2–1.1.1 (optional Cloud Sync, triage-free flow, per-event staff, Oregon consent, USB workflow, accountability, Russian, in-app auto-update).
 
-            - **Caring-Hands-Setup-1.5.15.exe** — installer (recommended; required for auto-update).
-            - **Caring-Hands-Portable-1.5.15.exe** — portable (no auto-update).
+            - **Caring-Hands-Setup-1.5.16.exe** — installer (recommended; required for auto-update).
+            - **Caring-Hands-Portable-1.5.16.exe** — portable (no auto-update).
 
             First sign-in: `admin / admin` — then create your staff accounts. All clinical data stays on the device unless you enable Cloud Sync.
           files: |

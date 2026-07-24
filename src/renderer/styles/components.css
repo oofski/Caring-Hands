@@ -392,6 +392,8 @@
 .crm-chip{ display:inline-flex; align-items:center; gap:3px; font-size:var(--fs-2xs); color:var(--text-subtle); background:var(--surface-sunken); border-radius:999px; padding:1px 7px; }
 .crm-chip--warn{ color:var(--danger); background:color-mix(in srgb, var(--danger) 12%, transparent); font-weight:var(--fw-semibold); }
 .crm-chip--prereg{ color:var(--info); background:color-mix(in srgb, var(--info) 14%, transparent); font-weight:var(--fw-semibold); }
+.crm-chip--left{ color:var(--success,#2f8f66); background:color-mix(in srgb, var(--success,#2f8f66) 16%, transparent); font-weight:var(--fw-semibold); }
+.crm-chip--stage{ color:var(--accent); background:color-mix(in srgb, var(--accent) 12%, transparent); }
 .crm-empty{ font-size:var(--fs-2xs); color:var(--text-subtle); text-align:center; padding:16px 0; }
 
 /* v1.0.6: vitals grid, generic box, quadrant control */

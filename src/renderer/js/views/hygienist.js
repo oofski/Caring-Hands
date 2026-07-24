@@ -5,6 +5,7 @@ import { icon } from '../icons.js';
 import { SignaturePad } from '../components/signature.js';
 import { Odontogram } from '../components/odontogram.js';
 import { patientHistoryPanel } from '../components/patientHistory.js';
+import { bloodThinnerText } from '../medFlags.js';
 import { store } from '../store.js';
 import { statusPill } from './dashboard.js';
 
@@ -202,6 +203,11 @@ export function renderHygienist(ctx, params = {}) {
       // Secondary content — sign-off + collapsed patient history in a .split.
       el('div', { class: 'split' }, [
         el('div', { class: 'col col--wide' }, [
+          // Blood-thinner alert (reconciled the SAME way as EMT/dentist/PDF) — the
+          // hygienist can transfer to the dentist for an extraction, so surface it.
+          (() => { const bt = bloodThinnerText(p); return bt.level === 'danger'
+            ? el('div', { class: 'card', style: 'border-left:3px solid var(--danger);display:flex;gap:8px;align-items:center;padding:10px 12px;margin-bottom:12px' }, [icon('alert', { size: 16 }), el('span', {}, [bt.text])])
+            : null; })(),
           patientHistoryPanel(p, [], { open: false }),
         ]),
         el('div', { class: 'col' }, [

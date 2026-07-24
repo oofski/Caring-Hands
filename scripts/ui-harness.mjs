@@ -682,6 +682,44 @@ async function main() {
     log(!!card && /Pre-reg/.test(card.textContent), 'v1.5.15: the pre-registered patient shows on the live board with a “Pre-reg” tag');
   }
 
+  // ---- v1.5.16: consistency fixes (bleeding=thinner, Left tag, time tags, tile) ----
+  {
+    currentUser = db.login('admin', 'admin');
+    // #1: a "Bleeding disorder" condition now raises the thinner flag on the
+    // EMT/dentist screens (medFlags), matching the queues (db on_thinner).
+    const mf = await import('../src/renderer/js/medFlags.js');
+    log(mf.bloodThinnerStatus({ triage: {}, medical_history: { conditions: ['bleeding'] } }).onThinner === true, 'v1.5.16: a "Bleeding disorder" condition raises the blood-thinner flag on the EMT/dentist screens');
+    const bpat = db.createPatient(currentUser, { first_name: 'Bl', last_name: 'Eed', demographics: {}, medical_history: { conditions: ['bleeding'] }, dental_history: {}, consents: [] });
+    const bRow = db.listPatients({}).find((x) => x.id === bpat.id);
+    log(!!bRow && bRow.on_thinner === true, 'v1.5.16: the same bleeding patient is flagged in the queues (db) — screens + queues + PDF now agree');
+
+    // #5 + time tags: a dismissed patient → green "Left" tag, and both time tags.
+    const ev16 = db.listEvents().find((e) => e.active) || db.listEvents()[0];
+    db.applyRemoteRows([{
+      entity: 'patient', uid: 'dismissed-test-1', event_uid: ev16.uid, patient_uid: null, deleted: 0, updated_at: '2099-01-01T02:00:00.000Z@t',
+      data: {
+        language: 'en', first_name: 'Do', last_name: 'Ne', dob: null, gender: null, phone: null, email: null,
+        demographics: '{}', medical_history: '{}', dental_history: '{}',
+        status: 'dismissed', created_at: '2099-01-01T00:00:00.000Z', dismissed_at: '2099-01-01T00:30:00.000Z', dismissed_by_name: 'Admin',
+      },
+    }]);
+    const store16 = (await import('../src/renderer/js/store.js')).store; store16.setUser(currentUser);
+    const ctx16 = { navigate: () => {}, toast: () => {}, store: store16, setDetail: () => {} };
+    const dash16 = (await import('../src/renderer/js/views/dashboard.js')).renderDashboard(ctx16);
+    document.body.append(dash16); await tick(); await tick();
+    log(/Checked out/.test(dash16.textContent) && !/>Completed</.test(dash16.textContent), 'v1.5.16: the dashboard KPI tile reads "Checked out" (not "Completed")');
+    const doneCard = Array.from(dash16.querySelectorAll('.crm-card')).find((c) => /Ne, Do/.test(c.textContent));
+    log(!!doneCard && /Left/.test(doneCard.textContent), 'v1.5.16: a checked-out patient shows a green "Left" tag on the board');
+    log(!!doneCard && /total/.test(doneCard.textContent) && /here/.test(doneCard.textContent), 'v1.5.16: board cards show two time tags — total time from check-in + time at the current stage');
+
+    // #9: a localized free-text gender ("Mujer") must NOT be mislabeled "Male".
+    const gp = db.createPatient(currentUser, { first_name: 'Gen', last_name: 'Der', gender: 'Mujer', demographics: {}, medical_history: {}, dental_history: {}, consents: [] });
+    void gp;
+    const rep16 = (await import('../src/renderer/js/views/reports.js')).renderReports(ctx16);
+    document.body.append(rep16); await tick(); await tick();
+    log(/Mujer/.test(rep16.textContent) && !/>\s*Male\s*</.test(rep16.textContent.replace(/\s+/g, ' ')) , 'v1.5.16: reports shows a localized gender ("Mujer") verbatim instead of guessing "Male"');
+  }
+
   // ---- v1.5.0: X-ray import — per-x-ray tooth + auto-name, synced; import tile. ----
   {
     currentUser = db.login('admin', 'admin');

@@ -1096,7 +1096,7 @@ function listPatients({ eventId, search } = {}) {
   sql += ' ORDER BY p.created_at DESC';
   return db.prepare(sql).all(...args).map((p) => {
     const pt = rowToPatient(p);
-    const tr = db.prepare('SELECT status, complaint, flags, assigned_to, route, bp_systolic, bp_diastolic, heart_rate, blood_thinner, emt_signed_off FROM triage WHERE patient_id = ?').get(p.id);
+    const tr = db.prepare('SELECT status, complaint, flags, assigned_to, route, bp_systolic, bp_diastolic, heart_rate, blood_thinner, emt_signed_off, vitals_at, routed_at FROM triage WHERE patient_id = ?').get(p.id);
     return {
       id: pt.id,
       first_name: pt.first_name,
@@ -1117,6 +1117,10 @@ function listPatients({ eventId, search } = {}) {
       route: tr ? tr.route : null,
       has_vitals: !!(tr && (tr.bp_systolic != null || tr.heart_rate != null)),
       preregistered: !!(pt.demographics && pt.demographics.preregistered),
+      // Stage timestamps for the live board's "total time" + "time at stage" tags.
+      vitals_at: tr ? tr.vitals_at : null,
+      routed_at: tr ? tr.routed_at : null,
+      dismissed_at: pt.dismissed_at || null,
       emt_signed_off: !!(tr && tr.emt_signed_off),
       blood_thinner: tr ? tr.blood_thinner : null,
       // Reconciled thinner signal so the QUEUES can't understate the risk: true if
