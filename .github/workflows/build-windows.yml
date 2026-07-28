@@ -50,16 +50,23 @@ jobs:
       - name: Publish downloadable release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.5.19-build.${{ github.run_number }}
-          name: Caring Hands v1.5.19 (build ${{ github.run_number }})
+          tag_name: v1.5.20-build.${{ github.run_number }}
+          name: Caring Hands v1.5.20 (build ${{ github.run_number }})
           prerelease: false
           make_latest: true
           body: |
-            ## Caring Hands Worldwide — Practice Management Software (v1.5.19)
+            ## Caring Hands Worldwide — Practice Management Software (v1.5.20)
 
             Offline-first dental clinic app for Windows. **Download the installer once — it auto-updates from here on.**
 
-            **New in v1.5.19 — resilient auto-update**
+            **New in v1.5.20 — City & State, required birthdate & gender, Spanish pre-registration, and smarter timers**
+            - **City & State added to every patient.** The check-in form now asks for the patient's **City** and **State**, they print on the record and show on the chart, and the **Reports** tab has a new **"By city"** breakdown — so clinics that report to a city grant (e.g. Sandy, Oregon) can see how many patients came from that town. It's also collected on the online pre-registration form.
+            - **Birthdate and gender are now required at check-in.** The front desk can't advance past the "About You" step until both are filled, so no patient reaches vitals without an age or gender on file. The online pre-registration link enforces the same.
+            - **Spanish pre-registration.** The online pre-registration link now has a **Spanish version** — patients tap **"Español"** at the top (or open the link with `?lang=es`) and every question, the medical/dental history, and the **full consent** appear in Spanish, with the same consent signing. Their answers still arrive in English-coded form on the clinic screens.
+            - **Pre-registered patients don't start the clock until they arrive.** Someone who pre-registers online — sometimes days ahead — no longer shows a runaway "total time" on the live board. Their **total time and time-at-stage only start once they're taken to Vitals**, so the board reflects real time in the clinic, not time since they filled the form.
+            - *The Spanish pre-registration and the City/State + required fields on the online form are delivered by the pre-registration server: it needs the same one-time refresh your admin has done before (see the note your admin received).*
+
+            **From v1.5.19 — resilient auto-update**
             - **The updater now retries automatically** when the update server returns a temporary error (GitHub occasionally returns a **504 Gateway Time-out** on release downloads). It backs off and tries several times, so a brief network hiccup no longer shows a scary failure or blocks the update.
             - If it genuinely can't reach the server after all retries, it now shows a **plain-language message** ("try again in a minute, or install the latest version manually") instead of a raw error.
 
@@ -187,8 +194,8 @@ jobs:
 
             Includes everything from v1.0.2–1.1.1 (optional Cloud Sync, triage-free flow, per-event staff, Oregon consent, USB workflow, accountability, Russian, in-app auto-update).
 
-            - **Caring-Hands-Setup-1.5.19.exe** — installer (recommended; required for auto-update).
-            - **Caring-Hands-Portable-1.5.19.exe** — portable (no auto-update).
+            - **Caring-Hands-Setup-1.5.20.exe** — installer (recommended; required for auto-update).
+            - **Caring-Hands-Portable-1.5.20.exe** — portable (no auto-update).
 
             First sign-in: `admin / admin` — then create your staff accounts. All clinical data stays on the device unless you enable Cloud Sync.
           files: |

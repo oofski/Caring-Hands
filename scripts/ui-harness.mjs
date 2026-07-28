@@ -202,8 +202,23 @@ async function main() {
   const textInputs = inputs.filter((i) => i.type === 'text' || !i.type);
   setInput(textInputs[0], 'Maria');
   setInput(textInputs[1], 'Lopez');
-  // dob
+  // dob (v1.5.20: now required to advance)
   const dob = $all('.kiosk-body input').find((i) => i.type === 'date'); if (dob) setInput(dob, '1985-04-12');
+  // v1.5.20: gender is now required to advance — select it.
+  const genderSel = $all('.kiosk-body label.field').find((l) => /^Gender/i.test(((l.querySelector('.field-label') || {}).textContent || '').trim()));
+  log(!!(genderSel && genderSel.querySelector('select')), 'v1.5.20: gender field present');
+  if (genderSel) { const g = genderSel.querySelector('select'); if (g && g.options.length > 1) { g.value = g.options[1].value; g.dispatchEvent(new window.Event('change', { bubbles: true })); } }
+  // v1.5.20: City + State collected at check-in (Sandy Oregon grant reporting).
+  const bodyTxt = $('.kiosk-body').textContent;
+  const fieldLabels = $all('.kiosk-body .field-label').map((s) => s.textContent.trim());
+  log(fieldLabels.some((l) => /^City/.test(l)) && fieldLabels.some((l) => /^State/.test(l)), 'v1.5.20: check-in collects City and State');
+  const setCityState = (re, val) => {
+    const lbl = $all('.kiosk-body label.field').find((l) => re.test(((l.querySelector('.field-label') || {}).textContent || '').trim()));
+    const inp = lbl && lbl.querySelector('input'); if (inp) setInput(inp, val); return !!inp;
+  };
+  setCityState(/^City/i, 'Sandy'); setCityState(/^State/i, 'OR');
+  // v1.5.20: date of birth is marked required (*).
+  log(/Date of birth\s*\*/.test(bodyTxt) && /Gender\s*\*/.test(bodyTxt), 'v1.5.20: date of birth + gender marked required (*)');
   // v1.0.6 F1-F3: phone + emergency contact name + phone are now required to advance.
   const fillField = (re, val) => {
     const lbl = $all('.kiosk-body label.field').find((l) => re.test(((l.querySelector('.field-label') || {}).textContent || '').trim()));
@@ -680,6 +695,18 @@ async function main() {
     document.body.append(dash15); await tick(); await tick();
     const card = Array.from(dash15.querySelectorAll('.crm-card')).find((c) => /Nuevo, Pilar/.test(c.textContent));
     log(!!card && /Pre-reg/.test(card.textContent), 'v1.5.15: the pre-registered patient shows on the live board with a “Pre-reg” tag');
+
+    // v1.5.20: a pre-registered patient hasn't physically arrived until Vitals,
+    // so their clinic clock is NOT running — the board shows NO time chips yet.
+    log(!!card && !/total/.test(card.textContent) && !/\bhere\b/.test(card.textContent),
+      'v1.5.20: a pre-registered patient shows no total/stage timer until they reach Vitals');
+    // Once vitals are recorded the clock starts and both time chips appear.
+    db.saveVitals(currentUser, pre.id, { bp_systolic: '118', bp_diastolic: '76', heart_rate: '70' });
+    const dash15b = (await import('../src/renderer/js/views/dashboard.js')).renderDashboard(ctx15);
+    document.body.append(dash15b); await tick(); await tick();
+    const card15b = Array.from(dash15b.querySelectorAll('.crm-card')).find((c) => /Nuevo, Pilar/.test(c.textContent));
+    log(!!card15b && /total/.test(card15b.textContent) && /\bhere\b/.test(card15b.textContent),
+      'v1.5.20: once the pre-registered patient reaches Vitals, the total + stage timers start');
   }
 
   // ---- v1.5.16: consistency fixes (bleeding=thinner, Left tag, time tags, tile) ----

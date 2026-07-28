@@ -295,6 +295,7 @@ function fullPacketBody(p) {
       <tr>${field('Age', p.age)}${field('Gender', p.gender)}</tr>
       <tr>${field('Phone', p.phone)}${field('Email', p.email)}</tr>
       <tr>${field('Address', d.address)}${field('Mailing address', d.mailing_address)}</tr>
+      <tr>${field('City', d.city)}${field('State', d.state)}</tr>
       <tr>${field('Marital status', d.marital_status)}${field('Emergency contact', d.emergency_name)}</tr>
       <tr>${field('Emergency phone', d.emergency_phone)}${field('Referral source', d.referral === 'other' && d.referral_other ? d.referral_other : referralLabel(d.referral))}</tr>
       <tr>${field('Preferred language', p.language === 'es' ? 'Spanish' : 'English')}</tr>

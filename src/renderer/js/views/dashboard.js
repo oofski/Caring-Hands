@@ -35,10 +35,21 @@ function elapsedMins(fromIso, toIso) {
   if (isNaN(ms)) return null;
   return Math.max(0, Math.round(ms / 60000));
 }
+// When does a patient's clinic clock start? A pre-registered patient filled the
+// form online — often days ahead — but hasn't physically arrived until they're
+// taken to Vitals. So their total time only starts at Vitals, not at pre-reg.
+// Walk-ins start at check-in (created_at). Returns null while a pre-reg patient
+// is still waiting to arrive, which suppresses the time chips entirely.
+function clockStart(p) {
+  if (p.preregistered && !p.has_vitals) return null; // pre-reg, not yet arrived
+  if (p.preregistered) return p.vitals_at || p.created_at; // clock starts at Vitals
+  return p.created_at;
+}
 // Best-available timestamp for when the patient entered their CURRENT stage.
 function stageEnteredAt(p) {
   if (p.status === 'dismissed') return p.dismissed_at || p.routed_at || p.vitals_at || p.created_at;
   if (p.status === 'completed' || p.status === 'in_treatment' || p.status === 'triaged') return p.routed_at || p.vitals_at || p.created_at;
+  if (p.preregistered && !p.has_vitals) return null; // pre-reg not arrived — clock not started
   return p.has_vitals ? (p.vitals_at || p.created_at) : p.created_at; // checked_in
 }
 
@@ -160,11 +171,13 @@ export function renderDashboard(ctx) {
       const foot = [];
       if (p.preregistered) foot.push(el('span', { class: 'crm-chip crm-chip--prereg', title: 'Pre-registered online — confirm arrival' }, ['Pre-reg']));
       if (p.status === 'dismissed') foot.push(el('span', { class: 'crm-chip crm-chip--left', title: 'Checked out — the patient has left' }, [icon('check', { size: 10 }), 'Left']));
-      // Two time tags: total time from check-in, and time at the current stage.
+      // Two time tags: total time and time at the current stage. Pre-registered
+      // patients don't start the clock until they arrive at Vitals, so both are
+      // suppressed (clockStart/stageEnteredAt return null) until then.
       const endIso = p.status === 'dismissed' ? p.dismissed_at : null;
-      const total = elapsedMins(p.created_at, endIso);
+      const total = elapsedMins(clockStart(p), endIso);
       const stage = elapsedMins(stageEnteredAt(p), endIso);
-      if (total != null) foot.push(el('span', { class: 'crm-chip', title: 'Total time from check-in' }, [icon('calendar', { size: 10 }), waitLabel(total) + ' total']));
+      if (total != null) foot.push(el('span', { class: 'crm-chip', title: 'Total time since arrival at Vitals' }, [icon('calendar', { size: 10 }), waitLabel(total) + ' total']));
       if (stage != null) foot.push(el('span', { class: 'crm-chip crm-chip--stage', title: 'Time at this stage' }, [waitLabel(stage) + ' here']));
       if (p.on_thinner) foot.push(el('span', { class: 'crm-chip crm-chip--warn', title: 'On blood thinner — verify before extraction' }, ['Thinner']));
       return el('button', { class: 'crm-card', onClick: () => openByStatus(p) }, [

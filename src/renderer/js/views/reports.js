@@ -26,6 +26,12 @@ function genderLabel(g) {
   if (s === 'other') return 'Other';
   return String(g).charAt(0).toUpperCase() + String(g).slice(1);
 }
+function cityLabel(d) {
+  if (!d) return 'Not recorded';
+  const c = String(d.city || '').trim(), s = String(d.state || '').trim();
+  if (!c && !s) return 'Not recorded';
+  return [c, s].filter(Boolean).join(', ');
+}
 function ageBucket(a) {
   if (a == null || isNaN(a)) return 'Not recorded';
   if (a < 18) return 'Under 18';
@@ -47,7 +53,7 @@ export function renderReports(ctx) {
     let fillings = 0, extractions = 0, cleanings = 0, xrays = 0, flagged = 0, completed = 0, withXray = 0;
     const days = {};
     const ensure = (k) => (days[k] = days[k] || { date: k, seen: 0, completed: 0, fillings: 0, extractions: 0, cleanings: 0, treatments: 0 });
-    const gender = {}, age = {}, lang = {};
+    const gender = {}, age = {}, lang = {}, city = {};
     const bump = (obj, k) => { obj[k] = (obj[k] || 0) + 1; };
     full.forEach((p) => {
       const tx = p.treatment || {};
@@ -62,6 +68,7 @@ export function renderReports(ctx) {
       bump(gender, genderLabel(p.gender));
       bump(age, ageBucket(p.age));
       bump(lang, langLabel(p.language));
+      bump(city, cityLabel(p.demographics));
 
       const sd = ensure(dayKey(p.created_at)); sd.seen += 1;
       const txDay = ensure(dayKey((tx.completed_at) || p.updated_at || p.created_at));
@@ -127,6 +134,7 @@ export function renderReports(ctx) {
           demoGroup('By gender', gender, ['Male', 'Female', 'Other', 'Not recorded']),
           demoGroup('By age', age, ['Under 18', '18–34', '35–54', '55+', 'Not recorded']),
           demoGroup('By language', lang, Object.keys(lang)),
+          demoGroup('By city', city, Object.keys(city)),
         ]),
       ]),
 

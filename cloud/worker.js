@@ -1,4 +1,4 @@
-// Caring Hands — Cloud Sync Worker (v1.3.1)
+// Caring Hands — Cloud Sync Worker (v1.4.0)
 // =============================================================================
 // NO INSTALLS NEEDED. To deploy: create a Worker in the Cloudflare dashboard,
 // paste THIS ENTIRE FILE into its code editor, then:
@@ -15,7 +15,7 @@
 // See ./SYNC_CONTRACT.md for the exact API + schema this implements.
 
 const SERVICE = 'caring-hands-sync';
-const VERSION = '1.3.1';
+const VERSION = '1.4.0';
 const DEFAULT_LIMIT = 500;
 const MAX_LIMIT = 1000;
 
@@ -86,7 +86,7 @@ export default {
       if (path === '/checkin' || path.startsWith('/checkin/')) {
         await ensureSchema(env);
         const eventUid = decodeURIComponent((path.replace(/^\/checkin\/?/, '').split('/')[0] || '').trim());
-        if (request.method === 'GET') return await handleCheckinGet(eventUid, env);
+        if (request.method === 'GET') return await handleCheckinGet(eventUid, env, url);
         if (request.method === 'POST') return await handleCheckinPost(eventUid, request, env);
         return methodNotAllowed();
       }
@@ -253,10 +253,11 @@ async function getEventRow(env, uid) {
   }
 }
 
-async function handleCheckinGet(eventUid, env) {
+async function handleCheckinGet(eventUid, env, url) {
   const ev = await getEventRow(env, eventUid);
   if (!ev) return htmlResponse(checkinErrorPage(), 404);
-  return htmlResponse(checkinFormPage(eventUid, ev.name));
+  const lang = (url && url.searchParams && url.searchParams.get('lang') === 'es') ? 'es' : 'en';
+  return htmlResponse(checkinFormPage(eventUid, ev.name, lang));
 }
 
 async function handleCheckinPost(eventUid, request, env) {
@@ -267,7 +268,11 @@ async function handleCheckinPost(eventUid, request, env) {
   try { body = await request.json(); } catch (_e) { return json({ ok: false, error: 'Invalid submission.' }, 400); }
 
   const clean = buildPreregPatient(body);
-  if (!clean) return json({ ok: false, error: 'Please enter your first and last name.' }, 400);
+  const esErr = body && body.language === 'es';
+  if (!clean) return json({ ok: false, error: esErr ? 'Por favor ingrese su nombre y apellido.' : 'Please enter your first and last name.' }, 400);
+  // Date of birth + gender are required (per the clinics' reporting needs).
+  if (!clean.dob) return json({ ok: false, error: esErr ? 'Por favor ingrese su fecha de nacimiento.' : 'Please enter your date of birth.' }, 400);
+  if (!clean.gender) return json({ ok: false, error: esErr ? 'Por favor elija un género.' : 'Please choose a gender.' }, 400);
 
   // The general consent is required to check in — in person and here.
   const agreed = (v) => v === true || v === 'on' || v === 'true';
@@ -373,8 +378,8 @@ function buildPreregPatient(b) {
     email: s(b.email, 120),
     language: b.language === 'es' ? 'es' : 'en',
     demographics: {
-      address: s(b.address, 200), emergency_name: s(b.emergency_name, 120),
-      emergency_phone: s(b.emergency_phone, 20), referral: s(b.referral, 120),
+      address: s(b.address, 200), city: s(b.city, 80), state: s(b.state, 40),
+      emergency_name: s(b.emergency_name, 120), emergency_phone: s(b.emergency_phone, 20), referral: s(b.referral, 120),
     },
     medical_history,
     dental_history,
@@ -436,6 +441,92 @@ const ORAL_SURGERY_CONSENT = [
 ];
 const CONSENT_AGREE_TEXT = 'I have read and understand the above, and I consent.';
 
+// ---- Spanish (es) option labels + consent, mirroring the app's translations ----
+const FORM_ALLERGIES_ES = [
+  ['lidocaine', 'Lidocaína'], ['articaine', 'Articaína'], ['penicillin', 'Penicilina'], ['codeine', 'Codeína'],
+  ['erythromycin', 'Eritromicina'], ['nsaids', 'AINEs (Ibuprofeno, Aspirina)'], ['tylenol', 'Tylenol (Acetaminofén)'],
+];
+const FORM_CONDITIONS_ES = [
+  ['heart_disease', 'Enfermedad del corazón'], ['high_bp', 'Presión arterial alta'], ['heart_murmur', 'Soplo cardíaco'], ['pacemaker', 'Marcapasos'],
+  ['artificial_valve', 'Válvula cardíaca artificial'], ['rheumatic_fever', 'Fiebre reumática'], ['diabetes', 'Diabetes'], ['asthma', 'Asma'],
+  ['tuberculosis', 'Tuberculosis'], ['hepatitis', 'Hepatitis'], ['hiv', 'VIH / SIDA'], ['kidney', 'Enfermedad renal'], ['liver', 'Enfermedad del hígado'],
+  ['thyroid', 'Problemas de tiroides'], ['cancer', 'Cáncer'], ['epilepsy', 'Epilepsia / convulsiones'], ['stroke', 'Derrame cerebral'], ['anemia', 'Anemia'],
+  ['bleeding', 'Trastorno hemorrágico / sangra fácilmente'], ['blood_thinners', 'Toma anticoagulantes'], ['arthritis', 'Artritis'], ['glaucoma', 'Glaucoma'],
+  ['ulcers', 'Úlceras estomacales'], ['respiratory', 'Problemas respiratorios'], ['mental_health', 'Condición de salud mental'], ['latex', 'Alergia al látex'],
+  ['anesthesia_reaction', 'Reacción a la anestesia'], ['pregnant', 'Actualmente embarazada'], ['pain_mgmt', 'Programa de manejo del dolor'], ['weight_mgmt', 'Programa de manejo de peso'],
+];
+const FORM_VISITS_ES = [
+  ['extraction_pain', 'Extracción — con dolor'], ['extraction_no_pain', 'Extracción — sin dolor'], ['filling', 'Empaste'], ['cleaning', 'Limpieza dental'],
+];
+const FORM_MED_YESNO_ES = [
+  ['under_treatment', '¿Está bajo el cuidado de un médico actualmente?'], ['hospitalized', '¿Hospitalizado en los últimos 2 años?'],
+  ['tobacco', '¿Usa tabaco?'], ['pregnancy', '¿Embarazada, amamantando o usando anticonceptivos?'],
+];
+const FORM_DENTAL_YESNO_ES = [
+  ['gum_bleeding', '¿Le sangran las encías?'], ['sores', '¿Llagas o bultos en la boca?'], ['jaw_injury', '¿Lesión en cabeza, cuello o mandíbula?'],
+  ['grinding', '¿Aprieta o rechina los dientes?'], ['post_extraction_bleeding', '¿Historial de sangrado después de una extracción?'], ['ortho', '¿Ha usado frenos u ortodoncia?'],
+];
+const GENERAL_CONSENT_ES = ['Certifico que he leído este Consentimiento, o que me ha sido leído, y que entiendo lo anterior. Se me ha explicado la naturaleza y el propósito de tales operación(es), procedimiento(s), tratamiento(s) y/o servicios y las razones por las que se consideran necesarios o aconsejables. Por la presente eximo de responsabilidad a Caring Hands Worldwide, al Dentista Asociado y/o a dichos asistentes por la atención dental gratuita brindada. Los servicios se prestan sin compensación y la responsabilidad del proveedor es limitada y el proveedor no puede ser considerado responsable por ninguna lesión, muerte u otra pérdida que surja de la prestación de estos servicios, a menos que la lesión, muerte u otra pérdida resulte de negligencia grave. También soy consciente del riesgo de exposición al COVID durante un procedimiento dental y consiento participar en esta clínica bajo mi propio riesgo. (La versión en inglés es la versión legal autoritativa.)'];
+const ORAL_SURGERY_ES = [
+  'Este consentimiento adicional es necesario porque hoy podría realizarse una extracción.',
+  'Consiento la extracción de uno o más dientes y el uso de anestesia local.',
+  'Entiendo que las complicaciones pueden incluir dolor, hinchazón, moretones, infección, alvéolo seco, sangrado, apertura limitada de la mandíbula, lesión a dientes u obturaciones cercanas, y entumecimiento del labio, lengua o mentón que suele ser temporal pero rara vez puede ser permanente.',
+  'Entiendo que un diente o la punta de la raíz puede romperse durante la extracción y que un pequeño fragmento puede quedar si extraerlo causara mayor daño.',
+  'He informado al equipo de todos los medicamentos y condiciones de salud que puedan afectar la cirugía o la recuperación.',
+];
+
+// Bilingual dictionary — keys stay identical (they map to the app's data); only
+// the DISPLAY text differs. Spanish uses the app's own translations verbatim.
+const I18N = {
+  en: {
+    switchLabel: 'Español', switchLang: 'es',
+    heroSub: 'Fill this out ahead of time and sign your consent to save time at the clinic. Your answers go straight to the front desk.',
+    about: 'About You', first: 'First name', last: 'Last name', dob: 'Date of birth', gender: 'Gender',
+    gOpt: [['', '—'], ['male', 'Male'], ['female', 'Female'], ['other', 'Other']],
+    phone: 'Phone number', email: 'Email', address: 'Home address', city: 'City', state: 'State',
+    emName: 'Emergency contact name', emPhone: 'Emergency contact phone',
+    need: 'What do you need today?', reason: 'Reason for today’s visit', reasonPh: 'Tell us what is bothering you',
+    allergies: 'Medication allergies', selectAll: 'Select all that apply', allergyOther: 'Other allergy (specify)',
+    conditions: 'Do you have any of these conditions?', conditionOther: 'Other condition (specify)', none: 'None of the above', otherOpt: 'Other (type below)',
+    meds: 'Current medications', addMed: '+ Add medication', noMeds: 'No medications', medNamePh: 'Medication',
+    medHist: 'Medical History', dentHist: 'Dental History', priorDentist: 'When did you last see a dentist?', yes: 'Yes', no: 'No', dash: '—',
+    consent: 'Consent', signName: 'Your name (for the signature)', relationship: 'Relationship (if for a minor)', relPh: 'Self / Parent / Guardian',
+    agree: CONSENT_AGREE_TEXT, sigOpt: 'Signature (optional)', sigHint: 'Sign with your finger or a stylus.', clear: 'Clear',
+    surgery: 'Surgery Consent', surgeryIntro: 'Because an extraction may be done, please also read and sign this.', teeth: 'Tooth number(s), if known',
+    submit: 'Submit pre-registration', submitting: 'Submitting…', footer: 'Caring Hands Worldwide — free dental care. Your information is shared only with the clinic team.',
+    thankYou: 'Thank you, ', done: 'Your pre-registration and consent are complete. Please bring a photo ID — the front desk already has your information.',
+    errName: 'Please enter your first and last name.', errDob: 'Please enter your date of birth.', errGender: 'Please choose a gender.',
+    errConsent: 'Please read and agree to the consent to finish.', errSurgery: 'An extraction was selected — please read and agree to the Oral Surgery consent too.',
+    netErr: 'Network error. Please try again.', genErr: 'Something went wrong. Please try again.',
+    visits: FORM_VISITS, allergyList: FORM_ALLERGIES, conditionList: FORM_CONDITIONS, medYesNo: FORM_MED_YESNO, dentalYesNo: FORM_DENTAL_YESNO,
+    generalTitle: GENERAL_CONSENT_TITLE, generalMode: 'ol', general: GENERAL_CONSENT, surgeryTitle: ORAL_SURGERY_TITLE, surgeryText: ORAL_SURGERY_CONSENT,
+  },
+  es: {
+    switchLabel: 'English', switchLang: 'en',
+    heroSub: 'Complete esto con anticipación y firme su consentimiento para ahorrar tiempo en la clínica. Sus respuestas van directamente a la recepción.',
+    about: 'Sobre usted', first: 'Nombre', last: 'Apellido', dob: 'Fecha de nacimiento', gender: 'Género',
+    gOpt: [['', '—'], ['male', 'Masculino'], ['female', 'Femenino'], ['other', 'Otro']],
+    phone: 'Teléfono', email: 'Correo electrónico', address: 'Dirección', city: 'Ciudad', state: 'Estado',
+    emName: 'Nombre de contacto de emergencia', emPhone: 'Teléfono de contacto de emergencia',
+    need: '¿Qué necesita hoy?', reason: 'Motivo de la visita de hoy', reasonPh: 'Díganos qué le molesta',
+    allergies: 'Alergias a medicamentos', selectAll: 'Seleccione todas las que apliquen', allergyOther: 'Otra alergia (especifique)',
+    conditions: '¿Tiene alguna de estas condiciones?', conditionOther: 'Otra condición (especifique)', none: 'Ninguna de las anteriores', otherOpt: 'Otra (escriba abajo)',
+    meds: 'Medicamentos actuales', addMed: '+ Agregar medicamento', noMeds: 'Sin medicamentos', medNamePh: 'Medicamento',
+    medHist: 'Historial médico', dentHist: 'Historial dental', priorDentist: '¿Cuándo visitó al dentista por última vez?', yes: 'Sí', no: 'No', dash: '—',
+    consent: 'Consentimiento', signName: 'Su nombre (para la firma)', relationship: 'Parentesco (si es para un menor)', relPh: 'Yo mismo / Padre / Tutor',
+    agree: 'He leído y entiendo lo anterior, y doy mi consentimiento.', sigOpt: 'Firma (opcional)', sigHint: 'Firme con su dedo o un lápiz óptico.', clear: 'Borrar',
+    surgery: 'Consentimiento de Cirugía', surgeryIntro: 'Como podría realizarse una extracción, lea y firme esto también.', teeth: 'Número(s) de diente, si los sabe',
+    submit: 'Enviar pre-registro', submitting: 'Enviando…', footer: 'Caring Hands Worldwide — atención dental gratuita. Su información se comparte solo con el equipo de la clínica.',
+    thankYou: 'Gracias, ', done: 'Su pre-registro y consentimiento están completos. Por favor traiga una identificación con foto — la recepción ya tiene su información.',
+    errName: 'Por favor ingrese su nombre y apellido.', errDob: 'Por favor ingrese su fecha de nacimiento.', errGender: 'Por favor elija un género.',
+    errConsent: 'Por favor lea y acepte el consentimiento para terminar.', errSurgery: 'Se seleccionó una extracción — por favor lea y acepte también el consentimiento de cirugía oral.',
+    netErr: 'Error de red. Por favor intente de nuevo.', genErr: 'Algo salió mal. Por favor intente de nuevo.',
+    visits: FORM_VISITS_ES, allergyList: FORM_ALLERGIES_ES, conditionList: FORM_CONDITIONS_ES, medYesNo: FORM_MED_YESNO_ES, dentalYesNo: FORM_DENTAL_YESNO_ES,
+    generalTitle: 'Consentimiento General para Tratamiento Dental', generalMode: 'p', general: GENERAL_CONSENT_ES, surgeryTitle: 'Consentimiento de Cirugía Oral / Extracción', surgeryText: ORAL_SURGERY_ES,
+  },
+};
+
+
 function htmlEscape(s) {
   return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
@@ -481,73 +572,77 @@ function checkinShell(title, inner) {
     '.sigbar{display:flex;justify-content:space-between;align-items:center;margin-top:6px}.sigbar a{font-size:13px;color:var(--g);text-decoration:underline;cursor:pointer}' +
     '</style></head><body><div class="wrap">' + inner + '</div></body></html>';
 }
-function checkinFormPage(eventUid, eventName) {
+function checkinFormPage(eventUid, eventName, lang) {
+  const L = I18N[lang] || I18N.en;
   const chip = (name, k, label) => '<label class="chip"><input type="checkbox" name="' + name + '" value="' + htmlEscape(k) + '">' + htmlEscape(label) + '</label>';
-  const allergyChips = FORM_ALLERGIES.map(([k, l]) => chip('allergy', k, l)).join('') + chip('allergy', 'none', 'None of the above') + chip('allergy', 'other', 'Other (type below)');
-  const condChips = FORM_CONDITIONS.map(([k, l]) => chip('condition', k, l)).join('') + chip('condition', 'none', 'None of the above') + chip('condition', 'other', 'Other (type below)');
-  const visitOpts = FORM_VISITS.map(([k, l]) => '<label class="chip"><input type="radio" name="visit" value="' + htmlEscape(k) + '">' + htmlEscape(l) + '</label>').join('');
-  const ynRow = (id, label) => '<div class="yn"><span>' + htmlEscape(label) + '</span><select id="' + id + '"><option value="">—</option><option value="yes">Yes</option><option value="no">No</option></select></div>';
-  const medYesNo = FORM_MED_YESNO.map(([k, l]) => ynRow(k, l)).join('');
-  const dentalYesNo = FORM_DENTAL_YESNO.map(([k, l]) => ynRow(k, l)).join('');
-  const genConsent = '<h3>' + htmlEscape(GENERAL_CONSENT_TITLE) + '</h3><ol>' + GENERAL_CONSENT.map((c) => '<li>' + htmlEscape(c) + '</li>').join('') + '</ol>';
-  const surConsent = '<h3>' + htmlEscape(ORAL_SURGERY_TITLE) + '</h3>' + ORAL_SURGERY_CONSENT.map((c) => '<p>' + htmlEscape(c) + '</p>').join('');
+  const allergyChips = L.allergyList.map(([k, l]) => chip('allergy', k, l)).join('') + chip('allergy', 'none', L.none) + chip('allergy', 'other', L.otherOpt);
+  const condChips = L.conditionList.map(([k, l]) => chip('condition', k, l)).join('') + chip('condition', 'none', L.none) + chip('condition', 'other', L.otherOpt);
+  const visitOpts = L.visits.map(([k, l]) => '<label class="chip"><input type="radio" name="visit" value="' + htmlEscape(k) + '">' + htmlEscape(l) + '</label>').join('');
+  const ynRow = (id, label) => '<div class="yn"><span>' + htmlEscape(label) + '</span><select id="' + id + '"><option value="">' + htmlEscape(L.dash) + '</option><option value="yes">' + htmlEscape(L.yes) + '</option><option value="no">' + htmlEscape(L.no) + '</option></select></div>';
+  const medYesNo = L.medYesNo.map(([k, l]) => ynRow(k, l)).join('');
+  const dentalYesNo = L.dentalYesNo.map(([k, l]) => ynRow(k, l)).join('');
+  const genConsent = '<h3>' + htmlEscape(L.generalTitle) + '</h3>' + (L.generalMode === 'ol' ? ('<ol>' + L.general.map((c) => '<li>' + htmlEscape(c) + '</li>').join('') + '</ol>') : L.general.map((c) => '<p>' + htmlEscape(c) + '</p>').join(''));
+  const surConsent = '<h3>' + htmlEscape(L.surgeryTitle) + '</h3>' + L.surgeryText.map((c) => '<p>' + htmlEscape(c) + '</p>').join('');
+  const T = { errName: L.errName, errDob: L.errDob, errGender: L.errGender, errConsent: L.errConsent, errSurgery: L.errSurgery, submitting: L.submitting, submitLabel: L.submit, thankYou: L.thankYou, done: L.done, netErr: L.netErr, genErr: L.genErr };
 
   const inner =
-    '<div class="hero"><div class="ey">Caring Hands · Pre-registration</div><h1>' + htmlEscape(eventName) + '</h1>' +
-    '<p>Fill this out ahead of time and sign your consent to save time at the clinic. Your answers go straight to the front desk.</p></div>' +
+    '<div class="hero"><div style="display:flex;justify-content:space-between;align-items:center"><div class="ey">Caring Hands · Pre-registration</div>' +
+    '<a href="?lang=' + L.switchLang + '" style="color:#fff;font-size:13px;text-decoration:underline">' + htmlEscape(L.switchLabel) + '</a></div>' +
+    '<h1>' + htmlEscape(eventName) + '</h1><p>' + htmlEscape(L.heroSub) + '</p></div>' +
     '<form id="f">' +
 
-    '<div class="card"><h2>About You</h2>' +
-    '<div class="row"><div><label>First name <span class="req">*</span></label><input type="text" id="first_name" autocomplete="given-name"></div>' +
-    '<div><label>Last name <span class="req">*</span></label><input type="text" id="last_name" autocomplete="family-name"></div></div>' +
-    '<div class="row"><div><label>Date of birth</label><input type="date" id="dob"></div>' +
-    '<div><label>Gender</label><select id="gender"><option value="">—</option><option value="male">Male</option><option value="female">Female</option><option value="other">Other</option></select></div></div>' +
-    '<div class="row"><div><label>Phone number</label><input type="tel" id="phone" inputmode="numeric" autocomplete="tel"></div>' +
-    '<div><label>Email</label><input type="email" id="email" autocomplete="email"></div></div>' +
-    '<label>Home address</label><input type="text" id="address" autocomplete="street-address">' +
-    '<div class="row"><div><label>Emergency contact name</label><input type="text" id="emergency_name"></div>' +
-    '<div><label>Emergency contact phone</label><input type="tel" id="emergency_phone" inputmode="numeric"></div></div>' +
-    '<label>Preferred language</label><select id="language"><option value="en">English</option><option value="es">Español</option></select>' +
+    '<div class="card"><h2>' + htmlEscape(L.about) + '</h2>' +
+    '<div class="row"><div><label>' + htmlEscape(L.first) + ' <span class="req">*</span></label><input type="text" id="first_name" autocomplete="given-name"></div>' +
+    '<div><label>' + htmlEscape(L.last) + ' <span class="req">*</span></label><input type="text" id="last_name" autocomplete="family-name"></div></div>' +
+    '<div class="row"><div><label>' + htmlEscape(L.dob) + ' <span class="req">*</span></label><input type="date" id="dob"></div>' +
+    '<div><label>' + htmlEscape(L.gender) + ' <span class="req">*</span></label><select id="gender">' + L.gOpt.map(([v, t2]) => '<option value="' + htmlEscape(v) + '">' + htmlEscape(t2) + '</option>').join('') + '</select></div></div>' +
+    '<div class="row"><div><label>' + htmlEscape(L.phone) + '</label><input type="tel" id="phone" inputmode="numeric" autocomplete="tel"></div>' +
+    '<div><label>' + htmlEscape(L.email) + '</label><input type="email" id="email" autocomplete="email"></div></div>' +
+    '<label>' + htmlEscape(L.address) + '</label><input type="text" id="address" autocomplete="street-address">' +
+    '<div class="row"><div><label>' + htmlEscape(L.city) + '</label><input type="text" id="city" autocomplete="address-level2"></div>' +
+    '<div><label>' + htmlEscape(L.state) + '</label><input type="text" id="state" autocomplete="address-level1"></div></div>' +
+    '<div class="row"><div><label>' + htmlEscape(L.emName) + '</label><input type="text" id="emergency_name"></div>' +
+    '<div><label>' + htmlEscape(L.emPhone) + '</label><input type="tel" id="emergency_phone" inputmode="numeric"></div></div>' +
     '</div>' +
 
-    '<div class="card"><h2>What do you need today?</h2><div class="chips">' + visitOpts + '</div>' +
-    '<label style="margin-top:12px">Reason for today’s visit</label><textarea id="reason" placeholder="Tell us what is bothering you"></textarea></div>' +
+    '<div class="card"><h2>' + htmlEscape(L.need) + '</h2><div class="chips">' + visitOpts + '</div>' +
+    '<label style="margin-top:12px">' + htmlEscape(L.reason) + '</label><textarea id="reason" placeholder="' + htmlEscape(L.reasonPh) + '"></textarea></div>' +
 
-    '<div class="card"><h2>Medication allergies</h2><p class="hint" style="margin:0 0 6px">Select all that apply</p><div class="chips" id="allergies">' + allergyChips + '</div>' +
-    '<input type="text" id="allergies_other" placeholder="Other allergy (specify)" style="margin-top:8px"></div>' +
+    '<div class="card"><h2>' + htmlEscape(L.allergies) + '</h2><p class="hint" style="margin:0 0 6px">' + htmlEscape(L.selectAll) + '</p><div class="chips" id="allergies">' + allergyChips + '</div>' +
+    '<input type="text" id="allergies_other" placeholder="' + htmlEscape(L.allergyOther) + '" style="margin-top:8px"></div>' +
 
-    '<div class="card"><h2>Do you have any of these conditions?</h2><p class="hint" style="margin:0 0 6px">Select all that apply</p><div class="chips" id="conditions">' + condChips + '</div>' +
-    '<input type="text" id="conditions_other" placeholder="Other condition (specify)" style="margin-top:8px"></div>' +
+    '<div class="card"><h2>' + htmlEscape(L.conditions) + '</h2><p class="hint" style="margin:0 0 6px">' + htmlEscape(L.selectAll) + '</p><div class="chips" id="conditions">' + condChips + '</div>' +
+    '<input type="text" id="conditions_other" placeholder="' + htmlEscape(L.conditionOther) + '" style="margin-top:8px"></div>' +
 
-    '<div class="card"><h2>Current medications</h2><div id="meds"></div>' +
-    '<button type="button" class="addbtn" id="addmed">+ Add medication</button>' +
-    '<label class="chip" style="margin-top:10px"><input type="checkbox" id="medications_none">No medications</label></div>' +
+    '<div class="card"><h2>' + htmlEscape(L.meds) + '</h2><div id="meds"></div>' +
+    '<button type="button" class="addbtn" id="addmed">' + htmlEscape(L.addMed) + '</button>' +
+    '<label class="chip" style="margin-top:10px"><input type="checkbox" id="medications_none">' + htmlEscape(L.noMeds) + '</label></div>' +
 
-    '<div class="card"><h2>Medical History</h2>' + medYesNo + '</div>' +
+    '<div class="card"><h2>' + htmlEscape(L.medHist) + '</h2>' + medYesNo + '</div>' +
 
-    '<div class="card"><h2>Dental History</h2><label>When did you last see a dentist?</label><input type="text" id="prior_dentist">' + dentalYesNo + '</div>' +
+    '<div class="card"><h2>' + htmlEscape(L.dentHist) + '</h2><label>' + htmlEscape(L.priorDentist) + '</label><input type="text" id="prior_dentist">' + dentalYesNo + '</div>' +
 
-    '<div class="card"><h2>Consent</h2><div class="consent">' + genConsent + '</div>' +
-    '<div class="row" style="margin-top:10px"><div><label>Your name (for the signature)</label><input type="text" id="signer"></div>' +
-    '<div><label>Relationship (if for a minor)</label><input type="text" id="relationship" placeholder="Self / Parent / Guardian"></div></div>' +
-    '<label class="agree"><input type="checkbox" id="cagree"><span>' + htmlEscape(CONSENT_AGREE_TEXT) + '</span></label>' +
-    '<label style="margin-top:10px">Signature (optional)</label><canvas id="gsig" class="sig"></canvas>' +
-    '<div class="sigbar"><span class="hint">Sign with your finger or a stylus.</span><a id="gclear">Clear</a></div></div>' +
+    '<div class="card"><h2>' + htmlEscape(L.consent) + '</h2><div class="consent">' + genConsent + '</div>' +
+    '<div class="row" style="margin-top:10px"><div><label>' + htmlEscape(L.signName) + '</label><input type="text" id="signer"></div>' +
+    '<div><label>' + htmlEscape(L.relationship) + '</label><input type="text" id="relationship" placeholder="' + htmlEscape(L.relPh) + '"></div></div>' +
+    '<label class="agree"><input type="checkbox" id="cagree"><span>' + htmlEscape(L.agree) + '</span></label>' +
+    '<label style="margin-top:10px">' + htmlEscape(L.sigOpt) + '</label><canvas id="gsig" class="sig"></canvas>' +
+    '<div class="sigbar"><span class="hint">' + htmlEscape(L.sigHint) + '</span><a id="gclear">' + htmlEscape(L.clear) + '</a></div></div>' +
 
-    '<div class="card" id="surgeryCard" style="display:none"><h2>Surgery Consent</h2>' +
-    '<p class="hint" style="margin:0 0 8px">Because an extraction may be done, please also read and sign this.</p>' +
-    '<div class="consent">' + surConsent + '</div>' +
-    '<label style="margin-top:10px">Tooth number(s), if known</label><input type="text" id="steeth" placeholder="e.g. 14, 15">' +
-    '<label class="agree"><input type="checkbox" id="sagree"><span>' + htmlEscape(CONSENT_AGREE_TEXT) + '</span></label>' +
-    '<label style="margin-top:10px">Signature (optional)</label><canvas id="ssig" class="sig"></canvas>' +
-    '<div class="sigbar"><span class="hint">Sign with your finger or a stylus.</span><a id="sclear">Clear</a></div></div>' +
+    '<div class="card" id="surgeryCard" style="display:none"><h2>' + htmlEscape(L.surgery) + '</h2>' +
+    '<p class="hint" style="margin:0 0 8px">' + htmlEscape(L.surgeryIntro) + '</p><div class="consent">' + surConsent + '</div>' +
+    '<label style="margin-top:10px">' + htmlEscape(L.teeth) + '</label><input type="text" id="steeth" placeholder="e.g. 14, 15">' +
+    '<label class="agree"><input type="checkbox" id="sagree"><span>' + htmlEscape(L.agree) + '</span></label>' +
+    '<label style="margin-top:10px">' + htmlEscape(L.sigOpt) + '</label><canvas id="ssig" class="sig"></canvas>' +
+    '<div class="sigbar"><span class="hint">' + htmlEscape(L.sigHint) + '</span><a id="sclear">' + htmlEscape(L.clear) + '</a></div></div>' +
 
     '<div class="err" id="err"></div>' +
-    '<button class="btn" id="submit" type="submit">Submit pre-registration</button>' +
-    '<p class="hint" style="text-align:center;margin-top:14px">Caring Hands Worldwide — free dental care. Your information is shared only with the clinic team.</p>' +
+    '<button class="btn" id="submit" type="submit">' + htmlEscape(L.submit) + '</button>' +
+    '<p class="hint" style="text-align:center;margin-top:14px">' + htmlEscape(L.footer) + '</p>' +
     '</form>' +
 
     '<script>' +
+    'var T=' + JSON.stringify(T) + ';var LANG=' + JSON.stringify(lang) + ';' +
     "function el(id){return document.getElementById(id);}function val(id){var e=el(id);return e?e.value:'';}" +
     "function chipwire(id){document.querySelectorAll('#'+id+' .chip input').forEach(function(i){i.addEventListener('change',function(){i.closest('.chip').classList.toggle('on',i.checked);});});}" +
     "chipwire('allergies');chipwire('conditions');" +
@@ -555,21 +650,22 @@ function checkinFormPage(eventUid, eventName) {
     "function mkpad(id){var c=el(id);if(!c)return null;var ctx=c.getContext('2d');var drawing=false,empty=true;function fit(){var r=c.getBoundingClientRect();if(!r.width)return;c.width=r.width;c.height=150;ctx.lineWidth=2.2;ctx.lineCap='round';ctx.strokeStyle='#12303f';}fit();window.addEventListener('resize',fit);function pt(e){var r=c.getBoundingClientRect();var t=(e.touches&&e.touches[0])?e.touches[0]:e;return{x:t.clientX-r.left,y:t.clientY-r.top};}function down(e){drawing=true;empty=false;var p=pt(e);ctx.beginPath();ctx.moveTo(p.x,p.y);e.preventDefault();}function mv(e){if(!drawing)return;var p=pt(e);ctx.lineTo(p.x,p.y);ctx.stroke();e.preventDefault();}function up(){drawing=false;}c.addEventListener('pointerdown',down);c.addEventListener('pointermove',mv);window.addEventListener('pointerup',up);return{data:function(){return empty?null:c.toDataURL('image/png');},clear:function(){ctx.clearRect(0,0,c.width,c.height);empty=true;},fit:fit};}" +
     "var gpad=mkpad('gsig');var spad=mkpad('ssig');el('gclear').onclick=function(){if(gpad)gpad.clear();};if(el('sclear'))el('sclear').onclick=function(){if(spad)spad.clear();};" +
     "document.querySelectorAll('input[name=visit]').forEach(function(i){i.addEventListener('change',function(){document.querySelectorAll('input[name=visit]').forEach(function(r){r.closest('.chip').classList.toggle('on',r.checked);});var v=(document.querySelector('input[name=visit]:checked')||{}).value||'';var ex=(v==='extraction_pain'||v==='extraction_no_pain');el('surgeryCard').style.display=ex?'block':'none';if(ex&&spad)setTimeout(function(){spad.fit();},0);});});" +
-    "var meds=el('meds');function addmed(){var d=document.createElement('div');d.className='med-row';d.innerHTML='<input type=\"text\" placeholder=\"Medication\"><button type=\"button\">✕</button>';d.querySelector('button').onclick=function(){d.remove();};meds.appendChild(d);}el('addmed').onclick=addmed;" +
+    "var meds=el('meds');function addmed(){var d=document.createElement('div');d.className='med-row';d.innerHTML='<input type=\"text\" placeholder=\"'+T.medNamePh+'\"><button type=\"button\">✕</button>';d.querySelector('button').onclick=function(){d.remove();};meds.appendChild(d);}el('addmed').onclick=addmed;" +
     "el('f').addEventListener('submit',function(e){e.preventDefault();var err=el('err');err.textContent='';" +
-    "var fn=val('first_name').trim(),ln=val('last_name').trim();if(!fn||!ln){err.textContent='Please enter your first and last name.';window.scrollTo(0,0);return;}" +
-    "if(!el('cagree').checked){err.textContent='Please read and agree to the consent to finish.';return;}" +
+    "var fn=val('first_name').trim(),ln=val('last_name').trim();if(!fn||!ln){err.textContent=T.errName;window.scrollTo(0,0);return;}" +
+    "if(!val('dob')){err.textContent=T.errDob;return;}if(!val('gender')){err.textContent=T.errGender;return;}" +
+    "if(!el('cagree').checked){err.textContent=T.errConsent;return;}" +
     "var visit=(document.querySelector('input[name=visit]:checked')||{}).value||'';var extraction=(visit==='extraction_pain'||visit==='extraction_no_pain');" +
-    "if(extraction&&!el('sagree').checked){err.textContent='An extraction was selected — please read and agree to the Oral Surgery consent too.';return;}" +
-    "var payload={first_name:fn,last_name:ln,dob:val('dob'),gender:val('gender'),phone:val('phone'),email:val('email'),language:val('language'),address:val('address'),emergency_name:val('emergency_name'),emergency_phone:val('emergency_phone')," +
+    "if(extraction&&!el('sagree').checked){err.textContent=T.errSurgery;return;}" +
+    "var payload={first_name:fn,last_name:ln,dob:val('dob'),gender:val('gender'),phone:val('phone'),email:val('email'),language:LANG,address:val('address'),city:val('city'),state:val('state'),emergency_name:val('emergency_name'),emergency_phone:val('emergency_phone')," +
     "reason:val('reason'),visit_type:visit,allergies:checked('allergy'),allergies_other:val('allergies_other'),conditions:checked('condition'),conditions_other:val('conditions_other')," +
     "medications:Array.prototype.slice.call(meds.querySelectorAll('input')).map(function(i){return i.value.trim();}).filter(Boolean),medications_none:el('medications_none').checked," +
     "under_treatment:val('under_treatment'),hospitalized:val('hospitalized'),tobacco:val('tobacco'),pregnancy:val('pregnancy')," +
     "prior_dentist:val('prior_dentist'),gum_bleeding:val('gum_bleeding'),sores:val('sores'),jaw_injury:val('jaw_injury'),grinding:val('grinding'),post_extraction_bleeding:val('post_extraction_bleeding'),ortho:val('ortho')," +
     "consent_agree:el('cagree').checked,signer_name:val('signer'),relationship:val('relationship'),signature_png:gpad?gpad.data():null," +
     "surgery_agree:el('sagree')?el('sagree').checked:false,surgery_teeth:val('steeth'),surgery_signature_png:spad?spad.data():null};" +
-    "var b=el('submit');b.disabled=true;b.textContent='Submitting…';" +
-    "fetch(location.pathname,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(payload)}).then(function(r){return r.json();}).then(function(j){if(j&&j.ok){document.querySelector('.wrap').innerHTML='<div class=\"hero\"><div class=\"ey\">Caring Hands</div><h1>Thank you, '+fn.replace(/[<>&]/g,'')+'!</h1></div><div class=\"card ok\"><div class=\"big\">✅</div><p>Your pre-registration and consent are complete. Please bring a photo ID — the front desk already has your information.</p></div>';window.scrollTo(0,0);}else{err.textContent=(j&&j.error)||'Something went wrong. Please try again.';b.disabled=false;b.textContent='Submit pre-registration';}}).catch(function(){err.textContent='Network error. Please try again.';b.disabled=false;b.textContent='Submit pre-registration';});});" +
+    "var b=el('submit');b.disabled=true;b.textContent=T.submitting;" +
+    "fetch(location.pathname,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(payload)}).then(function(r){return r.json();}).then(function(j){if(j&&j.ok){document.querySelector('.wrap').innerHTML='<div class=\"hero\"><div class=\"ey\">Caring Hands</div><h1>'+T.thankYou+fn.replace(/[<>&]/g,'')+'!</h1></div><div class=\"card ok\"><div class=\"big\">✅</div><p>'+T.done+'</p></div>';window.scrollTo(0,0);}else{err.textContent=(j&&j.error)||T.genErr;b.disabled=false;b.textContent=T.submitLabel;}}).catch(function(){err.textContent=T.netErr;b.disabled=false;b.textContent=T.submitLabel;});});" +
     '</script>';
   return checkinShell('Pre-register · ' + eventName, inner);
 }

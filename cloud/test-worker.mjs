@@ -134,7 +134,7 @@ async function main() {
       h.data &&
       h.data.ok === true &&
       h.data.service === 'caring-hands-sync' &&
-      h.data.version === '1.3.1' &&
+      h.data.version === '1.4.0' &&
       typeof h.data.time === 'string'
   );
 
@@ -389,7 +389,7 @@ async function main() {
   const preReg = await call(env, 'POST', '/checkin/evt-1', {
     body: {
       first_name: 'Pre', last_name: 'Reg', dob: '1990-01-02', gender: 'female', phone: '(555) 123-4567', language: 'es',
-      address: '1 Main St', emergency_name: 'Kin', emergency_phone: '5550001111',
+      address: '1 Main St', city: 'Sandy', state: 'OR', emergency_name: 'Kin', emergency_phone: '5550001111',
       reason: 'tooth hurts', visit_type: 'filling', allergies: ['penicillin', 'other'], allergies_other: 'shellfish',
       conditions: ['diabetes', 'pain_mgmt'], medications: ['Metformin', 'Lisinopril'],
       under_treatment: 'yes', tobacco: 'no', gum_bleeding: 'yes', prior_dentist: 'Dr. Smith',
@@ -406,7 +406,7 @@ async function main() {
   const mh = pd ? JSON.parse(pd.medical_history) : null;
   const dh = pd ? JSON.parse(pd.dental_history) : null;
   check('pre-registration maps ALL the in-person options natively (parity)',
-    !!demo && demo.preregistered === true && demo.address === '1 Main St' && demo.emergency_name === 'Kin' && pd.phone === '5551234567' &&
+    !!demo && demo.preregistered === true && demo.address === '1 Main St' && demo.city === 'Sandy' && demo.state === 'OR' && demo.emergency_name === 'Kin' && pd.phone === '5551234567' &&
     !!mh && mh.allergies.includes('penicillin') && mh.allergies_other === 'shellfish' && mh.conditions.includes('diabetes') && mh.conditions.includes('pain_mgmt') && mh.medications.length === 2 && mh.under_treatment === 'yes' && mh.tobacco === 'no' &&
     !!dh && dh.reason === 'tooth hurts' && dh.visit_type === 'filling' && dh.gum_bleeding === 'yes' && dh.prior_dentist === 'Dr. Smith');
 
@@ -416,14 +416,23 @@ async function main() {
   check('a SIGNED general consent is filed with the patient (routes into the chart)',
     !!gc && gc.type === 'general' && gc.signer_name === 'Pre Reg' && gc.relationship === 'Self' && typeof gc.signature_png === 'string' && /^general-oregon-es/.test(gc.version) && gConsent.event_uid === 'evt-1');
 
+  // Birthdate and gender are REQUIRED (Sandy Oregon clinic request).
+  const noDob = await call(env, 'POST', '/checkin/evt-1', { body: { first_name: 'No', last_name: 'Dob', gender: 'male', visit_type: 'cleaning', consent_agree: true } });
+  check('POST /checkin without a date of birth -> 400', noDob.status === 400 && /date of birth/i.test(noDob.data.error));
+  const noGender = await call(env, 'POST', '/checkin/evt-1', { body: { first_name: 'No', last_name: 'Gender', dob: '1990-01-01', visit_type: 'cleaning', consent_agree: true } });
+  check('POST /checkin without a gender -> 400', noGender.status === 400 && /gender/i.test(noGender.data.error));
+  // A Spanish submission gets Spanish validation errors.
+  const noDobEs = await call(env, 'POST', '/checkin/evt-1', { body: { first_name: 'Sin', last_name: 'Fecha', gender: 'male', language: 'es', consent_agree: true } });
+  check('POST /checkin (es) without a date of birth -> Spanish 400', noDobEs.status === 400 && /fecha de nacimiento/i.test(noDobEs.data.error));
+
   // General consent is REQUIRED — a submission without it is rejected.
-  const noConsent = await call(env, 'POST', '/checkin/evt-1', { body: { first_name: 'No', last_name: 'Consent', visit_type: 'cleaning' } });
+  const noConsent = await call(env, 'POST', '/checkin/evt-1', { body: { first_name: 'No', last_name: 'Consent', dob: '1990-01-01', gender: 'male', visit_type: 'cleaning' } });
   check('POST /checkin without agreeing to the consent -> 400', noConsent.status === 400 && /consent/i.test(noConsent.data.error));
 
   // An extraction visit also requires (and files) the Oral Surgery consent.
-  const noSurgery = await call(env, 'POST', '/checkin/evt-1', { body: { first_name: 'Ex', last_name: 'Tract', visit_type: 'extraction_pain', consent_agree: true } });
+  const noSurgery = await call(env, 'POST', '/checkin/evt-1', { body: { first_name: 'Ex', last_name: 'Tract', dob: '1990-01-01', gender: 'male', visit_type: 'extraction_pain', consent_agree: true } });
   check('POST /checkin extraction without surgery consent -> 400', noSurgery.status === 400 && /surgery/i.test(noSurgery.data.error));
-  const withSurgery = await call(env, 'POST', '/checkin/evt-1', { body: { first_name: 'Ex', last_name: 'Tract', visit_type: 'extraction_pain', consent_agree: true, surgery_agree: true, surgery_teeth: '14, 15', signature_png: 'data:image/png;base64,BBBB', surgery_signature_png: 'data:image/png;base64,CCCC' } });
+  const withSurgery = await call(env, 'POST', '/checkin/evt-1', { body: { first_name: 'Ex', last_name: 'Tract', dob: '1990-01-01', gender: 'male', visit_type: 'extraction_pain', consent_agree: true, surgery_agree: true, surgery_teeth: '14, 15', signature_png: 'data:image/png;base64,BBBB', surgery_signature_png: 'data:image/png;base64,CCCC' } });
   check('POST /checkin extraction WITH surgery consent -> 200', withSurgery.status === 200 && withSurgery.data.ok === true);
   const exPatient = Array.from(env.DB._store.values()).find((r) => r.entity === 'patient' && JSON.parse(r.data).last_name === 'Tract');
   const surgeryRow = Array.from(env.DB._store.values()).find((r) => r.entity === 'consent' && r.patient_uid === exPatient.uid && JSON.parse(r.data).type === 'oral_surgery');
@@ -453,6 +462,43 @@ async function main() {
     fullForm.text.includes('Extraction — no pain') &&
     fullForm.text.includes('Select all that apply') &&
     fullForm.text.includes('I have read and understand the above, and I consent.'));
+
+  // City + State fields are collected on the pre-registration form (Sandy Oregon grant reporting).
+  check('the pre-registration form collects City and State',
+    /id="city"/.test(fullForm.text) && /id="state"/.test(fullForm.text) &&
+    fullForm.text.includes('City') && fullForm.text.includes('State'));
+  // DOB and gender are marked required on the form (asterisk + client-side validation).
+  check('the pre-registration form marks date of birth and gender required',
+    /id="dob"/.test(fullForm.text) && /id="gender"/.test(fullForm.text) &&
+    fullForm.text.includes("if(!val('dob'))") && fullForm.text.includes("if(!val('gender'))"));
+  // The English form offers a link to switch to Spanish.
+  check('the English form links to the Spanish version',
+    /\?lang=es/.test(fullForm.text) && fullForm.text.includes('Español'));
+
+  // --- Spanish pre-registration (?lang=es) — full parity in Spanish ---
+  const esForm = await getText('/checkin/evt-1?lang=es');
+  check('GET /checkin/<event>?lang=es serves the Spanish form',
+    esForm.status === 200 && /text\/html/.test(esForm.ctype) &&
+    esForm.text.includes('Sobre usted') &&
+    esForm.text.includes('¿Qué necesita hoy?') &&
+    esForm.text.includes('Motivo de la visita de hoy') &&
+    esForm.text.includes('Ciudad') && esForm.text.includes('Estado'));
+  check('the Spanish form carries the Spanish consent + agree text',
+    esForm.text.includes('Consentimiento General para Tratamiento Dental') &&
+    esForm.text.includes('He leído y entiendo lo anterior, y doy mi consentimiento.'));
+  check('the Spanish form links back to English',
+    /\?lang=en/.test(esForm.text) && esForm.text.includes('English'));
+  // A Spanish submission still round-trips (writes a checked-in patient + Spanish-versioned consent).
+  const esSubmit = await call(env, 'POST', '/checkin/evt-1', {
+    body: { first_name: 'Ana', last_name: 'Ruiz', dob: '1988-05-05', gender: 'female', language: 'es', city: 'Sandy', state: 'OR',
+      visit_type: 'cleaning', consent_agree: true, signer_name: 'Ana Ruiz', relationship: 'Self', signature_png: 'data:image/png;base64,DDDD' },
+  });
+  check('POST /checkin (es) full submission -> 200', esSubmit.status === 200 && esSubmit.data.ok === true);
+  const esStored = Array.from(env.DB._store.values()).find((r) => r.entity === 'patient' && JSON.parse(r.data).last_name === 'Ruiz');
+  const esPat = esStored ? JSON.parse(esStored.data) : null;
+  const esDemo = esPat ? JSON.parse(esPat.demographics) : null;
+  check('Spanish pre-registration saves language, city, and state',
+    !!esPat && esPat.language === 'es' && !!esDemo && esDemo.city === 'Sandy' && esDemo.state === 'OR');
 
   // --- summary ---
   console.log('');

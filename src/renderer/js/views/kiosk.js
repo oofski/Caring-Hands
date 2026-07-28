@@ -113,16 +113,18 @@ export function renderKiosk(ctx) {
     const d = data.demographics;
     const first = textField(t('intake.firstName'), { value: data.first_name, required: true });
     const last = textField(t('intake.lastName'), { value: data.last_name, required: true });
-    const dob = textField(t('intake.dob'), { value: data.dob, type: 'date' });
+    const dob = textField(t('intake.dob'), { value: data.dob, type: 'date', required: true });
     const gender = selectField(t('intake.gender'), [
       { value: '', label: '—' },
       { value: 'male', label: t('intake.genderM') },
       { value: 'female', label: t('intake.genderF') },
       { value: 'other', label: t('intake.genderO') },
-    ], { value: data.gender });
+    ], { value: data.gender, required: true });
     const phone = textField(t('intake.phone'), { value: data.phone, type: 'tel', required: true });
     const email = textField(t('intake.email'), { value: data.email, type: 'email' });
     const address = textField(t('intake.address'), { value: d.address });
+    const city = textField(t('intake.city'), { value: d.city });
+    const stateF = textField(t('intake.state'), { value: d.state });
     const mailing = textField(t('intake.mailing'), { value: d.mailing_address });
     const marital = selectField(t('intake.marital'), [
       { value: '', label: '—' },
@@ -151,6 +153,7 @@ export function renderKiosk(ctx) {
     const node = el('div', { class: 'form-grid' }, [
       first.node, last.node, dob.node, gender.node, phone.node, email.node,
       el('div', { class: 'span-2' }, [address.node]),
+      city.node, stateF.node,
       el('div', { class: 'span-2' }, [mailing.node]),
       marital.node, emName.node, emPhone.node,
       el('div', { class: 'span-2' }, [referral.node]),
@@ -162,13 +165,15 @@ export function renderKiosk(ctx) {
       node,
       collect: () => {
         if (!first.get() || !last.get()) { toast(t('common.required') + ': ' + t('intake.firstName') + ' / ' + t('intake.lastName'), 'error'); return false; }
+        if (!dob.get()) { toast(t('common.required') + ': ' + t('intake.dob'), 'error'); return false; }
+        if (!gender.get()) { toast(t('common.required') + ': ' + t('intake.gender'), 'error'); return false; }
         if (!phone.get()) { toast(t('common.required') + ': ' + t('intake.phone'), 'error'); return false; }
         if (!emName.get()) { toast(t('common.required') + ': ' + t('intake.emergencyName'), 'error'); return false; }
         if (!emPhone.get()) { toast(t('common.required') + ': ' + t('intake.emergencyPhone'), 'error'); return false; }
         data.first_name = first.get(); data.last_name = last.get();
         data.dob = dob.get(); data.gender = gender.get(); data.phone = phone.get(); data.email = email.get();
         Object.assign(data.demographics, {
-          address: address.get(), mailing_address: mailing.get(), marital_status: marital.get(),
+          address: address.get(), city: city.get(), state: stateF.get(), mailing_address: mailing.get(), marital_status: marital.get(),
           emergency_name: emName.get(), emergency_phone: emPhone.get(),
           referral: referral.get(),
           referral_other: referral.get() === 'other' ? referralOther.get() : '',
