@@ -96,6 +96,7 @@ export const api = {
   cloudConfig: (cfg) => call('cloudConfig', cfg),
   cloudTest: (url, key) => call('cloudTest', { url, key }),
   cloudSyncNow: () => call('cloudSyncNow'),
+  cloudResync: () => call('cloudResync'),
   onCloudChanged: (cb) => window.api.onCloudChanged(cb),
 
   openExternal: (url) => window.api.appOpenExternal(url),

@@ -23,6 +23,7 @@ function check(name, cond) {
 // ---------------------------------------------------------------------------
 function makeFakeD1() {
   const store = new Map(); // uid -> row object
+  let seq = 0; // the server's delivery counter (sync_seq table)
 
   function prepare(sql) {
     return {
@@ -45,17 +46,33 @@ function makeFakeD1() {
           const row = store.get(uid);
           return row && row.entity === 'event' && !row.deleted ? { data: row.data } : null;
         }
+        // v1.5.0 delivery counter: reserve the next sequence number.
+        if (/INSERT INTO sync_seq .*ON CONFLICT\(id\) DO UPDATE SET v = v \+ 1 RETURNING v/.test(s)) {
+          seq += 1;
+          return { v: seq };
+        }
         throw new Error('fake D1: unsupported first() SQL: ' + s);
       },
       async run() {
         const s = this._sql;
         // Self-initializing schema DDL (CREATE TABLE/INDEX IF NOT EXISTS) — the
-        // in-memory store needs no schema, so these are no-ops.
+        // in-memory store needs no schema, so these are no-ops. The v1.5.0
+        // migrations (ADD COLUMN / backfill / counter seed) are likewise a no-op
+        // here: the in-memory rows carry seq directly.
         if (/^\s*CREATE\s+(TABLE|INDEX)/i.test(s)) {
           return { success: true, meta: { changes: 0 } };
         }
+        if (/^\s*ALTER TABLE sync_rows ADD COLUMN seq/.test(s)) {
+          return { success: true, meta: { changes: 0 } };
+        }
+        if (/^\s*UPDATE sync_rows SET seq = rowid/.test(s)) {
+          return { success: true, meta: { changes: 0 } };
+        }
+        if (/^\s*INSERT INTO sync_seq \(id, v\) SELECT 1/.test(s)) {
+          return { success: true, meta: { changes: 0 } };
+        }
         if (/INSERT OR REPLACE INTO sync_rows/.test(s)) {
-          const [uid, entity, event_uid, patient_uid, deleted, updated_at, data] =
+          const [uid, entity, event_uid, patient_uid, deleted, updated_at, data, rowSeq] =
             this._binds;
           store.set(uid, {
             uid,
@@ -65,6 +82,7 @@ function makeFakeD1() {
             deleted,
             updated_at,
             data,
+            seq: rowSeq != null ? rowSeq : null,
           });
           return { success: true, meta: { changes: 1 } };
         }
@@ -72,7 +90,8 @@ function makeFakeD1() {
       },
       async all() {
         const s = this._sql;
-        if (/SELECT .* FROM sync_rows WHERE updated_at > \?/.test(s)) {
+        const bySeq = /IFNULL\(seq, 0\) > \?/.test(s);
+        if (bySeq || /SELECT .* FROM sync_rows WHERE updated_at > \?/.test(s)) {
           const hasEvent = /event_uid = \?/.test(s);
           let since, eventUid, limit;
           if (hasEvent) {
@@ -80,13 +99,19 @@ function makeFakeD1() {
           } else {
             [since, limit] = this._binds;
           }
-          let rows = Array.from(store.values()).filter(
-            (r) => String(r.updated_at) > String(since)
+          let rows = Array.from(store.values()).filter((r) =>
+            bySeq
+              ? Number(r.seq || 0) > Number(since)
+              : String(r.updated_at) > String(since)
           );
           if (hasEvent) rows = rows.filter((r) => r.event_uid === eventUid);
-          rows.sort((a, b) =>
-            a.updated_at < b.updated_at ? -1 : a.updated_at > b.updated_at ? 1 : 0
-          );
+          const key = (r) => (bySeq ? Number(r.seq || 0) : r.updated_at);
+          rows.sort((a, b) => {
+            const ka = key(a), kb = key(b);
+            if (ka < kb) return -1;
+            if (ka > kb) return 1;
+            return a.uid < b.uid ? -1 : a.uid > b.uid ? 1 : 0;
+          });
           rows = rows.slice(0, limit);
           return { results: rows.map((r) => ({ ...r })) };
         }
@@ -134,7 +159,8 @@ async function main() {
       h.data &&
       h.data.ok === true &&
       h.data.service === 'caring-hands-sync' &&
-      h.data.version === '1.4.0' &&
+      h.data.version === '1.5.0' &&
+      h.data.seq === true &&
       typeof h.data.time === 'string'
   );
 
@@ -499,6 +525,60 @@ async function main() {
   const esDemo = esPat ? JSON.parse(esPat.demographics) : null;
   check('Spanish pre-registration saves language, city, and state',
     !!esPat && esPat.language === 'es' && !!esDemo && esDemo.city === 'Sandy' && esDemo.state === 'OR');
+
+  // --- v1.5.0: delivery is ordered by the SERVER's counter, never by a clock ---
+  // Regression for the bug where patients registered on one laptop never
+  // appeared on another. Rows used to be handed out in timestamp order against a
+  // high-water-mark cursor, so any row that arrived with an older stamp — an
+  // offline check-in, or anything written by a laptop whose clock ran slow — fell
+  // below another laptop's cursor and was skipped forever.
+  {
+    const env2 = { CLINIC_KEY, DB: makeFakeD1() };
+    const T = (min, dev) => new Date(Date.parse('2026-07-30T17:00:00.000Z') + min * 60000).toISOString() + '@' + dev;
+    const pushRows = (device, rows) => call(env2, 'POST', '/v1/push', { auth: CLINIC_KEY, body: { device_id: device, rows } });
+    const pullFrom = (since) => call(env2, 'GET', '/v1/pull?since=' + encodeURIComponent(since) + '&limit=400', { auth: CLINIC_KEY });
+    const pat = (uid, name, stamp) => ({
+      entity: 'patient', uid, event_uid: 'evt-c', patient_uid: null, deleted: 0, updated_at: stamp,
+      data: { first_name: name, last_name: 'X', status: 'checked_in', created_at: stamp.split('@')[0] },
+    });
+    const namesIn = (r) => (r.data.rows || []).filter((x) => x.entity === 'patient').map((x) => x.data.first_name);
+
+    await pushRows('laptopA', [{ entity: 'event', uid: 'evt-c', event_uid: null, patient_uid: null, deleted: 0, updated_at: T(0, 'laptopA'), data: { name: 'Clinic', active: 1 } }]);
+
+    // Laptop B's clock is 10 minutes FAST. It checks someone in and syncs, so its
+    // cursor is now built from its own future-dated row.
+    await pushRows('laptopB', [pat('p-fast', 'Bianca', T(10, 'laptopB'))]);
+    const bFirst = await pullFrom('');
+    const cursorB = bFirst.data.cursor;
+    check('v1.5.0: the pull cursor is the server counter, not a timestamp', /^\d+$/.test(String(cursorB)) && bFirst.data.mode === 'seq');
+
+    // Now a walk-in on the correctly-clocked laptop, and an online pre-registration.
+    await pushRows('laptopA', [pat('p-walkin', 'Alberto', T(2, 'laptopA'))]);
+    await pushRows('prereg', [pat('p-prereg', 'Ana', T(3, 'prereg'))]);
+
+    const bAgain = await pullFrom(cursorB);
+    const bSees = namesIn(bAgain);
+    check('v1.5.0: a fast-clock laptop still receives patients registered on the others',
+      bSees.includes('Alberto') && bSees.includes('Ana'));
+
+    // The offline case: a laptop that was off the network all morning finally
+    // pushes a patient whose stamp is HOURS older than everything already synced.
+    const cursorAfter = bAgain.data.cursor;
+    await pushRows('laptopC', [pat('p-offline', 'Olivia', T(-360, 'laptopC'))]);
+    const afterOffline = await pullFrom(cursorAfter);
+    check('v1.5.0: a back-dated offline check-in is still delivered (not skipped)',
+      namesIn(afterOffline).includes('Olivia'));
+
+    // And it is delivered exactly once — the cursor still advances normally.
+    const settled = await pullFrom(afterOffline.data.cursor);
+    check('v1.5.0: the cursor still advances (no repeat delivery loop)', settled.data.rows.length === 0);
+
+    // An un-updated laptop (legacy timestamp cursor) keeps working unchanged, so
+    // a clinic can update its stations one at a time.
+    const legacy = await pullFrom('2026-07-30T17:01:00.000Z@old');
+    check('v1.5.0: an older app\'s timestamp cursor is still served (rolling update)',
+      legacy.data.mode === 'time' && String(legacy.data.cursor).includes('T') && namesIn(legacy).includes('Bianca'));
+  }
 
   // --- summary ---
   console.log('');

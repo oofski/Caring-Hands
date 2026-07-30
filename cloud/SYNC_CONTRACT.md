@@ -40,11 +40,28 @@ Base URL = the deployed Worker, e.g. `https://caring-hands-sync.<subdomain>.work
   compares against the `CLINIC_KEY` secret (constant-time). Mismatch → `401 {ok:false,error}`.
 - `POST /v1/push` — body `{ device_id, rows: [<envelope>...] }`.
   Upserts each row into D1 with LWW. → `{ ok:true, applied:<n>, skipped:<n>, time:"<iso>" }`.
-- `GET /v1/pull?since=<iso>&event_uid=<uid>&limit=500` — returns rows with
-  `updated_at > since` (optionally scoped to `event_uid`), ordered by `updated_at` asc.
-  → `{ ok:true, rows:[<envelope>...], cursor:"<iso>", more:false }`.
-  `cursor` = the max `updated_at` returned (or `since` when empty); the app stores it and
+- `GET /v1/pull?since=<cursor>&event_uid=<uid>&limit=500` — returns rows with
+  `seq > since` (optionally scoped to `event_uid`), ordered by `seq` asc.
+  → `{ ok:true, rows:[<envelope>...], cursor:"<seq>", more:false, mode:"seq" }`.
+  `cursor` = the last `seq` returned (or `since` when empty); the app stores it and
   passes it as the next `since`. `more:true` when the limit was hit (app pulls again).
+
+  **Delivery order is the server's counter, never a clock (v1.5.0).** `seq` is assigned
+  by the Worker on every write. Ordering by `updated_at` was unsafe: a row can reach the
+  cloud with an *older* stamp than rows already delivered — a check-in made while a laptop
+  was offline (its original edit time is deliberately preserved for fair LWW), or any write
+  from a laptop whose clock is behind. A timestamp high-water cursor steps straight over
+  those rows and never returns them, so a patient could be permanently visible on one
+  laptop and missing on another. `seq` cannot be back-dated, so a late arrival is still
+  delivered to every device that hasn't reached it.
+
+  `updated_at` is unchanged and still decides last-write-wins — it answers "who edited
+  last", which is a different question from "what has this device already been given".
+
+  **Rolling updates:** a `since` that is a number (or empty) selects seq mode; a legacy
+  `<iso>@<device>` cursor is served exactly as before (`mode:"time"`), so laptops can be
+  updated one at a time. `GET /health` reports `seq:true` on a seq-capable server; the app
+  uses that to switch its cursor over once, which also re-reads anything it had skipped.
 
 ## D1 schema
 One table `sync_rows` (generic, so new fields never need a migration):
@@ -55,13 +72,19 @@ CREATE TABLE IF NOT EXISTS sync_rows (
   event_uid   TEXT,
   patient_uid TEXT,
   deleted     INTEGER NOT NULL DEFAULT 0,
-  updated_at  TEXT NOT NULL,
-  data        TEXT NOT NULL          -- JSON string of the envelope.data
+  updated_at  TEXT NOT NULL,         -- device stamp; decides last-write-wins
+  data        TEXT NOT NULL,         -- JSON string of the envelope.data
+  seq         INTEGER                -- server delivery counter; decides pull order
 );
 CREATE INDEX IF NOT EXISTS idx_sync_updated ON sync_rows(updated_at);
 CREATE INDEX IF NOT EXISTS idx_sync_event   ON sync_rows(event_uid, updated_at);
 CREATE INDEX IF NOT EXISTS idx_sync_entity  ON sync_rows(entity);
+CREATE INDEX IF NOT EXISTS idx_sync_seq     ON sync_rows(seq);
+-- The counter itself. Every write takes the next value atomically.
+CREATE TABLE IF NOT EXISTS sync_seq (id INTEGER PRIMARY KEY, v INTEGER NOT NULL);
 ```
+The Worker migrates an existing database on its own (adds `seq`, backfills it from each
+row's insertion order, seeds the counter), so a redeploy needs no CLI step.
 
 ## App side (already implemented in src/main/cloud.js + db.js)
 - Settings (in local `settings` table): `cloud_url`, `cloud_key`, `cloud_enabled` ('1'/'0'),

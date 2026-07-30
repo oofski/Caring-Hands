@@ -879,6 +879,41 @@ async function main() {
     log(!document.querySelector('.xray-form-card'), 'v1.5.13: the form closes itself after saving');
   }
 
+  // ---- v1.5.21: a station can always re-read the whole clinic ----
+  // Guards the fix for patients appearing on one laptop but not another. The
+  // pull cursor used to be a timestamp high-water mark, so a record that reached
+  // the cloud late (an offline check-in, or a laptop with a slow clock) fell
+  // below the mark and was never delivered to that station again.
+  {
+    // The one-time heal runs on upgrade: the cursor is cleared so the station
+    // re-reads everything it may have stepped over.
+    log(db.getSetting('cloud_cursor_heal') === 'v1', 'v1.5.21: the one-time sync heal is applied on upgrade');
+
+    // A station that has synced for a while, then hits "Re-sync everything".
+    db.setSyncMeta({ cursor: '4821' });
+    db.setSyncPending([{ entity: 'consent', uid: 'orphan-1', patient_uid: 'nobody', updated_at: 'x', data: {} }]);
+    log(db.getSyncMeta().cursor === '4821' && db.getSyncPending().length === 1, 'v1.5.21: a station tracks its place in the clinic queue');
+    db.resetSyncCursor();
+    log(db.getSyncMeta().cursor === '' && db.getSyncPending().length === 0, 'v1.5.21: "Re-sync everything" rewinds the station so it re-reads the whole clinic');
+
+    // A patient pushed with a BACK-DATED stamp (checked in while that laptop was
+    // offline) must still land here — this is the record that used to vanish.
+    const evR = db.listEvents().find((e) => e.active) || db.listEvents()[0];
+    const backdated = '2020-01-01T08:00:00.000Z@offline-laptop';
+    const res21 = db.applyRemoteRows([{
+      entity: 'patient', uid: 'offline-checkin-1', event_uid: evR.uid, patient_uid: null, deleted: 0,
+      updated_at: backdated,
+      data: {
+        language: 'en', first_name: 'Olivia', last_name: 'Offline', dob: '1990-02-02', gender: 'female',
+        phone: null, email: null, demographics: '{}', medical_history: '{}', dental_history: '{}',
+        status: 'checked_in', created_at: '2020-01-01T08:00:00.000Z', dismissed_at: null, dismissed_by_name: null,
+      },
+    }]);
+    const olivia = db.listPatients({}).find((p) => p.last_name === 'Offline');
+    log(res21.applied === 1 && !!olivia && olivia.status === 'checked_in',
+      'v1.5.21: a back-dated offline check-in still lands in this station\'s queue');
+  }
+
   await tick();
   if (errors.length) errors.forEach((e) => log(false, 'RUNTIME: ' + e));
   const failed = results.filter((r) => !r[0]).length;

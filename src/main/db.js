@@ -217,6 +217,18 @@ function migrate() {
   addColumn('treatments', 'completed_by_name', 'TEXT');
   db.exec('CREATE INDEX IF NOT EXISTS idx_sync_patients ON patients(uid)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_sync_events ON events(uid)');
+  // v1.5.21 ONE-TIME HEAL. Until now the pull cursor was a timestamp high-water
+  // mark, so any row that reached the cloud with an older stamp — a check-in made
+  // while this station was offline, or anything written by a laptop whose clock
+  // was behind — fell below the mark and was never handed to this station again.
+  // Patients really were missing on one laptop and present on another. Clearing
+  // the cursor once makes this station re-read the whole clinic and pick up
+  // everyone it skipped; applying rows is idempotent, so it is safe to repeat.
+  if (getSetting('cloud_cursor_heal') !== 'v1') {
+    setSetting('cloud_cursor', '');
+    setSetting('cloud_pending', '[]');
+    setSetting('cloud_cursor_heal', 'v1');
+  }
 }
 
 const ROLES = ['admin', 'doctor', 'triage', 'emt', 'checkout', 'hygienist', 'registration'];
@@ -1643,6 +1655,16 @@ function setSyncMeta(patch) {
   }
   return getSyncMeta();
 }
+// Recovery hatch: forget where this station had got to and re-read the whole
+// clinic from the cloud on the next sync. Used by Admin -> Cloud -> "Re-sync
+// everything" when a station is missing patients the others can see. Applying
+// rows is idempotent (last-write-wins), so nothing local is lost or duplicated.
+function resetSyncCursor() {
+  setSetting('cloud_cursor', '');
+  setSetting('cloud_pending', '[]');
+  return { ok: true };
+}
+
 function ensureDeviceId() {
   let id = getSetting('cloud_device_id');
   if (!id) { id = crypto.randomUUID(); setSetting('cloud_device_id', id); }
@@ -1653,10 +1675,15 @@ function ensureDeviceId() {
 // (e.g. a treatment arriving before its patient). They are retried on every
 // pull until their parent shows up, so the pull cursor can always move forward
 // instead of wedging — and no row is ever dropped.
-const PENDING_CAP = 500;
+// Sized for a whole clinic day's records rather than a single queue, so a
+// station that pulls a big backlog (or re-reads everything after a "Re-sync
+// everything") never has to drop a child whose parent lands later in the run.
+// If it ever does overflow, the oldest are kept — they are the ones whose parent
+// is most likely already on its way — and a re-sync recovers the rest.
+const PENDING_CAP = 5000;
 function getSyncPending() { return safeJson(getSetting('cloud_pending'), []); }
 function setSyncPending(rows) {
-  const arr = Array.isArray(rows) ? rows.slice(-PENDING_CAP) : [];
+  const arr = Array.isArray(rows) ? rows.slice(0, PENDING_CAP) : [];
   setSetting('cloud_pending', JSON.stringify(arr));
 }
 
@@ -1679,5 +1706,5 @@ module.exports = {
   getSetting, setSetting,
   // v1.1.0 cloud sync
   collectSyncRows, applyRemoteRows, markSynced, getSyncMeta, setSyncMeta, ensureDeviceId,
-  getSyncPending, setSyncPending,
+  getSyncPending, setSyncPending, resetSyncCursor,
 };

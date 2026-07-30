@@ -1,4 +1,4 @@
-// Caring Hands — Cloud Sync Worker (v1.4.0)
+// Caring Hands — Cloud Sync Worker (v1.5.0)
 // =============================================================================
 // NO INSTALLS NEEDED. To deploy: create a Worker in the Cloudflare dashboard,
 // paste THIS ENTIRE FILE into its code editor, then:
@@ -15,7 +15,7 @@
 // See ./SYNC_CONTRACT.md for the exact API + schema this implements.
 
 const SERVICE = 'caring-hands-sync';
-const VERSION = '1.4.0';
+const VERSION = '1.5.0';
 const DEFAULT_LIMIT = 500;
 const MAX_LIMIT = 1000;
 
@@ -35,6 +35,25 @@ const SCHEMA_STATEMENTS = [
   'CREATE INDEX IF NOT EXISTS idx_sync_updated ON sync_rows(updated_at)',
   'CREATE INDEX IF NOT EXISTS idx_sync_event ON sync_rows(event_uid, updated_at)',
   'CREATE INDEX IF NOT EXISTS idx_sync_entity ON sync_rows(entity)',
+  // v1.5.0 — the delivery counter. Row delivery must NOT depend on anybody's
+  // clock: a laptop that was offline (or whose clock is off) writes rows with an
+  // older updated_at, and a timestamp-ordered cursor would step straight over
+  // them and never hand them to the other laptops. Every write now takes the
+  // NEXT value of this counter, and pulls page by that instead.
+  'CREATE TABLE IF NOT EXISTS sync_seq (id INTEGER PRIMARY KEY, v INTEGER NOT NULL)',
+];
+// Best-effort migrations for a database created by an earlier version. Each is
+// expected to fail harmlessly once it has already been applied (SQLite has no
+// ADD COLUMN IF NOT EXISTS), so they run individually and swallow their error.
+const MIGRATION_STATEMENTS = [
+  'ALTER TABLE sync_rows ADD COLUMN seq INTEGER',
+  // Existing rows keep their insertion order (rowid) as their seq, so nothing
+  // already in the cloud is stranded below a client's first seq cursor.
+  'UPDATE sync_rows SET seq = rowid WHERE seq IS NULL',
+  'CREATE INDEX IF NOT EXISTS idx_sync_seq ON sync_rows(seq)',
+  // Start the counter above every backfilled row.
+  'INSERT INTO sync_seq (id, v) SELECT 1, IFNULL((SELECT MAX(seq) FROM sync_rows), 0) ' +
+    'WHERE NOT EXISTS (SELECT 1 FROM sync_seq WHERE id = 1)',
 ];
 let schemaReady = false;
 async function ensureSchema(env) {
@@ -42,7 +61,19 @@ async function ensureSchema(env) {
   for (const sql of SCHEMA_STATEMENTS) {
     await env.DB.prepare(sql).run();
   }
+  for (const sql of MIGRATION_STATEMENTS) {
+    try { await env.DB.prepare(sql).run(); } catch (_e) { /* already applied */ }
+  }
   schemaReady = true;
+}
+
+// Reserve the next delivery number. A single atomic upsert, so two laptops
+// pushing at the same moment can never be handed the same value.
+async function nextSeq(env) {
+  const row = await env.DB
+    .prepare('INSERT INTO sync_seq (id, v) VALUES (1, 1) ON CONFLICT(id) DO UPDATE SET v = v + 1 RETURNING v')
+    .first();
+  return row && row.v != null ? Number(row.v) : null;
 }
 
 export default {
@@ -74,6 +105,9 @@ export default {
           ok: true,
           service: SERVICE,
           version: VERSION,
+          // Tells the app this server delivers rows by counter, not by clock —
+          // so it can switch to the cursor that can't skip a late arrival.
+          seq: true,
           time: nowIso(),
         });
       }
@@ -161,11 +195,16 @@ async function handlePush(request, env) {
     const dataStr =
       typeof row.data === 'string' ? row.data : JSON.stringify(row.data);
 
+    // Take the next delivery number. A row that is written LATE (a laptop that
+    // was offline, or one whose clock is behind) still lands at the END of the
+    // delivery order, so every device that hasn't reached it yet still gets it.
+    const seq = await nextSeq(env);
+
     await env.DB
       .prepare(
         'INSERT OR REPLACE INTO sync_rows ' +
-          '(uid, entity, event_uid, patient_uid, deleted, updated_at, data) ' +
-          'VALUES (?, ?, ?, ?, ?, ?, ?)'
+          '(uid, entity, event_uid, patient_uid, deleted, updated_at, data, seq) ' +
+          'VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
       )
       .bind(
         row.uid,
@@ -174,7 +213,8 @@ async function handlePush(request, env) {
         row.patient_uid != null ? row.patient_uid : null,
         row.deleted ? 1 : 0,
         row.updated_at,
-        dataStr
+        dataStr,
+        seq
       )
       .run();
 
@@ -189,31 +229,27 @@ async function handlePull(url, env) {
   const eventUid = url.searchParams.get('event_uid');
   const limit = clampLimit(url.searchParams.get('limit'));
 
+  // Two cursor dialects, so a clinic can update its laptops one at a time:
+  //   seq  (v1.5.0+ app) — a plain number, the server's delivery counter.
+  //   time (older app)   — the legacy "<ISO>@<device>" stamp. Served exactly as
+  //                        before so an un-updated laptop keeps working.
+  const seqMode = since === '' || /^\d+$/.test(since);
   const columns =
-    'uid, entity, event_uid, patient_uid, deleted, updated_at, data';
+    'uid, entity, event_uid, patient_uid, deleted, updated_at, data, seq';
 
-  let stmt;
-  if (eventUid) {
-    stmt = env.DB
-      .prepare(
-        'SELECT ' +
-          columns +
-          ' FROM sync_rows WHERE updated_at > ? AND event_uid = ?' +
-          ' ORDER BY updated_at ASC LIMIT ?'
-      )
-      .bind(since, eventUid, limit);
-  } else {
-    stmt = env.DB
-      .prepare(
-        'SELECT ' +
-          columns +
-          ' FROM sync_rows WHERE updated_at > ?' +
-          ' ORDER BY updated_at ASC LIMIT ?'
-      )
-      .bind(since, limit);
-  }
+  const orderCol = seqMode ? 'seq' : 'updated_at';
+  const sinceVal = seqMode ? Number(since || 0) : since;
+  let sql =
+    'SELECT ' + columns + ' FROM sync_rows WHERE ' +
+    // A row written before this column existed and never re-pushed would have a
+    // NULL seq; the backfill fills them, and IFNULL keeps it safe regardless.
+    (seqMode ? 'IFNULL(seq, 0) > ?' : 'updated_at > ?');
+  const binds = [sinceVal];
+  if (eventUid) { sql += ' AND event_uid = ?'; binds.push(eventUid); }
+  sql += ' ORDER BY ' + orderCol + ' ASC, uid ASC LIMIT ?';
+  binds.push(limit);
 
-  const result = await stmt.all();
+  const result = await env.DB.prepare(sql).bind(...binds).all();
   const dbRows = result && Array.isArray(result.results) ? result.results : [];
 
   const rows = dbRows.map((r) => ({
@@ -226,10 +262,16 @@ async function handlePull(url, env) {
     data: parseData(r.data),
   }));
 
-  const cursor = rows.length ? rows[rows.length - 1].updated_at : since;
+  const last = dbRows.length ? dbRows[dbRows.length - 1] : null;
+  const cursor = !last
+    ? (seqMode ? String(sinceVal) : since)
+    : (seqMode ? String(last.seq != null ? last.seq : sinceVal) : last.updated_at);
   const more = rows.length === limit;
 
-  return json({ ok: true, rows, cursor, more });
+  // `mode` tells the app which dialect this server speaks, so a v1.5.0+ app can
+  // tell a seq-capable server from an older deployment and store the right kind
+  // of cursor either way.
+  return json({ ok: true, rows, cursor, more, mode: seqMode ? 'seq' : 'time' });
 }
 
 // ---------------------------------------------------------------------------
@@ -320,9 +362,12 @@ async function handleCheckinPost(eventUid, request, env) {
   }
 
   for (const r of rows) {
+    // Same delivery-number rule as a push: a pre-registration is queued at the
+    // end of the order, so every laptop picks it up regardless of its clock.
+    const seq = await nextSeq(env);
     await env.DB.prepare(
-      'INSERT OR REPLACE INTO sync_rows (uid, entity, event_uid, patient_uid, deleted, updated_at, data) VALUES (?, ?, ?, ?, ?, ?, ?)'
-    ).bind(r.uid, r.entity, eventUid, r.patient_uid, 0, r.stamp, JSON.stringify(r.data)).run();
+      'INSERT OR REPLACE INTO sync_rows (uid, entity, event_uid, patient_uid, deleted, updated_at, data, seq) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+    ).bind(r.uid, r.entity, eventUid, r.patient_uid, 0, r.stamp, JSON.stringify(r.data), seq).run();
   }
 
   return json({ ok: true });

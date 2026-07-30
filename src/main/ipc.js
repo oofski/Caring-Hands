@@ -85,6 +85,7 @@ const PERMS = {
   'cloud:test': ['admin'],
   'cloud:status': ['admin', 'doctor', 'triage', 'emt', 'checkout', 'hygienist', 'registration'],
   'cloud:syncNow': ['admin', 'doctor', 'triage', 'emt', 'checkout', 'hygienist', 'registration'],
+  'cloud:resync': ['admin'],
   // update:* and app:version are open to any signed-in user (available in any view).
 };
 
@@ -144,6 +145,7 @@ function register(getMainWindow) {
   handle('cloud:test', ({ url, key }) => cloud.testConnection(url, key));
   handle('cloud:status', () => cloud.status());
   handle('cloud:syncNow', () => cloud.syncOnce());
+  handle('cloud:resync', () => cloud.resyncAll());
 
   /* ---- Events ---- */
   handle('events:list', () => db.listEvents(), { });

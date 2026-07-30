@@ -553,6 +553,35 @@ export function renderAdmin(ctx, params = {}) {
       ]),
     ]));
 
+    /* --- Recovery: re-read the whole clinic from the cloud --- */
+    const resyncBtn = el('button', {
+      class: 'btn btn--ghost',
+      onClick: async () => {
+        const ok = await modal({
+          title: 'Re-sync everything?',
+          body: 'This station will re-read every patient and record from the clinic cloud. Nothing is deleted and nothing is duplicated — use it if this computer is missing patients that the other computers can see. It can take a minute on a big clinic.',
+          confirmText: 'Re-sync everything',
+          cancelText: 'Cancel',
+        });
+        if (!ok) return;
+        resyncBtn.disabled = true;
+        try {
+          const r = await api.cloudResync();
+          toast(`Re-synced — ${r.applied || 0} record(s) brought in`, 'success');
+          paint();
+        } catch (e) { toast(e.message, 'error'); }
+        finally { resyncBtn.disabled = false; }
+      },
+    }, [icon('refresh', { size: 16 }), 'Re-sync everything']);
+
+    body.append(el('div', { class: 'card' }, [
+      el('h3', { class: 'card-title' }, ['Missing patients on this computer?']),
+      el('p', { class: 'muted small', style: 'margin:0 0 var(--space-3);' }, [
+        'If a patient shows on another computer but not on this one, re-sync to re-read the whole clinic from the cloud. Safe to run any time.',
+      ]),
+      resyncBtn,
+    ]));
+
     /* --- Advanced (rarely needed: point at a different server) --- */
     const urlInput = el('input', {
       class: 'input', type: 'text', value: st.url || '',

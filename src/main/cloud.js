@@ -63,15 +63,29 @@ async function pushOnce(base, key, deviceId) {
   return rows.length;
 }
 
+// A cursor is either the server's delivery counter (a plain number, v1.5.0+
+// servers) or the old timestamp stamp. Only the counter is safe: it cannot skip
+// a row that reaches the cloud late (an offline check-in, or a laptop whose
+// clock is behind).
+const isSeqCursor = (c) => /^\d+$/.test(String(c || ''));
+
 async function pullOnce(base, key) {
   let cursor = db.getSyncMeta().cursor || '';
+  // Still on a timestamp cursor? Ask whether this server now delivers by
+  // counter, and if so restart from the beginning ONCE. That both switches this
+  // station over and re-reads anything the old timestamp cursor stepped past.
+  if (cursor && !isSeqCursor(cursor)) {
+    let health = null;
+    try { health = await httpJson('GET', base + '/health', null); } catch { /* offline / older server */ }
+    if (health && health.seq === true) { cursor = ''; db.setSyncMeta({ cursor }); }
+  }
   let pulled = 0, applied = 0, guard = 0;
   // Retry any previously-orphaned rows first — their parent may have arrived
   // since (e.g. a treatment that was pulled before its patient).
   let carry = db.getSyncPending();
   // Follow `more` pages so a first sync catches up fully. A child whose parent
-  // lands in a later page is carried forward within the loop. Because updated_at
-  // is now a globally-unique total order, no row is ever skipped at a page
+  // lands in a later page is carried forward within the loop. The server hands
+  // rows out in its own counter order, so no row is ever skipped at a page
   // boundary, so the cursor can always advance — orphans that outlive the whole
   // delta are parked in the persistent pending buffer and retried next cycle
   // (never dropped, never wedging the cursor).
@@ -86,7 +100,8 @@ async function pullOnce(base, key) {
       applied += res.applied; pulled += rows.length;
       carry = res.deferredRows || [];
     }
-    const pageCursor = (r && r.cursor) || cursor;
+    // Accept "0" as a real cursor value (a counter can legitimately be 0).
+    const pageCursor = (r && r.cursor != null && r.cursor !== '') ? String(r.cursor) : cursor;
     if (pageCursor !== cursor) { cursor = pageCursor; db.setSyncMeta({ cursor }); }
     if (!r || !r.more) break;
   }
@@ -168,4 +183,12 @@ function start(windowGetter) {
 }
 function stop() { if (timer) { clearInterval(timer); timer = null; } }
 
-module.exports = { start, stop, syncOnce, testConnection, status, applyConfig, normalizeUrl: trimUrl };
+// Forget this station's place in the queue and re-read everything on the next
+// sync — the fix when a laptop is missing patients the other laptops can see.
+async function resyncAll() {
+  db.resetSyncCursor();
+  const r = await syncOnce();
+  return { ok: true, ...r };
+}
+
+module.exports = { start, stop, syncOnce, resyncAll, testConnection, status, applyConfig, normalizeUrl: trimUrl };
