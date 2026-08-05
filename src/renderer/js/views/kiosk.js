@@ -123,8 +123,9 @@ export function renderKiosk(ctx) {
     const phone = textField(t('intake.phone'), { value: data.phone, type: 'tel', required: true });
     const email = textField(t('intake.email'), { value: data.email, type: 'email' });
     const address = textField(t('intake.address'), { value: d.address });
-    const city = textField(t('intake.city'), { value: d.city });
-    const stateF = textField(t('intake.state'), { value: d.state });
+    // Required: grant-funded clinics report how many patients came from their town.
+    const city = textField(t('intake.city'), { value: d.city, required: true });
+    const stateF = textField(t('intake.state'), { value: d.state, required: true });
     const mailing = textField(t('intake.mailing'), { value: d.mailing_address });
     const marital = selectField(t('intake.marital'), [
       { value: '', label: '—' },
@@ -167,6 +168,8 @@ export function renderKiosk(ctx) {
         if (!first.get() || !last.get()) { toast(t('common.required') + ': ' + t('intake.firstName') + ' / ' + t('intake.lastName'), 'error'); return false; }
         if (!dob.get()) { toast(t('common.required') + ': ' + t('intake.dob'), 'error'); return false; }
         if (!gender.get()) { toast(t('common.required') + ': ' + t('intake.gender'), 'error'); return false; }
+        if (!city.get()) { toast(t('common.required') + ': ' + t('intake.city'), 'error'); return false; }
+        if (!stateF.get()) { toast(t('common.required') + ': ' + t('intake.state'), 'error'); return false; }
         if (!phone.get()) { toast(t('common.required') + ': ' + t('intake.phone'), 'error'); return false; }
         if (!emName.get()) { toast(t('common.required') + ': ' + t('intake.emergencyName'), 'error'); return false; }
         if (!emPhone.get()) { toast(t('common.required') + ': ' + t('intake.emergencyPhone'), 'error'); return false; }

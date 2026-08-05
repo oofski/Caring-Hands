@@ -216,6 +216,14 @@ async function main() {
     const lbl = $all('.kiosk-body label.field').find((l) => re.test(((l.querySelector('.field-label') || {}).textContent || '').trim()));
     const inp = lbl && lbl.querySelector('input'); if (inp) setInput(inp, val); return !!inp;
   };
+  // v1.5.22: City + State are required to advance — check the guard fires when
+  // they are blank, before filling them in.
+  const cityLbl = $all('.kiosk-body .field-label').map((s) => s.textContent.trim());
+  log(cityLbl.some((l) => /^City\s*\*/.test(l)) && cityLbl.some((l) => /^State\s*\*/.test(l)),
+    'v1.5.22: City + State marked required (*) at check-in');
+  const stepsBefore = $('.kiosk-step-label').textContent;
+  clickText('Next'); await tick();
+  log($('.kiosk-step-label').textContent === stepsBefore, 'v1.5.22: check-in will not advance with City/State blank');
   setCityState(/^City/i, 'Sandy'); setCityState(/^State/i, 'OR');
   // v1.5.20: date of birth is marked required (*).
   log(/Date of birth\s*\*/.test(bodyTxt) && /Gender\s*\*/.test(bodyTxt), 'v1.5.20: date of birth + gender marked required (*)');

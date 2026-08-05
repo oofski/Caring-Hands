@@ -1,4 +1,4 @@
-// Caring Hands — Cloud Sync Worker (v1.5.0)
+// Caring Hands — Cloud Sync Worker (v1.5.1)
 // =============================================================================
 // NO INSTALLS NEEDED. To deploy: create a Worker in the Cloudflare dashboard,
 // paste THIS ENTIRE FILE into its code editor, then:
@@ -15,7 +15,7 @@
 // See ./SYNC_CONTRACT.md for the exact API + schema this implements.
 
 const SERVICE = 'caring-hands-sync';
-const VERSION = '1.5.0';
+const VERSION = '1.5.1';
 const DEFAULT_LIMIT = 500;
 const MAX_LIMIT = 1000;
 
@@ -312,9 +312,12 @@ async function handleCheckinPost(eventUid, request, env) {
   const clean = buildPreregPatient(body);
   const esErr = body && body.language === 'es';
   if (!clean) return json({ ok: false, error: esErr ? 'Por favor ingrese su nombre y apellido.' : 'Please enter your first and last name.' }, 400);
-  // Date of birth + gender are required (per the clinics' reporting needs).
+  // Date of birth, gender, city and state are required (per the clinics'
+  // reporting needs — grant-funded clinics report patients' town of origin).
   if (!clean.dob) return json({ ok: false, error: esErr ? 'Por favor ingrese su fecha de nacimiento.' : 'Please enter your date of birth.' }, 400);
   if (!clean.gender) return json({ ok: false, error: esErr ? 'Por favor elija un género.' : 'Please choose a gender.' }, 400);
+  if (!clean.demographics.city) return json({ ok: false, error: esErr ? 'Por favor ingrese su ciudad.' : 'Please enter your city.' }, 400);
+  if (!clean.demographics.state) return json({ ok: false, error: esErr ? 'Por favor ingrese su estado.' : 'Please enter your state.' }, 400);
 
   // The general consent is required to check in — in person and here.
   const agreed = (v) => v === true || v === 'on' || v === 'true';
@@ -541,6 +544,7 @@ const I18N = {
     submit: 'Submit pre-registration', submitting: 'Submitting…', footer: 'Caring Hands Worldwide — free dental care. Your information is shared only with the clinic team.',
     thankYou: 'Thank you, ', done: 'Your pre-registration and consent are complete. Please bring a photo ID — the front desk already has your information.',
     errName: 'Please enter your first and last name.', errDob: 'Please enter your date of birth.', errGender: 'Please choose a gender.',
+    errCity: 'Please enter your city.', errState: 'Please enter your state.',
     errConsent: 'Please read and agree to the consent to finish.', errSurgery: 'An extraction was selected — please read and agree to the Oral Surgery consent too.',
     netErr: 'Network error. Please try again.', genErr: 'Something went wrong. Please try again.',
     visits: FORM_VISITS, allergyList: FORM_ALLERGIES, conditionList: FORM_CONDITIONS, medYesNo: FORM_MED_YESNO, dentalYesNo: FORM_DENTAL_YESNO,
@@ -564,6 +568,7 @@ const I18N = {
     submit: 'Enviar pre-registro', submitting: 'Enviando…', footer: 'Caring Hands Worldwide — atención dental gratuita. Su información se comparte solo con el equipo de la clínica.',
     thankYou: 'Gracias, ', done: 'Su pre-registro y consentimiento están completos. Por favor traiga una identificación con foto — la recepción ya tiene su información.',
     errName: 'Por favor ingrese su nombre y apellido.', errDob: 'Por favor ingrese su fecha de nacimiento.', errGender: 'Por favor elija un género.',
+    errCity: 'Por favor ingrese su ciudad.', errState: 'Por favor ingrese su estado.',
     errConsent: 'Por favor lea y acepte el consentimiento para terminar.', errSurgery: 'Se seleccionó una extracción — por favor lea y acepte también el consentimiento de cirugía oral.',
     netErr: 'Error de red. Por favor intente de nuevo.', genErr: 'Algo salió mal. Por favor intente de nuevo.',
     visits: FORM_VISITS_ES, allergyList: FORM_ALLERGIES_ES, conditionList: FORM_CONDITIONS_ES, medYesNo: FORM_MED_YESNO_ES, dentalYesNo: FORM_DENTAL_YESNO_ES,
@@ -628,7 +633,7 @@ function checkinFormPage(eventUid, eventName, lang) {
   const dentalYesNo = L.dentalYesNo.map(([k, l]) => ynRow(k, l)).join('');
   const genConsent = '<h3>' + htmlEscape(L.generalTitle) + '</h3>' + (L.generalMode === 'ol' ? ('<ol>' + L.general.map((c) => '<li>' + htmlEscape(c) + '</li>').join('') + '</ol>') : L.general.map((c) => '<p>' + htmlEscape(c) + '</p>').join(''));
   const surConsent = '<h3>' + htmlEscape(L.surgeryTitle) + '</h3>' + L.surgeryText.map((c) => '<p>' + htmlEscape(c) + '</p>').join('');
-  const T = { errName: L.errName, errDob: L.errDob, errGender: L.errGender, errConsent: L.errConsent, errSurgery: L.errSurgery, submitting: L.submitting, submitLabel: L.submit, thankYou: L.thankYou, done: L.done, netErr: L.netErr, genErr: L.genErr };
+  const T = { errName: L.errName, errDob: L.errDob, errGender: L.errGender, errCity: L.errCity, errState: L.errState, errConsent: L.errConsent, errSurgery: L.errSurgery, submitting: L.submitting, submitLabel: L.submit, thankYou: L.thankYou, done: L.done, netErr: L.netErr, genErr: L.genErr };
 
   const inner =
     '<div class="hero"><div style="display:flex;justify-content:space-between;align-items:center"><div class="ey">Caring Hands · Pre-registration</div>' +
@@ -644,8 +649,8 @@ function checkinFormPage(eventUid, eventName, lang) {
     '<div class="row"><div><label>' + htmlEscape(L.phone) + '</label><input type="tel" id="phone" inputmode="numeric" autocomplete="tel"></div>' +
     '<div><label>' + htmlEscape(L.email) + '</label><input type="email" id="email" autocomplete="email"></div></div>' +
     '<label>' + htmlEscape(L.address) + '</label><input type="text" id="address" autocomplete="street-address">' +
-    '<div class="row"><div><label>' + htmlEscape(L.city) + '</label><input type="text" id="city" autocomplete="address-level2"></div>' +
-    '<div><label>' + htmlEscape(L.state) + '</label><input type="text" id="state" autocomplete="address-level1"></div></div>' +
+    '<div class="row"><div><label>' + htmlEscape(L.city) + ' <span class="req">*</span></label><input type="text" id="city" autocomplete="address-level2"></div>' +
+    '<div><label>' + htmlEscape(L.state) + ' <span class="req">*</span></label><input type="text" id="state" autocomplete="address-level1"></div></div>' +
     '<div class="row"><div><label>' + htmlEscape(L.emName) + '</label><input type="text" id="emergency_name"></div>' +
     '<div><label>' + htmlEscape(L.emPhone) + '</label><input type="tel" id="emergency_phone" inputmode="numeric"></div></div>' +
     '</div>' +
@@ -699,6 +704,7 @@ function checkinFormPage(eventUid, eventName, lang) {
     "el('f').addEventListener('submit',function(e){e.preventDefault();var err=el('err');err.textContent='';" +
     "var fn=val('first_name').trim(),ln=val('last_name').trim();if(!fn||!ln){err.textContent=T.errName;window.scrollTo(0,0);return;}" +
     "if(!val('dob')){err.textContent=T.errDob;return;}if(!val('gender')){err.textContent=T.errGender;return;}" +
+    "if(!val('city')){err.textContent=T.errCity;return;}if(!val('state')){err.textContent=T.errState;return;}" +
     "if(!el('cagree').checked){err.textContent=T.errConsent;return;}" +
     "var visit=(document.querySelector('input[name=visit]:checked')||{}).value||'';var extraction=(visit==='extraction_pain'||visit==='extraction_no_pain');" +
     "if(extraction&&!el('sagree').checked){err.textContent=T.errSurgery;return;}" +

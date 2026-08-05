@@ -159,7 +159,7 @@ async function main() {
       h.data &&
       h.data.ok === true &&
       h.data.service === 'caring-hands-sync' &&
-      h.data.version === '1.5.0' &&
+      h.data.version === '1.5.1' &&
       h.data.seq === true &&
       typeof h.data.time === 'string'
   );
@@ -447,18 +447,26 @@ async function main() {
   check('POST /checkin without a date of birth -> 400', noDob.status === 400 && /date of birth/i.test(noDob.data.error));
   const noGender = await call(env, 'POST', '/checkin/evt-1', { body: { first_name: 'No', last_name: 'Gender', dob: '1990-01-01', visit_type: 'cleaning', consent_agree: true } });
   check('POST /checkin without a gender -> 400', noGender.status === 400 && /gender/i.test(noGender.data.error));
+  // City + state are REQUIRED too — grant-funded clinics report town of origin.
+  const noCity = await call(env, 'POST', '/checkin/evt-1', { body: { first_name: 'No', last_name: 'City', dob: '1990-01-01', gender: 'male', state: 'OR', visit_type: 'cleaning', consent_agree: true } });
+  check('POST /checkin without a city -> 400', noCity.status === 400 && /city/i.test(noCity.data.error));
+  const noState = await call(env, 'POST', '/checkin/evt-1', { body: { first_name: 'No', last_name: 'State', dob: '1990-01-01', gender: 'male', city: 'Sandy', visit_type: 'cleaning', consent_agree: true } });
+  check('POST /checkin without a state -> 400', noState.status === 400 && /state/i.test(noState.data.error));
+  const noCityEs = await call(env, 'POST', '/checkin/evt-1', { body: { first_name: 'Sin', last_name: 'Ciudad', dob: '1990-01-01', gender: 'male', state: 'OR', language: 'es', consent_agree: true } });
+  check('POST /checkin (es) without a city -> Spanish 400', noCityEs.status === 400 && /ciudad/i.test(noCityEs.data.error));
+
   // A Spanish submission gets Spanish validation errors.
   const noDobEs = await call(env, 'POST', '/checkin/evt-1', { body: { first_name: 'Sin', last_name: 'Fecha', gender: 'male', language: 'es', consent_agree: true } });
   check('POST /checkin (es) without a date of birth -> Spanish 400', noDobEs.status === 400 && /fecha de nacimiento/i.test(noDobEs.data.error));
 
   // General consent is REQUIRED — a submission without it is rejected.
-  const noConsent = await call(env, 'POST', '/checkin/evt-1', { body: { first_name: 'No', last_name: 'Consent', dob: '1990-01-01', gender: 'male', visit_type: 'cleaning' } });
+  const noConsent = await call(env, 'POST', '/checkin/evt-1', { body: { first_name: 'No', last_name: 'Consent', dob: '1990-01-01', gender: 'male', city: 'Sandy', state: 'OR', visit_type: 'cleaning' } });
   check('POST /checkin without agreeing to the consent -> 400', noConsent.status === 400 && /consent/i.test(noConsent.data.error));
 
   // An extraction visit also requires (and files) the Oral Surgery consent.
-  const noSurgery = await call(env, 'POST', '/checkin/evt-1', { body: { first_name: 'Ex', last_name: 'Tract', dob: '1990-01-01', gender: 'male', visit_type: 'extraction_pain', consent_agree: true } });
+  const noSurgery = await call(env, 'POST', '/checkin/evt-1', { body: { first_name: 'Ex', last_name: 'Tract', dob: '1990-01-01', gender: 'male', city: 'Sandy', state: 'OR', visit_type: 'extraction_pain', consent_agree: true } });
   check('POST /checkin extraction without surgery consent -> 400', noSurgery.status === 400 && /surgery/i.test(noSurgery.data.error));
-  const withSurgery = await call(env, 'POST', '/checkin/evt-1', { body: { first_name: 'Ex', last_name: 'Tract', dob: '1990-01-01', gender: 'male', visit_type: 'extraction_pain', consent_agree: true, surgery_agree: true, surgery_teeth: '14, 15', signature_png: 'data:image/png;base64,BBBB', surgery_signature_png: 'data:image/png;base64,CCCC' } });
+  const withSurgery = await call(env, 'POST', '/checkin/evt-1', { body: { first_name: 'Ex', last_name: 'Tract', dob: '1990-01-01', gender: 'male', city: 'Sandy', state: 'OR', visit_type: 'extraction_pain', consent_agree: true, surgery_agree: true, surgery_teeth: '14, 15', signature_png: 'data:image/png;base64,BBBB', surgery_signature_png: 'data:image/png;base64,CCCC' } });
   check('POST /checkin extraction WITH surgery consent -> 200', withSurgery.status === 200 && withSurgery.data.ok === true);
   const exPatient = Array.from(env.DB._store.values()).find((r) => r.entity === 'patient' && JSON.parse(r.data).last_name === 'Tract');
   const surgeryRow = Array.from(env.DB._store.values()).find((r) => r.entity === 'consent' && r.patient_uid === exPatient.uid && JSON.parse(r.data).type === 'oral_surgery');
@@ -493,6 +501,10 @@ async function main() {
   check('the pre-registration form collects City and State',
     /id="city"/.test(fullForm.text) && /id="state"/.test(fullForm.text) &&
     fullForm.text.includes('City') && fullForm.text.includes('State'));
+  // ...and they are marked required, with the browser blocking submit.
+  check('the pre-registration form marks City and State required',
+    fullForm.text.includes("if(!val('city'))") && fullForm.text.includes("if(!val('state'))") &&
+    /City <span class="req">\*<\/span>/.test(fullForm.text) && /State <span class="req">\*<\/span>/.test(fullForm.text));
   // DOB and gender are marked required on the form (asterisk + client-side validation).
   check('the pre-registration form marks date of birth and gender required',
     /id="dob"/.test(fullForm.text) && /id="gender"/.test(fullForm.text) &&

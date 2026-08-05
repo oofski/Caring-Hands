@@ -50,20 +50,25 @@ jobs:
       - name: Publish downloadable release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.5.21-build.${{ github.run_number }}
-          name: Caring Hands v1.5.21 (build ${{ github.run_number }})
+          tag_name: v1.5.22-build.${{ github.run_number }}
+          name: Caring Hands v1.5.22 (build ${{ github.run_number }})
           prerelease: false
           make_latest: true
           body: |
-            ## Caring Hands Worldwide — Practice Management Software (v1.5.21)
+            ## Caring Hands Worldwide — Practice Management Software (v1.5.22)
 
             Offline-first dental clinic app for Windows. **Download the installer once — it auto-updates from here on.**
 
-            **New in v1.5.21 — IMPORTANT sync fix: every computer now sees every patient**
+            **New in v1.5.22 — City & State are now required**
+            - **City and State must be filled in to check a patient in.** Both fields are marked with a **\*** on the "About You" step and the front desk can't move to the next step until they're answered — so no patient reaches vitals without a town on file, and the Reports **"By city"** breakdown is complete for grant reporting.
+            - **The online pre-registration link requires them too**, in both English and Spanish, so a patient can't submit the form without them.
+            - *The pre-registration part is delivered by the clinic server (now v1.5.1). That one refresh also carries the v1.5.21 sync fix below, so your admin only needs to paste it once.*
+
+            **From v1.5.21 — IMPORTANT sync fix: every computer now sees every patient**
             - **Fixed: patients showing on one computer but not another.** A patient could be checked in (or pre-registered online) and appear on one laptop while staying invisible on another — same clinic, same event, same version. Each station kept its place in the queue using a **clock time**, and any record that reached the cloud with an *earlier* time than the station had already passed was stepped over and **never delivered again**. Two everyday situations caused it: a check-in made while a laptop was **offline** (it keeps its original check-in time when it finally uploads), and a laptop whose **Windows clock was even slightly off**. Stations now track their place using a **counter kept by the clinic server** instead of a clock, so a record that arrives late is still delivered to every computer. Clock differences between laptops no longer matter.
             - **Every station repairs itself on this update.** The first time each computer runs v1.5.21 it re-reads the whole clinic from the cloud, so **patients that went missing earlier come back automatically**. No action needed — just let each laptop update and sync.
             - **New: Admin → Cloud → "Re-sync everything".** If a station ever looks out of step again, an admin can re-read the entire clinic from the cloud with one button. Nothing is deleted and nothing is duplicated.
-            - *This fix needs the clinic's pre-registration/sync server refreshed too (server v1.5.0) — the same one-time paste your admin has done before. Until it's refreshed, laptops keep working exactly as they do today.*
+            - *This fix needs the clinic's pre-registration/sync server refreshed too — the same one-time paste your admin has done before. Until it's refreshed, laptops keep working exactly as they do today.*
 
             **From v1.5.20 — City & State, required birthdate & gender, Spanish pre-registration, and smarter timers**
             - **City & State added to every patient.** The check-in form now asks for the patient's **City** and **State**, they print on the record and show on the chart, and the **Reports** tab has a new **"By city"** breakdown — so clinics that report to a city grant (e.g. Sandy, Oregon) can see how many patients came from that town. It's also collected on the online pre-registration form.
@@ -200,8 +205,8 @@ jobs:
 
             Includes everything from v1.0.2–1.1.1 (optional Cloud Sync, triage-free flow, per-event staff, Oregon consent, USB workflow, accountability, Russian, in-app auto-update).
 
-            - **Caring-Hands-Setup-1.5.21.exe** — installer (recommended; required for auto-update).
-            - **Caring-Hands-Portable-1.5.21.exe** — portable (no auto-update).
+            - **Caring-Hands-Setup-1.5.22.exe** — installer (recommended; required for auto-update).
+            - **Caring-Hands-Portable-1.5.22.exe** — portable (no auto-update).
 
             First sign-in: `admin / admin` — then create your staff accounts. All clinical data stays on the device unless you enable Cloud Sync.
           files: |
