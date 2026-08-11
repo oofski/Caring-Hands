@@ -1370,9 +1370,17 @@ function dashboardStats() {
     triaged: count(" AND status = 'triaged'"),
     in_treatment: count(" AND status = 'in_treatment'"),
     completed: count(" AND status = 'completed'"),
+    // "Waiting for vitals" = checked in, no vitals taken yet. This must be read
+    // from the PATIENT's state, not from a triage row: a triage row is created
+    // by the in-person check-in, but a patient who PRE-REGISTERED online arrives
+    // as a patient row alone, so an inner join to triage counted the walk-ins and
+    // silently ignored everyone who pre-registered. Now it matches what the live
+    // board's "Checked in" column and the vitals station queue already show
+    // (both key on status + whether a BP/pulse has been recorded).
     waiting_triage: db.prepare(
-      `SELECT COUNT(*) AS n FROM triage t JOIN patients p ON p.id = t.patient_id
-       WHERE p.event_id = ? AND t.status = 'waiting'`
+      `SELECT COUNT(*) AS n FROM patients p LEFT JOIN triage t ON t.patient_id = p.id
+       WHERE p.event_id = ? AND p.status = 'checked_in'
+         AND t.bp_systolic IS NULL AND t.heart_rate IS NULL`
     ).get(evId).n,
   };
 }

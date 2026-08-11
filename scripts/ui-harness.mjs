@@ -922,6 +922,45 @@ async function main() {
       'v1.5.21: a back-dated offline check-in still lands in this station\'s queue');
   }
 
+  // ---- v1.5.23: "Waiting for vitals" counts pre-registered patients too ----
+  // The tile used to be read off the triage table, which only the in-person
+  // check-in creates — so a board showing 30 pre-registered patients in "Checked
+  // in" sat next to a tile reading 1 (the single walk-in).
+  {
+    currentUser = db.login('admin', 'admin');
+    const evW = db.listEvents().find((e) => e.active) || db.listEvents()[0];
+    const before = db.dashboardStats().waiting_triage;
+
+    // Three patients arrive the way a pre-registration does: a patient row from
+    // the cloud, with no triage row of their own.
+    for (const n of ['One', 'Two', 'Three']) {
+      db.applyRemoteRows([{
+        entity: 'patient', uid: 'prereg-count-' + n, event_uid: evW.uid, patient_uid: null, deleted: 0,
+        updated_at: '2099-02-01T00:00:0' + n.length + '.000Z@prereg',
+        data: {
+          language: 'en', first_name: n, last_name: 'Prereg', dob: '1990-01-01', gender: 'female',
+          phone: null, email: null, demographics: JSON.stringify({ preregistered: true }),
+          medical_history: '{}', dental_history: '{}',
+          status: 'checked_in', created_at: '2099-02-01T00:00:00.000Z', dismissed_at: null, dismissed_by_name: null,
+        },
+      }]);
+    }
+    log(db.dashboardStats().waiting_triage === before + 3,
+      'v1.5.23: pre-registered patients are counted in "Waiting for vitals"');
+
+    // And the tile agrees with the live board's "Checked in" column.
+    const boardCheckedIn = db.listPatients({}).filter((p) => p.status === 'checked_in' && !p.has_vitals).length;
+    log(db.dashboardStats().waiting_triage === boardCheckedIn,
+      'v1.5.23: the tile matches the board\'s "Checked in" column exactly');
+
+    // Once vitals are taken the patient leaves the count (moves to the Vitals column).
+    const oneP = db.listPatients({}).find((p) => p.first_name === 'One' && p.last_name === 'Prereg');
+    const midCount = db.dashboardStats().waiting_triage;
+    db.saveVitals(currentUser, oneP.id, { bp_systolic: '120', bp_diastolic: '80', heart_rate: '70' });
+    log(db.dashboardStats().waiting_triage === midCount - 1,
+      'v1.5.23: taking vitals removes the patient from "Waiting for vitals"');
+  }
+
   await tick();
   if (errors.length) errors.forEach((e) => log(false, 'RUNTIME: ' + e));
   const failed = results.filter((r) => !r[0]).length;

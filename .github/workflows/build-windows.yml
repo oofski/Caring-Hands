@@ -50,16 +50,19 @@ jobs:
       - name: Publish downloadable release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.5.22-build.${{ github.run_number }}
-          name: Caring Hands v1.5.22 (build ${{ github.run_number }})
+          tag_name: v1.5.23-build.${{ github.run_number }}
+          name: Caring Hands v1.5.23 (build ${{ github.run_number }})
           prerelease: false
           make_latest: true
           body: |
-            ## Caring Hands Worldwide — Practice Management Software (v1.5.22)
+            ## Caring Hands Worldwide — Practice Management Software (v1.5.23)
 
             Offline-first dental clinic app for Windows. **Download the installer once — it auto-updates from here on.**
 
-            **New in v1.5.22 — City & State are now required**
+            **New in v1.5.23 — "Waiting for vitals" now counts pre-registered patients**
+            - **Fixed: the dashboard's "Waiting for vitals" number ignored anyone who pre-registered online.** A clinic with 30 pre-registered patients sitting in the **Checked in** column could see a "Waiting for vitals" tile reading **1** — just the one walk-in registered at the desk. The tile was counting a record that only the in-person check-in creates, so patients who arrived through the pre-registration link were left out of the total. It now counts every patient who is checked in and hasn't had a blood pressure or pulse taken yet, so **the tile always matches the "Checked in" column on the board** and the vitals station's own queue. Nobody was ever missing from the vitals station itself — only the number on the dashboard was wrong.
+
+            **From v1.5.22 — City & State are now required**
             - **City and State must be filled in to check a patient in.** Both fields are marked with a **\*** on the "About You" step and the front desk can't move to the next step until they're answered — so no patient reaches vitals without a town on file, and the Reports **"By city"** breakdown is complete for grant reporting.
             - **The online pre-registration link requires them too**, in both English and Spanish, so a patient can't submit the form without them.
             - *The pre-registration part is delivered by the clinic server (now v1.5.1). That one refresh also carries the v1.5.21 sync fix below, so your admin only needs to paste it once.*
@@ -205,8 +208,8 @@ jobs:
 
             Includes everything from v1.0.2–1.1.1 (optional Cloud Sync, triage-free flow, per-event staff, Oregon consent, USB workflow, accountability, Russian, in-app auto-update).
 
-            - **Caring-Hands-Setup-1.5.22.exe** — installer (recommended; required for auto-update).
-            - **Caring-Hands-Portable-1.5.22.exe** — portable (no auto-update).
+            - **Caring-Hands-Setup-1.5.23.exe** — installer (recommended; required for auto-update).
+            - **Caring-Hands-Portable-1.5.23.exe** — portable (no auto-update).
 
             First sign-in: `admin / admin` — then create your staff accounts. All clinical data stays on the device unless you enable Cloud Sync.
           files: |
