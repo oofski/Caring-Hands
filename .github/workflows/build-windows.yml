@@ -50,16 +50,19 @@ jobs:
       - name: Publish downloadable release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.5.25-build.${{ github.run_number }}
-          name: Caring Hands v1.5.25 (build ${{ github.run_number }})
+          tag_name: v1.5.26-build.${{ github.run_number }}
+          name: Caring Hands v1.5.26 (build ${{ github.run_number }})
           prerelease: false
           make_latest: true
           body: |
-            ## Caring Hands Worldwide — Practice Management Software (v1.5.25)
+            ## Caring Hands Worldwide — Practice Management Software (v1.5.26)
 
             Offline-first dental clinic app for Windows. **Download the installer once — it auto-updates from here on.**
 
-            **New in v1.5.25 — vitals are now a hard requirement, and you can move patients back a stage**
+            **New in v1.5.26 — search the Arrivals list**
+            - **Find a patient instantly on the Arrivals screen.** A search box at the top filters both lists as you type — by **name, phone number, or date of birth** — so a busy front desk can pull up one person out of a long queue instead of scrolling. Words can be typed in any order ("ruiz car" finds Carmen Ruiz), it says how many are hidden, and one tap clears it. Your typing is never wiped when the queue refreshes in the background.
+
+            **From v1.5.25 — vitals are now a hard requirement, and you can move patients back a stage**
             - **No patient reaches a treatment chair without vitals.** A blood pressure **or** pulse must be recorded at the vitals station before anyone can be sent to the dentist or the hygienist. The reading is what tells the dentist whether it is safe to give anaesthetic or extract, so this is now a real block rather than a habit — and it holds on **every** route, including an administrator override from the Management screen. The vitals station says so up front instead of only when you tap, and anything you have just typed into the vitals fields is saved automatically when you sign the patient off.
             - **Move a patient back to any earlier stage.** Under **Admin → Management**, every patient now has a **Check-in** button alongside the existing EMT / Dentist / Hygienist / Check-out moves. **Check-in** is the full rewind: the patient is no longer confirmed present, no longer signed off by the vitals station, and no longer assigned to a provider, so they reappear in the front desk's **Arrivals** list and go through the flow again from the top. It works from any stage — including pulling back someone who was already checked out.
             - **Their recorded vitals are kept** when you move them back. A blood pressure reading is a clinical fact, not a workflow step, so nothing measured is ever discarded — the patient simply needs to be walked through the stations again.
@@ -219,8 +222,8 @@ jobs:
 
             Includes everything from v1.0.2–1.1.1 (optional Cloud Sync, triage-free flow, per-event staff, Oregon consent, USB workflow, accountability, Russian, in-app auto-update).
 
-            - **Caring-Hands-Setup-1.5.25.exe** — installer (recommended; required for auto-update).
-            - **Caring-Hands-Portable-1.5.25.exe** — portable (no auto-update).
+            - **Caring-Hands-Setup-1.5.26.exe** — installer (recommended; required for auto-update).
+            - **Caring-Hands-Portable-1.5.26.exe** — portable (no auto-update).
 
             First sign-in: `admin / admin` — then create your staff accounts. All clinical data stays on the device unless you enable Cloud Sync.
           files: |

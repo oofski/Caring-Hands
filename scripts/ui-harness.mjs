@@ -1056,6 +1056,38 @@ async function main() {
     document.body.append(dash24); await tick(); await tick();
     const okCard = Array.from(dash24.querySelectorAll('.crm-card')).find((c) => /ToGo, Ready/.test(c.textContent));
     log(!!okCard && /Here/.test(okCard.textContent), 'v1.5.24: the board shows a "Here" tag once the front desk confirms arrival');
+
+    // v1.5.25: the arrivals search — a busy front desk needs to find one person.
+    const findMe = db.createPatient(currentUser, {
+      first_name: 'Yolanda', last_name: 'Zaragoza', dob: '1977-03-04', gender: 'female', phone: '5035559876',
+      demographics: {}, medical_history: {}, dental_history: { visit_type: 'cleaning' },
+      consents: [{ type: 'general', signer_name: 'Y Z', signature_png: 'data:image/png;base64,AAAA' }],
+    });
+    const arr2 = (await import('../src/renderer/js/views/arrivals.js')).renderArrivals(ctx24);
+    document.body.append(arr2); await tick(); await tick();
+    const box = arr2.querySelector('input[type="search"]');
+    log(!!box, 'v1.5.25: the arrivals screen has a search box');
+    const rowsFor = () => Array.from(arr2.querySelectorAll('.arrival-row')).map((r) => r.textContent);
+    log(rowsFor().length > 1, 'v1.5.25: (setup) more than one patient is listed');
+    const type = async (v) => { box.value = v; box.dispatchEvent(new window.Event('input', { bubbles: true })); await tick(); };
+    await type('zaragoza');
+    log(rowsFor().length === 1 && /Zaragoza/.test(rowsFor()[0]), 'v1.5.25: searching a surname narrows the list to that patient');
+    await type('5035559876');
+    log(rowsFor().length === 1 && /Zaragoza/.test(rowsFor()[0]), 'v1.5.25: searching a phone number finds them too');
+    await type('1977-03-04');
+    log(rowsFor().length === 1 && /Zaragoza/.test(rowsFor()[0]), 'v1.5.25: searching a date of birth finds them too');
+    await type('zaragoza yol');
+    log(rowsFor().length === 1, 'v1.5.25: words can be typed in any order');
+    await type('nobody-by-this-name');
+    log(rowsFor().length === 0 && /No match here/.test(arr2.textContent), 'v1.5.25: a search with no match says so');
+    await type('');
+    log(rowsFor().length > 1, 'v1.5.25: clearing the search restores the full list');
+    // The queue refreshing underneath must not wipe what is being typed.
+    await type('zaragoza');
+    const before = box.value;
+    const reloaded = arr2.querySelector('input[type="search"]');
+    log(reloaded === box && reloaded.value === before && rowsFor().length === 1,
+      'v1.5.25: a background refresh keeps the search text and the filtered list');
   }
 
   // ---- v1.5.24: vitals are a hard gate, and patients can be walked back ----

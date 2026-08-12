@@ -1248,6 +1248,7 @@ function listPatients({ eventId, search } = {}) {
       event_id: p.event_id,
       event_name: p.event_name,
       email: pt.email || (pt.demographics && pt.demographics.email) || null,
+      phone: pt.phone || null,
       triage_status: tr ? tr.status : null,
       complaint: tr ? tr.complaint : null,
       flags: tr ? safeJson(tr.flags, []) : [],

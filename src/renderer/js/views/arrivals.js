@@ -16,18 +16,48 @@ const VISIT_LABEL = {
 };
 const STATION_LABEL = { dentist: 'Dentist', hygienist: 'Hygienist' };
 
+// Find someone by what the desk actually has in front of them: a name said out
+// loud, a phone number, or a date of birth off an ID.
+function matches(p, q) {
+  if (!q) return true;
+  const hay = [p.first_name, p.last_name, p.dob, p.phone, VISIT_LABEL[p.visit_type], p.complaint]
+    .filter(Boolean).join(' ').toLowerCase();
+  // Every word must appear somewhere, so "ruiz car" finds Carmen Ruiz.
+  return q.toLowerCase().split(/\s+/).filter(Boolean).every((w) => hay.includes(w));
+}
+
 export function renderArrivals(ctx) {
   const root = el('div', { class: 'view' });
+  let latest = { event: null, patients: [] };
+  let query = '';
+
+  // Built once and re-used across repaints, so a queue refresh mid-typing can't
+  // wipe what the desk has entered.
+  const search = el('input', {
+    class: 'input',
+    type: 'search',
+    placeholder: 'Search name, phone, or date of birth…',
+    onInput: (e) => { query = e.target.value.trim(); paint(); },
+  });
 
   async function load() {
     const [event, patients] = await Promise.all([api.activeEvent(), api.listPatients({})]);
     store.setEvent(event);
+    latest = { event, patients };
+    paint();
+  }
+
+  function paint() {
+    const { event, patients } = latest;
 
     // Waiting to be confirmed vs. already here. Anyone past check-in has
     // obviously arrived, so this screen only concerns the checked-in stage.
     const checkedIn = patients.filter((p) => p.status === 'checked_in');
-    const waiting = checkedIn.filter((p) => !p.arrived_at);
-    const here = checkedIn.filter((p) => p.arrived_at);
+    const allWaiting = checkedIn.filter((p) => !p.arrived_at);
+    const allHere = checkedIn.filter((p) => p.arrived_at);
+    const waiting = allWaiting.filter((p) => matches(p, query));
+    const here = allHere.filter((p) => matches(p, query));
+    const hiddenBySearch = (allWaiting.length - waiting.length) + (allHere.length - here.length);
 
     function row(p, confirmed) {
       // Station comes from what the patient said they need; the desk can override.
@@ -84,6 +114,9 @@ export function renderArrivals(ctx) {
       ]);
     }
 
+    const emptyText = (confirmed) => (query
+      ? 'No match here for “' + query + '”.'
+      : (confirmed ? 'Nobody confirmed yet today.' : 'Nobody is waiting — everyone who has checked in has been confirmed.'));
     const section = (title, note, list, confirmed) => el('div', { class: 'card' }, [
       el('div', { class: 'section-title-row' }, [
         el('h2', { class: 'section-title' }, [title]),
@@ -92,8 +125,12 @@ export function renderArrivals(ctx) {
       el('p', { class: 'muted small', style: 'margin:0 0 var(--space-3)' }, [note]),
       list.length
         ? el('div', { class: 'arrival-list' }, list.map((p) => row(p, confirmed)))
-        : el('p', { class: 'muted', style: 'margin:0' }, [confirmed ? 'Nobody confirmed yet today.' : 'Nobody is waiting — everyone who has checked in has been confirmed.']),
+        : el('p', { class: 'muted', style: 'margin:0' }, [emptyText(confirmed)]),
     ]);
+
+    // Keep the caret where the user left it — paint() runs on every keystroke.
+    const hadFocus = document.activeElement === search;
+    const caret = hadFocus ? search.selectionStart : null;
 
     mount(root,
       el('div', { class: 'view-head' }, [
@@ -109,9 +146,25 @@ export function renderArrivals(ctx) {
           el('button', { class: 'btn btn--ghost btn--sm', onClick: load }, [icon('refresh', { size: 15 }), 'Refresh']),
         ]),
       ]),
+      el('div', { class: 'card arrival-search' }, [
+        el('label', { class: 'field', style: 'margin:0' }, [
+          el('span', { class: 'field-label' }, ['Find a patient']),
+          search,
+        ]),
+        query
+          ? el('p', { class: 'muted small', style: 'margin:var(--space-2) 0 0' }, [
+            `Showing ${waiting.length + here.length} of ${allWaiting.length + allHere.length}`,
+            hiddenBySearch ? ` · ${hiddenBySearch} hidden by the search` : '',
+            ' · ',
+            el('a', { href: '#', onClick: (e) => { e.preventDefault(); query = ''; search.value = ''; paint(); search.focus(); } }, ['Clear']),
+          ])
+          : null,
+      ]),
       section('Waiting to be confirmed', 'Tap “They’re here” when the patient is in front of you. We check their consents and their station at the same time.', waiting, false),
       section('Confirmed here', 'These patients are present and waiting for vitals.', here, true),
     );
+
+    if (hadFocus) { search.focus(); if (caret != null) try { search.setSelectionRange(caret, caret); } catch { /* not supported */ } }
   }
 
   load().catch((e) => ctx.toast(e.message, 'error'));
