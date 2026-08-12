@@ -1,7 +1,7 @@
 {
   "name": "caring-hands",
   "productName": "Caring Hands",
-  "version": "1.5.23",
+  "version": "1.5.24",
   "description": "Caring Hands Worldwide — offline-first practice management software for free dental clinics.",
   "author": {
     "name": "Caring Hands Worldwide",
@@ -21,7 +21,8 @@
   },
   "devDependencies": {
     "electron": "^31.7.7",
-    "electron-builder": "^25.1.8"
+    "electron-builder": "^25.1.8",
+    "jsdom": "^30.0.1"
   },
   "build": {
     "appId": "org.caringhandsworldwide.practicemanagement",

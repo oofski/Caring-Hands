@@ -501,3 +501,15 @@
 .update-status{ display:flex; align-items:center; gap:10px; padding:12px 14px; border-radius:var(--radius-md); border:var(--border-line); background:var(--surface-sunken); font-size:var(--fs-sm); }
 .update-status .icon{ flex:none; }
 .update-found{ background:var(--success-soft); border-color:var(--success-border); color:var(--success); }
+
+/* ---- Arrivals (v1.5.24) — the front desk's "they're here" list ---- */
+.crm-chip--ok{ color:var(--success); background:color-mix(in srgb, var(--success) 13%, transparent); font-weight:var(--fw-semibold); }
+.arrival-list{ display:flex; flex-direction:column; gap:10px; }
+.arrival-row{ display:flex; align-items:center; justify-content:space-between; gap:16px; flex-wrap:wrap;
+  padding:12px 14px; border:var(--border-line); border-radius:var(--radius-md); background:var(--surface); }
+.arrival-who{ min-width:0; display:flex; flex-direction:column; gap:4px; }
+.arrival-tags{ display:flex; align-items:center; gap:6px; flex-wrap:wrap; margin-top:2px; }
+.arrival-actions{ display:flex; align-items:flex-end; gap:12px; flex-wrap:wrap; }
+.arrival-actions .field{ margin:0; }
+.arrival-done{ display:flex; flex-direction:column; align-items:flex-end; gap:4px; text-align:right; }
+.field--inline{ display:flex; flex-direction:column; gap:4px; min-width:150px; }

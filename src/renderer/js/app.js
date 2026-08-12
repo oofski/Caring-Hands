@@ -5,6 +5,7 @@ import { api } from './api.js';
 import { icon } from './icons.js';
 import { renderLogin } from './views/login.js';
 import { renderKiosk } from './views/kiosk.js';
+import { renderArrivals } from './views/arrivals.js';
 import { renderDashboard } from './views/dashboard.js';
 import { renderProvider } from './views/provider.js';
 import { renderRecords } from './views/records.js';
@@ -29,6 +30,7 @@ const VIEWS = {
   // ---- Top-level (always visible) ----
   dashboard: { render: renderDashboard, roles: ['admin', 'doctor', 'triage', 'emt', 'checkout', 'hygienist', 'registration'], icon: 'dashboard', label: () => t('nav.dashboard'), module: 'top' },
   // ---- Clinic (collapsible) — the day-to-day stations ----
+  arrivals: { render: renderArrivals, roles: ['admin', 'registration', 'emt', 'triage'], icon: 'checkCircle', label: () => 'Arrivals', module: 'clinic' },
   emt: { render: renderEmt, roles: ['admin', 'emt', 'triage'], icon: 'syringe', label: () => t('nav.emt'), module: 'clinic' },
   hygienist: { render: renderHygienist, roles: ['admin', 'hygienist'], icon: 'sparkle', label: () => t('nav.hygienist'), module: 'clinic' },
   provider: { render: renderProvider, roles: ['admin', 'doctor'], icon: 'tooth', label: () => t('nav.provider'), module: 'clinic' },

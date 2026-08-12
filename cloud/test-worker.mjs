@@ -159,7 +159,7 @@ async function main() {
       h.data &&
       h.data.ok === true &&
       h.data.service === 'caring-hands-sync' &&
-      h.data.version === '1.5.1' &&
+      h.data.version === '1.6.0' &&
       h.data.seq === true &&
       typeof h.data.time === 'string'
   );
@@ -463,10 +463,48 @@ async function main() {
   const noConsent = await call(env, 'POST', '/checkin/evt-1', { body: { first_name: 'No', last_name: 'Consent', dob: '1990-01-01', gender: 'male', city: 'Sandy', state: 'OR', visit_type: 'cleaning' } });
   check('POST /checkin without agreeing to the consent -> 400', noConsent.status === 400 && /consent/i.test(noConsent.data.error));
 
+  // v1.6.0: consent must be SIGNED, not just ticked. A pre-registration without
+  // a signature would reach the clinic looking complete while the dentist still
+  // has to stop and capture consent at the chair.
+  const base = { first_name: 'Un', last_name: 'Signed', dob: '1990-01-01', gender: 'male', city: 'Sandy', state: 'OR', visit_type: 'cleaning' };
+  const noSig = await call(env, 'POST', '/checkin/evt-1', { body: { ...base, consent_agree: true, signer_name: 'Un Signed' } });
+  check('POST /checkin agreed but NOT signed -> 400', noSig.status === 400 && /sign the consent/i.test(noSig.data.error));
+  const noSigner = await call(env, 'POST', '/checkin/evt-1', { body: { ...base, consent_agree: true, signature_png: 'data:image/png;base64,AAAA' } });
+  check('POST /checkin signed but no name typed -> 400', noSigner.status === 400 && /type your name/i.test(noSigner.data.error));
+  const noSigEs = await call(env, 'POST', '/checkin/evt-1', { body: { ...base, language: 'es', consent_agree: true, signer_name: 'Sin Firma' } });
+  check('POST /checkin (es) not signed -> Spanish 400', noSigEs.status === 400 && /firme el consentimiento/i.test(noSigEs.data.error));
+
+  // An extraction ALSO needs the Oral Surgery consent signed — a general
+  // signature alone is not enough.
+  const exNoSurgerySig = await call(env, 'POST', '/checkin/evt-1', {
+    body: { ...base, last_name: 'Extraction', visit_type: 'extraction_pain', consent_agree: true, signer_name: 'Un Signed',
+      signature_png: 'data:image/png;base64,AAAA', surgery_agree: true },
+  });
+  check('POST /checkin extraction agreed but surgery NOT signed -> 400',
+    exNoSurgerySig.status === 400 && /sign the oral surgery/i.test(exNoSurgerySig.data.error));
+
+  // A NON-extraction visit must NOT be asked for the surgery consent.
+  const cleaningOk = await call(env, 'POST', '/checkin/evt-1', {
+    body: { ...base, last_name: 'Cleaning', consent_agree: true, signer_name: 'Un Signed', signature_png: 'data:image/png;base64,AAAA' },
+  });
+  check('POST /checkin cleaning needs only the general consent -> 200', cleaningOk.status === 200 && cleaningOk.data.ok === true);
+  const cleanRow = Array.from(env.DB._store.values()).find((r) => r.entity === 'patient' && JSON.parse(r.data).last_name === 'Cleaning');
+  const cleanConsents = Array.from(env.DB._store.values()).filter((r) => r.entity === 'consent' && r.patient_uid === cleanRow.uid);
+  check('a cleaning files exactly one consent, and it carries a signature',
+    cleanConsents.length === 1 && JSON.parse(cleanConsents[0].data).type === 'general' &&
+    /^data:image\//.test(JSON.parse(cleanConsents[0].data).signature_png || ''));
+
+  // The form itself marks both signatures required.
+  const sigForm = await getText('/checkin/evt-1');
+  check('the form marks the signature required and blocks submit until it is drawn',
+    /Signature <span class="req">\*<\/span>/.test(sigForm.text) &&
+    sigForm.text.includes('T.errSign') && sigForm.text.includes('T.errSignSurgery') &&
+    !/Signature \(optional\)/.test(sigForm.text));
+
   // An extraction visit also requires (and files) the Oral Surgery consent.
-  const noSurgery = await call(env, 'POST', '/checkin/evt-1', { body: { first_name: 'Ex', last_name: 'Tract', dob: '1990-01-01', gender: 'male', city: 'Sandy', state: 'OR', visit_type: 'extraction_pain', consent_agree: true } });
+  const noSurgery = await call(env, 'POST', '/checkin/evt-1', { body: { first_name: 'Ex', last_name: 'Tract', dob: '1990-01-01', gender: 'male', city: 'Sandy', state: 'OR', visit_type: 'extraction_pain', consent_agree: true, signer_name: 'Ex Tract', signature_png: 'data:image/png;base64,BBBB' } });
   check('POST /checkin extraction without surgery consent -> 400', noSurgery.status === 400 && /surgery/i.test(noSurgery.data.error));
-  const withSurgery = await call(env, 'POST', '/checkin/evt-1', { body: { first_name: 'Ex', last_name: 'Tract', dob: '1990-01-01', gender: 'male', city: 'Sandy', state: 'OR', visit_type: 'extraction_pain', consent_agree: true, surgery_agree: true, surgery_teeth: '14, 15', signature_png: 'data:image/png;base64,BBBB', surgery_signature_png: 'data:image/png;base64,CCCC' } });
+  const withSurgery = await call(env, 'POST', '/checkin/evt-1', { body: { first_name: 'Ex', last_name: 'Tract', dob: '1990-01-01', gender: 'male', city: 'Sandy', state: 'OR', visit_type: 'extraction_pain', consent_agree: true, surgery_agree: true, surgery_teeth: '14, 15', signer_name: 'Ex Tract', signature_png: 'data:image/png;base64,BBBB', surgery_signature_png: 'data:image/png;base64,CCCC' } });
   check('POST /checkin extraction WITH surgery consent -> 200', withSurgery.status === 200 && withSurgery.data.ok === true);
   const exPatient = Array.from(env.DB._store.values()).find((r) => r.entity === 'patient' && JSON.parse(r.data).last_name === 'Tract');
   const surgeryRow = Array.from(env.DB._store.values()).find((r) => r.entity === 'consent' && r.patient_uid === exPatient.uid && JSON.parse(r.data).type === 'oral_surgery');

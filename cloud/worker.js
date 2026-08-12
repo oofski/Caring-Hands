@@ -1,4 +1,4 @@
-// Caring Hands — Cloud Sync Worker (v1.5.1)
+// Caring Hands — Cloud Sync Worker (v1.6.0)
 // =============================================================================
 // NO INSTALLS NEEDED. To deploy: create a Worker in the Cloudflare dashboard,
 // paste THIS ENTIRE FILE into its code editor, then:
@@ -15,7 +15,7 @@
 // See ./SYNC_CONTRACT.md for the exact API + schema this implements.
 
 const SERVICE = 'caring-hands-sync';
-const VERSION = '1.5.1';
+const VERSION = '1.6.0';
 const DEFAULT_LIMIT = 500;
 const MAX_LIMIT = 1000;
 
@@ -319,17 +319,32 @@ async function handleCheckinPost(eventUid, request, env) {
   if (!clean.demographics.city) return json({ ok: false, error: esErr ? 'Por favor ingrese su ciudad.' : 'Please enter your city.' }, 400);
   if (!clean.demographics.state) return json({ ok: false, error: esErr ? 'Por favor ingrese su estado.' : 'Please enter your state.' }, 400);
 
-  // The general consent is required to check in — in person and here.
-  const agreed = (v) => v === true || v === 'on' || v === 'true';
-  if (!agreed(body.consent_agree)) return json({ ok: false, error: 'Please read and agree to the consent to finish.' }, 400);
-  const extraction = clean.dental_history.may_need_extraction === 'yes';
-  if (extraction && !agreed(body.surgery_agree)) {
-    return json({ ok: false, error: 'An extraction was selected — please read and agree to the Oral Surgery consent too.' }, 400);
-  }
-
   const iso = nowIso();
   const lang = clean.language;
   const sig = (v) => { const t = String(v == null ? '' : v); return (/^data:image\/(png|jpe?g);base64,/.test(t) && t.length < 700000) ? t : null; };
+
+  // Consent must be SIGNED, not merely ticked. A pre-registration that arrives
+  // without a signature would land in the clinic looking complete while the
+  // dentist still has to stop and capture consent at the chair — so the form is
+  // refused here, exactly as the in-person check-in refuses to continue.
+  const agreed = (v) => v === true || v === 'on' || v === 'true';
+  const generalSig = sig(body.signature_png);
+  if (!agreed(body.consent_agree)) return json({ ok: false, error: esErr ? 'Por favor lea y acepte el consentimiento para terminar.' : 'Please read and agree to the consent to finish.' }, 400);
+  if (!generalSig) return json({ ok: false, error: esErr ? 'Por favor firme el consentimiento para terminar.' : 'Please sign the consent to finish.' }, 400);
+  if (!String(body.signer_name || '').trim()) return json({ ok: false, error: esErr ? 'Por favor escriba su nombre para la firma.' : 'Please type your name for the signature.' }, 400);
+
+  // The Oral Surgery consent is required ONLY when an extraction was chosen —
+  // and then it must be signed too.
+  const extraction = clean.dental_history.may_need_extraction === 'yes';
+  const surgerySig = sig(body.surgery_signature_png);
+  if (extraction) {
+    if (!agreed(body.surgery_agree)) {
+      return json({ ok: false, error: esErr ? 'Se seleccionó una extracción — por favor lea y acepte también el consentimiento de cirugía oral.' : 'An extraction was selected — please read and agree to the Oral Surgery consent too.' }, 400);
+    }
+    if (!surgerySig) {
+      return json({ ok: false, error: esErr ? 'Por favor firme el consentimiento de cirugía oral.' : 'Please sign the Oral Surgery consent.' }, 400);
+    }
+  }
   const signer = String(body.signer_name || (clean.first_name + ' ' + clean.last_name)).trim().slice(0, 120);
   const relationship = String(body.relationship || '').trim().slice(0, 60);
 
@@ -352,14 +367,14 @@ async function handleCheckinPost(eventUid, request, env) {
     { entity: 'patient', uid: patientUid, patient_uid: null, stamp: iso + '@prereg', data: patientData },
     { entity: 'consent', uid: crypto.randomUUID(), patient_uid: patientUid, stamp: iso + '@prereg-c1', data: {
       type: 'general', version: 'general-oregon-' + lang + '-v1+covid', language: lang,
-      signer_name: signer, relationship: relationship, signature_png: sig(body.signature_png), signed_at: iso,
+      signer_name: signer, relationship: relationship, signature_png: generalSig, signed_at: iso,
       tooth_numbers: null, amended_by: null, amended_at: null,
     } },
   ];
   if (extraction) {
     rows.push({ entity: 'consent', uid: crypto.randomUUID(), patient_uid: patientUid, stamp: iso + '@prereg-c2', data: {
       type: 'oral_surgery', version: 'oral_surgery-' + lang + '-v1', language: lang,
-      signer_name: signer, relationship: relationship, signature_png: sig(body.surgery_signature_png), signed_at: iso,
+      signer_name: signer, relationship: relationship, signature_png: surgerySig, signed_at: iso,
       tooth_numbers: String(body.surgery_teeth || '').trim().slice(0, 60) || null, amended_by: null, amended_at: null,
     } });
   }
@@ -539,13 +554,14 @@ const I18N = {
     meds: 'Current medications', addMed: '+ Add medication', noMeds: 'No medications', medNamePh: 'Medication',
     medHist: 'Medical History', dentHist: 'Dental History', priorDentist: 'When did you last see a dentist?', yes: 'Yes', no: 'No', dash: '—',
     consent: 'Consent', signName: 'Your name (for the signature)', relationship: 'Relationship (if for a minor)', relPh: 'Self / Parent / Guardian',
-    agree: CONSENT_AGREE_TEXT, sigOpt: 'Signature (optional)', sigHint: 'Sign with your finger or a stylus.', clear: 'Clear',
+    agree: CONSENT_AGREE_TEXT, sigOpt: 'Signature', sigHint: 'Sign with your finger or a stylus.', clear: 'Clear',
     surgery: 'Surgery Consent', surgeryIntro: 'Because an extraction may be done, please also read and sign this.', teeth: 'Tooth number(s), if known',
     submit: 'Submit pre-registration', submitting: 'Submitting…', footer: 'Caring Hands Worldwide — free dental care. Your information is shared only with the clinic team.',
     thankYou: 'Thank you, ', done: 'Your pre-registration and consent are complete. Please bring a photo ID — the front desk already has your information.',
     errName: 'Please enter your first and last name.', errDob: 'Please enter your date of birth.', errGender: 'Please choose a gender.',
     errCity: 'Please enter your city.', errState: 'Please enter your state.',
     errConsent: 'Please read and agree to the consent to finish.', errSurgery: 'An extraction was selected — please read and agree to the Oral Surgery consent too.',
+    errSign: 'Please sign the consent to finish.', errSignSurgery: 'Please sign the Oral Surgery consent.', errSigner: 'Please type your name for the signature.',
     netErr: 'Network error. Please try again.', genErr: 'Something went wrong. Please try again.',
     visits: FORM_VISITS, allergyList: FORM_ALLERGIES, conditionList: FORM_CONDITIONS, medYesNo: FORM_MED_YESNO, dentalYesNo: FORM_DENTAL_YESNO,
     generalTitle: GENERAL_CONSENT_TITLE, generalMode: 'ol', general: GENERAL_CONSENT, surgeryTitle: ORAL_SURGERY_TITLE, surgeryText: ORAL_SURGERY_CONSENT,
@@ -563,13 +579,14 @@ const I18N = {
     meds: 'Medicamentos actuales', addMed: '+ Agregar medicamento', noMeds: 'Sin medicamentos', medNamePh: 'Medicamento',
     medHist: 'Historial médico', dentHist: 'Historial dental', priorDentist: '¿Cuándo visitó al dentista por última vez?', yes: 'Sí', no: 'No', dash: '—',
     consent: 'Consentimiento', signName: 'Su nombre (para la firma)', relationship: 'Parentesco (si es para un menor)', relPh: 'Yo mismo / Padre / Tutor',
-    agree: 'He leído y entiendo lo anterior, y doy mi consentimiento.', sigOpt: 'Firma (opcional)', sigHint: 'Firme con su dedo o un lápiz óptico.', clear: 'Borrar',
+    agree: 'He leído y entiendo lo anterior, y doy mi consentimiento.', sigOpt: 'Firma', sigHint: 'Firme con su dedo o un lápiz óptico.', clear: 'Borrar',
     surgery: 'Consentimiento de Cirugía', surgeryIntro: 'Como podría realizarse una extracción, lea y firme esto también.', teeth: 'Número(s) de diente, si los sabe',
     submit: 'Enviar pre-registro', submitting: 'Enviando…', footer: 'Caring Hands Worldwide — atención dental gratuita. Su información se comparte solo con el equipo de la clínica.',
     thankYou: 'Gracias, ', done: 'Su pre-registro y consentimiento están completos. Por favor traiga una identificación con foto — la recepción ya tiene su información.',
     errName: 'Por favor ingrese su nombre y apellido.', errDob: 'Por favor ingrese su fecha de nacimiento.', errGender: 'Por favor elija un género.',
     errCity: 'Por favor ingrese su ciudad.', errState: 'Por favor ingrese su estado.',
     errConsent: 'Por favor lea y acepte el consentimiento para terminar.', errSurgery: 'Se seleccionó una extracción — por favor lea y acepte también el consentimiento de cirugía oral.',
+    errSign: 'Por favor firme el consentimiento para terminar.', errSignSurgery: 'Por favor firme el consentimiento de cirugía oral.', errSigner: 'Por favor escriba su nombre para la firma.',
     netErr: 'Error de red. Por favor intente de nuevo.', genErr: 'Algo salió mal. Por favor intente de nuevo.',
     visits: FORM_VISITS_ES, allergyList: FORM_ALLERGIES_ES, conditionList: FORM_CONDITIONS_ES, medYesNo: FORM_MED_YESNO_ES, dentalYesNo: FORM_DENTAL_YESNO_ES,
     generalTitle: 'Consentimiento General para Tratamiento Dental', generalMode: 'p', general: GENERAL_CONSENT_ES, surgeryTitle: 'Consentimiento de Cirugía Oral / Extracción', surgeryText: ORAL_SURGERY_ES,
@@ -633,7 +650,7 @@ function checkinFormPage(eventUid, eventName, lang) {
   const dentalYesNo = L.dentalYesNo.map(([k, l]) => ynRow(k, l)).join('');
   const genConsent = '<h3>' + htmlEscape(L.generalTitle) + '</h3>' + (L.generalMode === 'ol' ? ('<ol>' + L.general.map((c) => '<li>' + htmlEscape(c) + '</li>').join('') + '</ol>') : L.general.map((c) => '<p>' + htmlEscape(c) + '</p>').join(''));
   const surConsent = '<h3>' + htmlEscape(L.surgeryTitle) + '</h3>' + L.surgeryText.map((c) => '<p>' + htmlEscape(c) + '</p>').join('');
-  const T = { errName: L.errName, errDob: L.errDob, errGender: L.errGender, errCity: L.errCity, errState: L.errState, errConsent: L.errConsent, errSurgery: L.errSurgery, submitting: L.submitting, submitLabel: L.submit, thankYou: L.thankYou, done: L.done, netErr: L.netErr, genErr: L.genErr };
+  const T = { errName: L.errName, errDob: L.errDob, errGender: L.errGender, errCity: L.errCity, errState: L.errState, errConsent: L.errConsent, errSurgery: L.errSurgery, errSign: L.errSign, errSignSurgery: L.errSignSurgery, errSigner: L.errSigner, submitting: L.submitting, submitLabel: L.submit, thankYou: L.thankYou, done: L.done, netErr: L.netErr, genErr: L.genErr };
 
   const inner =
     '<div class="hero"><div style="display:flex;justify-content:space-between;align-items:center"><div class="ey">Caring Hands · Pre-registration</div>' +
@@ -676,14 +693,14 @@ function checkinFormPage(eventUid, eventName, lang) {
     '<div class="row" style="margin-top:10px"><div><label>' + htmlEscape(L.signName) + '</label><input type="text" id="signer"></div>' +
     '<div><label>' + htmlEscape(L.relationship) + '</label><input type="text" id="relationship" placeholder="' + htmlEscape(L.relPh) + '"></div></div>' +
     '<label class="agree"><input type="checkbox" id="cagree"><span>' + htmlEscape(L.agree) + '</span></label>' +
-    '<label style="margin-top:10px">' + htmlEscape(L.sigOpt) + '</label><canvas id="gsig" class="sig"></canvas>' +
+    '<label style="margin-top:10px">' + htmlEscape(L.sigOpt) + ' <span class="req">*</span></label><canvas id="gsig" class="sig"></canvas>' +
     '<div class="sigbar"><span class="hint">' + htmlEscape(L.sigHint) + '</span><a id="gclear">' + htmlEscape(L.clear) + '</a></div></div>' +
 
     '<div class="card" id="surgeryCard" style="display:none"><h2>' + htmlEscape(L.surgery) + '</h2>' +
     '<p class="hint" style="margin:0 0 8px">' + htmlEscape(L.surgeryIntro) + '</p><div class="consent">' + surConsent + '</div>' +
     '<label style="margin-top:10px">' + htmlEscape(L.teeth) + '</label><input type="text" id="steeth" placeholder="e.g. 14, 15">' +
     '<label class="agree"><input type="checkbox" id="sagree"><span>' + htmlEscape(L.agree) + '</span></label>' +
-    '<label style="margin-top:10px">' + htmlEscape(L.sigOpt) + '</label><canvas id="ssig" class="sig"></canvas>' +
+    '<label style="margin-top:10px">' + htmlEscape(L.sigOpt) + ' <span class="req">*</span></label><canvas id="ssig" class="sig"></canvas>' +
     '<div class="sigbar"><span class="hint">' + htmlEscape(L.sigHint) + '</span><a id="sclear">' + htmlEscape(L.clear) + '</a></div></div>' +
 
     '<div class="err" id="err"></div>' +
@@ -706,8 +723,11 @@ function checkinFormPage(eventUid, eventName, lang) {
     "if(!val('dob')){err.textContent=T.errDob;return;}if(!val('gender')){err.textContent=T.errGender;return;}" +
     "if(!val('city')){err.textContent=T.errCity;return;}if(!val('state')){err.textContent=T.errState;return;}" +
     "if(!el('cagree').checked){err.textContent=T.errConsent;return;}" +
+    "if(!val('signer').trim()){err.textContent=T.errSigner;return;}" +
+    "if(!gpad||!gpad.data()){err.textContent=T.errSign;el('gsig').scrollIntoView({block:'center'});return;}" +
     "var visit=(document.querySelector('input[name=visit]:checked')||{}).value||'';var extraction=(visit==='extraction_pain'||visit==='extraction_no_pain');" +
     "if(extraction&&!el('sagree').checked){err.textContent=T.errSurgery;return;}" +
+    "if(extraction&&(!spad||!spad.data())){err.textContent=T.errSignSurgery;el('ssig').scrollIntoView({block:'center'});return;}" +
     "var payload={first_name:fn,last_name:ln,dob:val('dob'),gender:val('gender'),phone:val('phone'),email:val('email'),language:LANG,address:val('address'),city:val('city'),state:val('state'),emergency_name:val('emergency_name'),emergency_phone:val('emergency_phone')," +
     "reason:val('reason'),visit_type:visit,allergies:checked('allergy'),allergies_other:val('allergies_other'),conditions:checked('condition'),conditions_other:val('conditions_other')," +
     "medications:Array.prototype.slice.call(meds.querySelectorAll('input')).map(function(i){return i.value.trim();}).filter(Boolean),medications_none:el('medications_none').checked," +

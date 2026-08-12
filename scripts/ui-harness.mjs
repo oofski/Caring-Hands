@@ -961,6 +961,99 @@ async function main() {
       'v1.5.23: taking vitals removes the patient from "Waiting for vitals"');
   }
 
+  // ---- v1.5.24: auto-routing from the patient's own answer ----
+  {
+    currentUser = db.login('admin', 'admin');
+    const mk = (last, visit) => db.createPatient(currentUser, {
+      first_name: 'Auto', last_name: last, dob: '1990-01-01', gender: 'female',
+      demographics: {}, medical_history: {}, dental_history: { visit_type: visit, reason: 'x' },
+    });
+    const routeOf = (p) => (db.listPatients({}).find((x) => x.id === p.id) || {}).route;
+    log(routeOf(mk('Clean', 'cleaning')) === 'hygienist', 'v1.5.24: choosing a cleaning routes to the hygienist automatically');
+    log(routeOf(mk('Fill', 'filling')) === 'dentist', 'v1.5.24: choosing a filling routes to the dentist automatically');
+    log(routeOf(mk('Pull', 'extraction_pain')) === 'dentist', 'v1.5.24: choosing an extraction routes to the dentist automatically');
+    // An explicit choice still wins, and an unanswered visit type leaves it open.
+    const explicit = db.createPatient(currentUser, { first_name: 'Auto', last_name: 'Override', demographics: {}, medical_history: {}, dental_history: { visit_type: 'cleaning' }, route: 'dentist' });
+    log(routeOf(explicit) === 'dentist', 'v1.5.24: an explicitly chosen station still wins over the automatic one');
+    log(routeOf(mk('Blank', null)) == null, 'v1.5.24: no answer leaves the station for the EMT to choose');
+  }
+
+  // ---- v1.5.24: the front desk's arrival check ----
+  {
+    currentUser = db.login('admin', 'admin');
+    const signed = { type: 'general', signer_name: 'Pat Ient', relationship: 'Self', signature_png: 'data:image/png;base64,AAAA' };
+
+    // Consent signed + a cleaning chosen -> ready, and confirming marks them here.
+    const ok = db.createPatient(currentUser, {
+      first_name: 'Ready', last_name: 'ToGo', dob: '1985-01-01', gender: 'male',
+      demographics: {}, medical_history: {}, dental_history: { visit_type: 'cleaning' }, consents: [signed],
+    });
+    const r1 = db.arrivalReadiness(ok.id);
+    log(r1.general_signed && r1.needs_surgery_consent === false && r1.route === 'hygienist' && r1.ready,
+      'v1.5.24: a signed cleaning patient is ready, with their station already set');
+    const after = db.confirmArrival(currentUser, ok.id, {});
+    log(!!after.arrived_at, 'v1.5.24: confirming arrival records that the patient is physically here');
+    const listed = db.listPatients({}).find((p) => p.id === ok.id);
+    log(!!listed.arrived_at && listed.status === 'checked_in',
+      'v1.5.24: a confirmed patient still goes to vitals next (no station is skipped)');
+
+    // Unsigned general consent -> refused.
+    const unsigned = db.createPatient(currentUser, {
+      first_name: 'No', last_name: 'Consent', dob: '1985-01-01', gender: 'male',
+      demographics: {}, medical_history: {}, dental_history: { visit_type: 'cleaning' }, consents: [],
+    });
+    let blocked = false;
+    try { db.confirmArrival(currentUser, unsigned.id, {}); } catch (e) { blocked = /general consent/i.test(e.message); }
+    log(blocked, 'v1.5.24: a patient with no signed general consent cannot be sent through');
+
+    // A consent row with NO signature does not count as signed.
+    const empty = db.createPatient(currentUser, {
+      first_name: 'Empty', last_name: 'Sig', dob: '1985-01-01', gender: 'male',
+      demographics: {}, medical_history: {}, dental_history: { visit_type: 'cleaning' },
+      consents: [{ type: 'general', signer_name: 'X', signature_png: '' }],
+    });
+    log(db.arrivalReadiness(empty.id).general_signed === false, 'v1.5.24: an unsigned consent form does not count as consent');
+
+    // Extraction with only the general consent -> refused until surgery is signed.
+    const ex = db.createPatient(currentUser, {
+      first_name: 'Ex', last_name: 'Traction', dob: '1985-01-01', gender: 'male',
+      demographics: {}, medical_history: {}, dental_history: { visit_type: 'extraction_pain' }, consents: [signed],
+    });
+    const rEx = db.arrivalReadiness(ex.id);
+    log(rEx.needs_surgery_consent === true && rEx.surgery_signed === false && !rEx.ready,
+      'v1.5.24: an extraction patient is not ready on the general consent alone');
+    let exBlocked = false;
+    try { db.confirmArrival(currentUser, ex.id, {}); } catch (e) { exBlocked = /oral surgery/i.test(e.message); }
+    log(exBlocked, 'v1.5.24: an extraction patient without the surgery consent cannot be sent through');
+    // Sign it chairside -> now allowed, and routed to the dentist.
+    db.addPatientConsent(currentUser, ex.id, { type: 'oral_surgery', signer_name: 'Ex Traction', relationship: 'Self', signature_png: 'data:image/png;base64,BBBB', tooth_numbers: '30' });
+    const okNow = db.confirmArrival(currentUser, ex.id, {});
+    log(!!okNow.arrived_at && db.arrivalReadiness(ex.id).route === 'dentist',
+      'v1.5.24: once the surgery consent is signed the extraction patient goes through to the dentist');
+
+    // The Arrivals screen itself: waiting vs. confirmed, with the consent state
+    // shown on each row so the desk can see the blocker before they tap.
+    const store24 = (await import('../src/renderer/js/store.js')).store; store24.setUser(currentUser);
+    const ctx24 = { navigate: () => {}, toast: () => {}, store: store24, setDetail: () => {} };
+    const arrivals = (await import('../src/renderer/js/views/arrivals.js')).renderArrivals(ctx24);
+    document.body.append(arrivals); await tick(); await tick();
+    const atxt = arrivals.textContent;
+    log(/Arrivals/.test(atxt) && /Waiting to be confirmed/.test(atxt) && /Confirmed here/.test(atxt),
+      'v1.5.24: the Arrivals screen lists who is waiting and who is confirmed');
+    const unsignedRow = Array.from(arrivals.querySelectorAll('.arrival-row')).find((r) => /Consent, No/.test(r.textContent));
+    log(!!unsignedRow && /Consent missing/.test(unsignedRow.textContent),
+      'v1.5.24: a patient with an unsigned consent is flagged on the arrivals list');
+    const readyRow = Array.from(arrivals.querySelectorAll('.arrival-row')).find((r) => /ToGo, Ready/.test(r.textContent));
+    log(!!readyRow && /Here/.test(readyRow.textContent),
+      'v1.5.24: a confirmed patient shows as here');
+
+    // ...and the live board marks them too.
+    const dash24 = (await import('../src/renderer/js/views/dashboard.js')).renderDashboard(ctx24);
+    document.body.append(dash24); await tick(); await tick();
+    const okCard = Array.from(dash24.querySelectorAll('.crm-card')).find((c) => /ToGo, Ready/.test(c.textContent));
+    log(!!okCard && /Here/.test(okCard.textContent), 'v1.5.24: the board shows a "Here" tag once the front desk confirms arrival');
+  }
+
   await tick();
   if (errors.length) errors.forEach((e) => log(false, 'RUNTIME: ' + e));
   const failed = results.filter((r) => !r[0]).length;

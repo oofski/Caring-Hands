@@ -86,6 +86,8 @@ const PERMS = {
   'cloud:status': ['admin', 'doctor', 'triage', 'emt', 'checkout', 'hygienist', 'registration'],
   'cloud:syncNow': ['admin', 'doctor', 'triage', 'emt', 'checkout', 'hygienist', 'registration'],
   'cloud:resync': ['admin'],
+  'patients:arrivalCheck': ['admin', 'registration', 'emt', 'triage', 'doctor', 'hygienist'],
+  'patients:confirmArrival': ['admin', 'registration', 'emt', 'triage'],
   // update:* and app:version are open to any signed-in user (available in any view).
 };
 
@@ -146,6 +148,10 @@ function register(getMainWindow) {
   handle('cloud:status', () => cloud.status());
   handle('cloud:syncNow', () => cloud.syncOnce());
   handle('cloud:resync', () => cloud.resyncAll());
+
+  /* ---- Front-desk arrivals (v1.5.24) ---- */
+  handle('patients:arrivalCheck', (id) => db.arrivalReadiness(id));
+  handle('patients:confirmArrival', ({ id, route }) => db.confirmArrival(currentUser, id, { route }));
 
   /* ---- Events ---- */
   handle('events:list', () => db.listEvents(), { });

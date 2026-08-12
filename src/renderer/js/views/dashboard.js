@@ -170,6 +170,9 @@ export function renderDashboard(ctx) {
     const crmCard = (p) => {
       const foot = [];
       if (p.preregistered) foot.push(el('span', { class: 'crm-chip crm-chip--prereg', title: 'Pre-registered online — confirm arrival' }, ['Pre-reg']));
+      // Confirmed present by the front desk (Arrivals), so the floor can tell a
+      // patient who is actually here from one who has only checked in on paper.
+      if (p.status === 'checked_in' && p.arrived_at) foot.push(el('span', { class: 'crm-chip crm-chip--ok', title: 'Front desk confirmed this patient is here' }, [icon('check', { size: 10 }), 'Here']));
       if (p.status === 'dismissed') foot.push(el('span', { class: 'crm-chip crm-chip--left', title: 'Checked out — the patient has left' }, [icon('check', { size: 10 }), 'Left']));
       // Two time tags: total time and time at the current stage. Pre-registered
       // patients don't start the clock until they arrive at Vitals, so both are

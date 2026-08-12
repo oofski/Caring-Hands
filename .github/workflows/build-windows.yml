@@ -50,16 +50,22 @@ jobs:
       - name: Publish downloadable release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.5.23-build.${{ github.run_number }}
-          name: Caring Hands v1.5.23 (build ${{ github.run_number }})
+          tag_name: v1.5.24-build.${{ github.run_number }}
+          name: Caring Hands v1.5.24 (build ${{ github.run_number }})
           prerelease: false
           make_latest: true
           body: |
-            ## Caring Hands Worldwide — Practice Management Software (v1.5.23)
+            ## Caring Hands Worldwide — Practice Management Software (v1.5.24)
 
             Offline-first dental clinic app for Windows. **Download the installer once — it auto-updates from here on.**
 
-            **New in v1.5.23 — "Waiting for vitals" now counts pre-registered patients**
+            **New in v1.5.24 — consents must be signed, patients route themselves, and a front-desk arrival check**
+            - **Pre-registration now requires a real signature.** Ticking the consent box is no longer enough — the patient must sign on their phone, and type their name, before the form will submit. If they chose an **extraction**, the **Oral Surgery consent must be signed too**; if they chose a cleaning or a filling, it is not asked for at all. This means a pre-registered patient arrives with consent genuinely on file, instead of the dentist discovering at the chair that it still needs capturing.
+            - **What the patient needs now picks their station automatically.** A **cleaning** goes to the **hygienist**; a **filling or extraction** goes to the **dentist** — assigned from the patient's own answer at check-in, with no one having to choose. Staff can still override it at any time, and a patient who didn't answer is left for the vitals station to route as before.
+            - **New "Arrivals" screen for the front desk.** Everyone who has checked in — at the desk or online, sometimes days earlier — waits here until someone confirms they are physically present. Tapping **"They're here — ready to go"** does three things at once: it marks them as arrived, it **double-checks every consent their visit needs is signed**, and it **confirms they have a station assigned**. If a consent is missing, it says so and refuses to send them through. Confirmed patients get a green **"Here"** tag on the live board, so the floor can tell who has actually walked in.
+            - *The pre-registration signature requirement is delivered by the clinic server (now v1.6.0) — one more paste for your admin.*
+
+            **From v1.5.23 — "Waiting for vitals" now counts pre-registered patients**
             - **Fixed: the dashboard's "Waiting for vitals" number ignored anyone who pre-registered online.** A clinic with 30 pre-registered patients sitting in the **Checked in** column could see a "Waiting for vitals" tile reading **1** — just the one walk-in registered at the desk. The tile was counting a record that only the in-person check-in creates, so patients who arrived through the pre-registration link were left out of the total. It now counts every patient who is checked in and hasn't had a blood pressure or pulse taken yet, so **the tile always matches the "Checked in" column on the board** and the vitals station's own queue. Nobody was ever missing from the vitals station itself — only the number on the dashboard was wrong.
 
             **From v1.5.22 — City & State are now required**
@@ -208,8 +214,8 @@ jobs:
 
             Includes everything from v1.0.2–1.1.1 (optional Cloud Sync, triage-free flow, per-event staff, Oregon consent, USB workflow, accountability, Russian, in-app auto-update).
 
-            - **Caring-Hands-Setup-1.5.23.exe** — installer (recommended; required for auto-update).
-            - **Caring-Hands-Portable-1.5.23.exe** — portable (no auto-update).
+            - **Caring-Hands-Setup-1.5.24.exe** — installer (recommended; required for auto-update).
+            - **Caring-Hands-Portable-1.5.24.exe** — portable (no auto-update).
 
             First sign-in: `admin / admin` — then create your staff accounts. All clinical data stays on the device unless you enable Cloud Sync.
           files: |

@@ -211,6 +211,12 @@ function migrate() {
   // a local-only setting, so laptops could sit on different events and split the queue.
   addColumn('events', 'selected_at', 'TEXT');
   addColumn('patients', 'dismissed_by_name', 'TEXT');
+  // v1.5.24: the front desk confirms the patient is physically here and ready to
+  // be seen (consents checked, station assigned). Pre-registered patients can sit
+  // in the queue for days before they walk in, so "checked in" alone can't mean
+  // "present".
+  addColumn('patients', 'arrived_at', 'TEXT');
+  addColumn('patients', 'arrived_by_name', 'TEXT');
   addColumn('triage', 'triaged_by_name', 'TEXT');
   addColumn('triage', 'vitals_by_name', 'TEXT');
   addColumn('triage', 'routed_by_name', 'TEXT');
@@ -713,6 +719,24 @@ function rowToPatient(p) {
   };
 }
 
+// What the patient said they need decides who they see, so nobody has to pick a
+// station by hand: a cleaning is hygienist work; a filling or an extraction is
+// dentist work. Returns null for an unrecognised/absent answer, which leaves the
+// choice to the EMT exactly as before.
+const VISIT_ROUTE = {
+  cleaning: 'hygienist',
+  filling: 'dentist',
+  extraction_pain: 'dentist',
+  extraction_no_pain: 'dentist',
+};
+function routeFromVisitType(visitType) {
+  return VISIT_ROUTE[String(visitType || '')] || null;
+}
+// An extraction is the only answer that also needs the oral-surgery consent.
+function visitNeedsSurgeryConsent(visitType) {
+  return String(visitType || '').startsWith('extraction');
+}
+
 function createPatient(actor, data) {
   const eventId = Number(getSetting('active_event_id'));
   if (!eventId) throw new Error('No active clinic event. Ask an admin to create one.');
@@ -750,7 +774,11 @@ function createPatient(actor, data) {
   // provider). We store that choice on the triage row now, but the patient stays
   // status 'checked_in' — they appear ONLY in the EMT/nurse queue until the EMT
   // records vitals and signs them off into the chosen clinical queue.
-  const intendedRoute = ['dentist', 'hygienist'].includes(d.route) ? d.route : null;
+  // v1.5.24: if no station was picked explicitly, derive it from what the patient
+  // said they need — cleaning to the hygienist, filling/extraction to the dentist.
+  const intendedRoute = ['dentist', 'hygienist'].includes(d.route)
+    ? d.route
+    : routeFromVisitType(d.dental_history && d.dental_history.visit_type);
   db.prepare(
     `INSERT INTO triage (patient_id, complaint, status, route) VALUES (?,?, 'waiting', ?)`
   ).run(id, (d.dental_history && d.dental_history.reason) || null, intendedRoute);
@@ -990,6 +1018,52 @@ function routePatient(actor, patientId, route) {
   return getPatient(patientId);
 }
 
+// What still stands between this patient and being seen: the consents their
+// visit needs, and a station to send them to. Used by the front desk's arrivals
+// list and by confirmArrival below, so the screen and the guard can never
+// disagree about what is missing.
+function arrivalReadiness(patientId) {
+  const p = db.prepare('SELECT id, dental_history, arrived_at FROM patients WHERE id = ?').get(patientId);
+  if (!p) throw new Error('Patient not found.');
+  const dental = safeJson(p.dental_history, {}) || {};
+  const consents = db.prepare('SELECT type, signature_png FROM consents WHERE patient_id = ?').all(patientId);
+  // A consent counts only when it carries an actual signature — an unsigned row
+  // is a form that was opened, not a consent that was given.
+  const signed = (type) => consents.some((c) => c.type === type && String(c.signature_png || '').trim().length > 0);
+  const tr = db.prepare('SELECT route FROM triage WHERE patient_id = ?').get(patientId);
+  const needsSurgery = visitNeedsSurgeryConsent(dental.visit_type);
+  const route = (tr && tr.route) || routeFromVisitType(dental.visit_type) || null;
+  return {
+    patient_id: patientId,
+    visit_type: dental.visit_type || null,
+    general_signed: signed('general'),
+    needs_surgery_consent: needsSurgery,
+    surgery_signed: needsSurgery ? signed('oral_surgery') : true,
+    route,
+    arrived_at: p.arrived_at || null,
+    get ready() { return this.general_signed && this.surgery_signed && !!this.route; },
+  };
+}
+
+// The front desk marking a patient as physically present and ready to be seen.
+// Deliberately refuses when a required consent is unsigned or no station is
+// assigned — this is the last checkpoint before a patient enters clinical care.
+function confirmArrival(actor, patientId, opts = {}) {
+  const r = arrivalReadiness(patientId);
+  const route = ['dentist', 'hygienist'].includes(opts.route) ? opts.route : r.route;
+  if (!r.general_signed) throw new Error('The general consent has not been signed yet. Have the patient sign it before sending them through.');
+  if (!r.surgery_signed) throw new Error('This patient is here for an extraction, so the Oral Surgery consent must be signed too.');
+  if (!route) throw new Error('Choose which station this patient goes to: dentist or hygienist.');
+  const tr = db.prepare('SELECT id FROM triage WHERE patient_id = ?').get(patientId);
+  if (!tr) db.prepare("INSERT INTO triage (patient_id, status, route) VALUES (?, 'waiting', ?)").run(patientId, route);
+  else db.prepare('UPDATE triage SET route = ? WHERE patient_id = ?').run(route, patientId);
+  // Presence only — they still go to vitals next. This does NOT skip a station.
+  db.prepare('UPDATE patients SET arrived_at = ?, arrived_by_name = ?, updated_at = ? WHERE id = ?')
+    .run(now(), (actor && actor.full_name) || null, now(), patientId);
+  audit(actor, 'arrive', 'patient', patientId, route);
+  return getPatient(patientId);
+}
+
 // A consent completed chairside for an EXISTING patient — e.g. the dentist has the
 // patient sign the oral-surgery consent at the chair (capturing the tooth numbers
 // at the same time), or captures a general consent the intake missed.
@@ -1146,6 +1220,11 @@ function listPatients({ eventId, search } = {}) {
       route: tr ? tr.route : null,
       has_vitals: !!(tr && (tr.bp_systolic != null || tr.heart_rate != null)),
       preregistered: !!(pt.demographics && pt.demographics.preregistered),
+      // v1.5.24: front-desk arrival state — confirmed present, and whether the
+      // consents this visit needs are actually signed.
+      arrived_at: p.arrived_at || null,
+      visit_type: (pt.dental_history && pt.dental_history.visit_type) || null,
+      consents_ok: (() => { try { const r = arrivalReadiness(p.id); return r.general_signed && r.surgery_signed; } catch { return false; } })(),
       // Stage timestamps for the live board's "total time" + "time at stage" tags.
       vitals_at: tr ? tr.vitals_at : null,
       routed_at: tr ? tr.routed_at : null,
@@ -1425,7 +1504,7 @@ const SYNC_COLS = {
   // Staff account. salt+hash travel so the account can sign in on every laptop;
   // event scoping travels via event_uid (the parent), NULL for global admins.
   user: ['username', 'full_name', 'role', 'salt', 'hash', 'active', 'created_at'],
-  patient: ['language', 'first_name', 'last_name', 'dob', 'gender', 'phone', 'email', 'demographics', 'medical_history', 'dental_history', 'status', 'created_at', 'dismissed_at', 'dismissed_by_name'],
+  patient: ['language', 'first_name', 'last_name', 'dob', 'gender', 'phone', 'email', 'demographics', 'medical_history', 'dental_history', 'status', 'created_at', 'dismissed_at', 'dismissed_by_name', 'arrived_at', 'arrived_by_name'],
   triage: ['complaint', 'flags', 'checklist', 'teeth', 'teeth_notes', 'notes', 'xray_count', 'xray_station', 'assigned_to', 'status', 'triage_signature', 'triage_signer_name', 'triaged_at', 'bp_systolic', 'bp_diastolic', 'heart_rate', 'vitals_at', 'blood_thinner', 'blood_thinner_detail', 'route', 'routed_at', 'emt_review', 'emt_signed_off', 'bp_rechecks', 'triaged_by_name', 'vitals_by_name', 'routed_by_name'],
   treatment: ['fillings', 'extractions', 'cleaning', 'anesthetic', 'other_procedures', 'clinical_notes', 'provider_name', 'provider_signature', 'locked', 'completed_at', 'completed_by_name'],
   consent: ['type', 'version', 'language', 'signer_name', 'relationship', 'signature_png', 'signed_at', 'tooth_numbers', 'amended_by', 'amended_at'],
@@ -1707,6 +1786,7 @@ module.exports = {
   createPatient, startVisitFromExisting, updatePatient, deletePatient, getPatient, listPatients, searchAllPatients, patientHistory,
   listIncompletePatients, deleteIncompletePatients,
   saveVitals, routePatient, updateConsentTeeth, addPatientConsent, dismissPatient, adminMovePatient, patientAudit, importPatientFromPortable,
+  arrivalReadiness, confirmArrival, routeFromVisitType, visitNeedsSurgeryConsent,
   saveTriage, saveTreatment,
   addXray, updateXrayTooth, getXray, listXrays, deleteXray,
   dashboardStats, listAudit, audit,

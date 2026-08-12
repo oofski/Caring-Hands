@@ -12,6 +12,7 @@ const CHANNELS = [
   'patients:records', 'patients:searchAll', 'patients:history',
   'patients:incomplete', 'patients:cleanupIncomplete',
   'patients:dismiss', 'patients:move', 'patients:audit',
+  'patients:arrivalCheck', 'patients:confirmArrival',
   'triage:save', 'treatment:save', 'vitals:save', 'patients:route', 'consent:setTeeth', 'consent:add',
   'xray:add', 'xray:setTooth', 'xray:folderList', 'xray:folderConfig', 'xray:folderChoose', 'xray:folderLock', 'xray:folderDelete', 'xray:deleteFile', 'xray:get', 'xray:list', 'xray:delete',
   'usb:list', 'usb:writeCheckin', 'usb:load', 'usb:uploadCheckout', 'usb:clear',

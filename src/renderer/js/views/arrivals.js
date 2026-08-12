@@ -1,0 +1,124 @@
+import { el, mount, clear } from '../dom.js';
+import { api } from '../api.js';
+import { icon } from '../icons.js';
+import { store } from '../store.js';
+
+// The front desk's arrival check. Everyone who has checked in — at the desk or
+// online, sometimes days earlier — waits here until someone confirms they are
+// physically present. Confirming is also the last checkpoint before clinical
+// care: it refuses to pass a patient whose consents aren't signed, and it makes
+// sure they leave with a station assigned.
+const VISIT_LABEL = {
+  extraction_pain: 'Extraction — in pain',
+  extraction_no_pain: 'Extraction — no pain',
+  filling: 'Filling',
+  cleaning: 'Dental cleaning',
+};
+const STATION_LABEL = { dentist: 'Dentist', hygienist: 'Hygienist' };
+
+export function renderArrivals(ctx) {
+  const root = el('div', { class: 'view' });
+
+  async function load() {
+    const [event, patients] = await Promise.all([api.activeEvent(), api.listPatients({})]);
+    store.setEvent(event);
+
+    // Waiting to be confirmed vs. already here. Anyone past check-in has
+    // obviously arrived, so this screen only concerns the checked-in stage.
+    const checkedIn = patients.filter((p) => p.status === 'checked_in');
+    const waiting = checkedIn.filter((p) => !p.arrived_at);
+    const here = checkedIn.filter((p) => p.arrived_at);
+
+    function row(p, confirmed) {
+      // Station comes from what the patient said they need; the desk can override.
+      const stationSel = el('select', { class: 'input input--sm' }, [
+        el('option', { value: '' }, ['— choose —']),
+        el('option', { value: 'dentist', selected: p.route === 'dentist' }, ['Dentist']),
+        el('option', { value: 'hygienist', selected: p.route === 'hygienist' }, ['Hygienist']),
+      ]);
+      if (p.route) stationSel.value = p.route;
+
+      const tags = [];
+      if (p.preregistered) tags.push(el('span', { class: 'crm-chip crm-chip--prereg', title: 'Pre-registered online' }, ['Pre-reg']));
+      tags.push(p.consents_ok
+        ? el('span', { class: 'crm-chip crm-chip--ok', title: 'Every consent this visit needs is signed' }, [icon('check', { size: 10 }), 'Consents signed'])
+        : el('span', { class: 'crm-chip crm-chip--warn', title: 'A required consent is not signed yet' }, ['Consent missing']));
+      if (p.on_thinner) tags.push(el('span', { class: 'crm-chip crm-chip--warn', title: 'On a blood thinner' }, ['Thinner']));
+
+      const confirmBtn = el('button', {
+        class: 'btn btn--primary btn--sm',
+        onClick: async () => {
+          confirmBtn.disabled = true;
+          try {
+            await api.confirmArrival(p.id, stationSel.value || undefined);
+            ctx.toast(`${p.first_name} ${p.last_name} is checked in and ready — sent to ${STATION_LABEL[stationSel.value || p.route] || 'their station'}.`, 'success');
+            load();
+          } catch (e) {
+            ctx.toast(e.message, 'error');
+            confirmBtn.disabled = false;
+          }
+        },
+      }, [icon('checkCircle', { size: 15 }), 'They’re here — ready to go']);
+
+      return el('div', { class: 'arrival-row' }, [
+        el('div', { class: 'arrival-who' }, [
+          el('strong', {}, [`${p.last_name}, ${p.first_name}`]),
+          el('div', { class: 'subtle small' }, [
+            [p.age != null ? `${p.age} yrs` : null, VISIT_LABEL[p.visit_type] || p.complaint || null]
+              .filter(Boolean).join(' · ') || '—',
+          ]),
+          el('div', { class: 'arrival-tags' }, tags),
+        ]),
+        confirmed
+          ? el('div', { class: 'arrival-done' }, [
+            el('span', { class: 'pill pill--success' }, [el('span', { class: 'pill-dot' }), 'Here']),
+            el('div', { class: 'subtle small' }, [STATION_LABEL[p.route] ? `Going to: ${STATION_LABEL[p.route]}` : 'No station set']),
+          ])
+          : el('div', { class: 'arrival-actions' }, [
+            el('label', { class: 'field field--inline' }, [
+              el('span', { class: 'field-label' }, ['Station']),
+              stationSel,
+            ]),
+            confirmBtn,
+          ]),
+      ]);
+    }
+
+    const section = (title, note, list, confirmed) => el('div', { class: 'card' }, [
+      el('div', { class: 'section-title-row' }, [
+        el('h2', { class: 'section-title' }, [title]),
+        el('span', { class: 'crm-col-count' }, [String(list.length)]),
+      ]),
+      el('p', { class: 'muted small', style: 'margin:0 0 var(--space-3)' }, [note]),
+      list.length
+        ? el('div', { class: 'arrival-list' }, list.map((p) => row(p, confirmed)))
+        : el('p', { class: 'muted', style: 'margin:0' }, [confirmed ? 'Nobody confirmed yet today.' : 'Nobody is waiting — everyone who has checked in has been confirmed.']),
+    ]);
+
+    mount(root,
+      el('div', { class: 'view-head' }, [
+        el('div', {}, [
+          el('h1', {}, ['Arrivals']),
+          el('p', { class: 'view-sub' }, [
+            'Confirm each patient is here before they go through. ',
+            el('strong', {}, [event ? event.name : 'No active event']),
+          ]),
+        ]),
+        el('div', { class: 'view-head-actions' }, [
+          el('button', { class: 'btn btn--primary', onClick: () => ctx.navigate('kiosk') }, [icon('clipboard', { size: 16 }), 'Start patient check-in']),
+          el('button', { class: 'btn btn--ghost btn--sm', onClick: load }, [icon('refresh', { size: 15 }), 'Refresh']),
+        ]),
+      ]),
+      section('Waiting to be confirmed', 'Tap “They’re here” when the patient is in front of you. We check their consents and their station at the same time.', waiting, false),
+      section('Confirmed here', 'These patients are present and waiting for vitals.', here, true),
+    );
+  }
+
+  load().catch((e) => ctx.toast(e.message, 'error'));
+  const timer = setInterval(() => {
+    if (!root.isConnected) { clearInterval(timer); return; }
+    load().catch(() => {});
+  }, 15000);
+  if (timer && typeof timer.unref === 'function') timer.unref();
+  return root;
+}
