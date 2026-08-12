@@ -397,6 +397,10 @@ async function main() {
   log(listed && listed.route === 'dentist' && ['triaged', 'in_treatment'].includes(listed.status), 'routed patient appears in the dentist queue filter with route exposed');
   const hp = db.createPatient(db.login('admin', 'admin'), { first_name: 'Clean', last_name: 'Route', demographics: {}, medical_history: {}, dental_history: {} });
   await window.api.authLogin({ username: 'emtx', password: 'x' });
+  // v1.5.24: vitals are a hard gate — routing without them is refused.
+  const noVitalsRoute = await window.api.patientsRoute({ patientId: hp.id, route: 'hygienist' });
+  log(!noVitalsRoute.ok && /vitals/i.test(noVitalsRoute.error), 'v1.5.24: routing a patient with no vitals is refused');
+  await window.api.vitalsSave({ patientId: hp.id, data: { bp_systolic: '118', bp_diastolic: '74', heart_rate: '66' } });
   pr = await window.api.patientsRoute({ patientId: hp.id, route: 'hygienist' });
   log(pr.ok && pr.data.triage.route === 'hygienist', 'EMT routes a second patient to the hygienist');
   pr = await window.api.patientsRoute({ patientId: hp.id, route: 'nowhere' });
@@ -1052,6 +1056,72 @@ async function main() {
     document.body.append(dash24); await tick(); await tick();
     const okCard = Array.from(dash24.querySelectorAll('.crm-card')).find((c) => /ToGo, Ready/.test(c.textContent));
     log(!!okCard && /Here/.test(okCard.textContent), 'v1.5.24: the board shows a "Here" tag once the front desk confirms arrival');
+  }
+
+  // ---- v1.5.24: vitals are a hard gate, and patients can be walked back ----
+  {
+    currentUser = db.login('admin', 'admin');
+    const mkP = (last, visit) => db.createPatient(currentUser, {
+      first_name: 'Gate', last_name: last, dob: '1980-01-01', gender: 'male',
+      demographics: {}, medical_history: {}, dental_history: { visit_type: visit || 'filling' },
+      consents: [{ type: 'general', signer_name: 'Gate', signature_png: 'data:image/png;base64,AAAA' }],
+    });
+
+    // No vitals -> cannot reach a provider, by any path.
+    const g1 = mkP('One');
+    let refused = '';
+    try { db.routePatient(currentUser, g1.id, 'dentist'); } catch (e) { refused = e.message; }
+    log(/vitals/i.test(refused), 'v1.5.24: a patient with no vitals cannot be routed to the dentist');
+    let refusedHyg = '';
+    try { db.routePatient(currentUser, g1.id, 'hygienist'); } catch (e) { refusedHyg = e.message; }
+    log(/vitals/i.test(refusedHyg), 'v1.5.24: ...nor to the hygienist');
+    // The admin override obeys the same gate — otherwise it is not a gate.
+    let refusedAdmin = '';
+    try { db.adminMovePatient(currentUser, g1.id, 'dentist'); } catch (e) { refusedAdmin = e.message; }
+    log(/vitals/i.test(refusedAdmin), 'v1.5.24: an admin override cannot walk a patient past the vitals station either');
+    log(db.listPatients({}).find((p) => p.id === g1.id).status === 'checked_in',
+      'v1.5.24: the blocked patient stays put rather than half-moving');
+
+    // A pulse alone is enough to pass the gate (a BP cuff isn't always available).
+    const g2 = mkP('Pulse');
+    db.saveVitals(currentUser, g2.id, { heart_rate: '72' });
+    db.routePatient(currentUser, g2.id, 'dentist');
+    log(db.listPatients({}).find((p) => p.id === g2.id).status === 'triaged',
+      'v1.5.24: a recorded pulse satisfies the vitals gate');
+
+    // Walking a patient BACK.
+    const back = mkP('Back');
+    db.saveVitals(currentUser, back.id, { bp_systolic: '120', bp_diastolic: '80', heart_rate: '70' });
+    db.confirmArrival(currentUser, back.id, { route: 'dentist' });
+    db.routePatient(currentUser, back.id, 'dentist');
+    log(db.listPatients({}).find((p) => p.id === back.id).status === 'triaged', 'v1.5.24: (setup) patient is with the dentist');
+
+    // ...back to vitals: no longer signed off, waiting again.
+    db.adminMovePatient(currentUser, back.id, 'emt');
+    let row = db.listPatients({}).find((p) => p.id === back.id);
+    log(row.status === 'checked_in' && !row.emt_signed_off,
+      'v1.5.24: "back to vitals" undoes the EMT sign-off, not just the label');
+
+    // ...all the way back to check-in: arrival cleared, station cleared, vitals kept.
+    db.routePatient(currentUser, back.id, 'dentist');
+    db.adminMovePatient(currentUser, back.id, 'checkin');
+    row = db.listPatients({}).find((p) => p.id === back.id);
+    log(row.status === 'checked_in' && !row.arrived_at && !row.route && !row.emt_signed_off,
+      'v1.5.24: "back to check-in" clears arrival, station and sign-off');
+    log(row.has_vitals === true, 'v1.5.24: ...but the recorded vitals are kept (clinical data is never discarded)');
+    log(db.arrivalReadiness(back.id).arrived_at === null,
+      'v1.5.24: the patient reappears in the front desk arrivals list');
+
+    // A checked-out patient can be pulled back to check-in too.
+    const outP = mkP('Out');
+    db.saveVitals(currentUser, outP.id, { bp_systolic: '118', bp_diastolic: '76', heart_rate: '64' });
+    db.routePatient(currentUser, outP.id, 'dentist');
+    db.dismissPatient(currentUser, outP.id);
+    log(db.listPatients({}).find((p) => p.id === outP.id).status === 'dismissed', 'v1.5.24: (setup) patient is checked out');
+    db.adminMovePatient(currentUser, outP.id, 'checkin');
+    row = db.listPatients({}).find((p) => p.id === outP.id);
+    log(row.status === 'checked_in' && !row.dismissed_at,
+      'v1.5.24: a checked-out patient can be brought all the way back to check-in');
   }
 
   await tick();

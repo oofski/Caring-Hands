@@ -96,10 +96,19 @@ export function renderManagement(ctx) {
     const wrap = el('div', { class: 'inline-row', style: 'margin:0; gap:6px; flex-wrap:wrap; justify-content:flex-end;' });
     // Open the patient in the station that matches their stage.
     wrap.append(btn('chevron', 'Open', () => ctx.navigate(stationFor(p), { id: p.id })));
+    // Backward moves first (walking a patient back up the flow), then forward.
+    // "Check-in" is the full rewind: not confirmed present, not signed off, not
+    // assigned onward — their recorded vitals are kept.
+    const backToCheckin = btn('clipboard', 'Check-in', () => move('checkin', 'sent back to check-in'), 'btn--soft');
+    backToCheckin.title = 'Send all the way back to the front desk — the patient must be confirmed present again. Recorded vitals are kept.';
     if (isDone) {
-      wrap.append(btn('refresh', 'Re-open', () => move('reopen', 're-opened for editing'), 'btn--soft'));
+      wrap.append(
+        btn('refresh', 'Re-open', () => move('reopen', 're-opened for editing'), 'btn--soft'),
+        backToCheckin,
+      );
     } else {
       wrap.append(
+        backToCheckin,
         btn('syringe', 'EMT', () => move('emt', 'sent back to vitals')),
         btn('tooth', 'Dentist', () => move('dentist', 'sent to the dentist')),
         btn('sparkle', 'Hygienist', () => move('hygienist', 'sent to the hygienist')),

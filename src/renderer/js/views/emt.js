@@ -136,8 +136,14 @@ export function renderEmt(ctx, params = {}) {
   }
 
   // Sign-off: route the patient to a clinical queue, toast, then re-render.
-  async function doRoute(id, route) {
+  // v1.5.24: vitals are a hard gate, so save whatever is typed in the vitals
+  // fields BEFORE routing — otherwise a reading the nurse has just entered but
+  // not saved would be refused by the guard, which would read as a bug.
+  async function doRoute(id, route, pendingVitals) {
     try {
+      if (pendingVitals && (pendingVitals.bp_systolic || pendingVitals.heart_rate)) {
+        await api.saveVitals(id, pendingVitals);
+      }
       await api.routePatient(id, route);
       toast((ROUTES[route] && ROUTES[route].toast) || 'Patient routed', 'success');
     } catch (e) {
@@ -346,12 +352,23 @@ export function renderEmt(ctx, params = {}) {
       }, [icon('save', { size: 16 }), 'Save review']),
     ]);
 
+    // Whatever is typed in the vitals fields right now — routing saves this
+    // first so the vitals gate sees the reading the nurse just took.
+    const pendingVitals = () => ({ bp_systolic: sys.value, bp_diastolic: dia.value, heart_rate: hr.value });
+    const vitalsOnFile = tr.bp_systolic != null || tr.heart_rate != null;
+
     // Next-step card (B2): sign-off defaults to the provider the patient picked
     // at check-in (tr.route). Routing is the sign-off — it moves them onward.
     const inlineRouteBtn = (route) => el('button', {
       class: 'btn btn--primary btn--sm',
-      onClick: () => doRoute(id, route),
+      onClick: () => doRoute(id, route, pendingVitals()),
     }, [icon(ROUTES[route].ic, { size: 15 }), ROUTES[route].choice]);
+
+    // Say up front why sign-off will be refused, rather than only on the tap.
+    const vitalsGateNote = vitalsOnFile ? null : el('p', {
+      class: 'subtle small',
+      style: 'margin-top:var(--space-2); color:var(--warning)',
+    }, ['Record a blood pressure or pulse above first — a patient can’t go to the dentist or hygienist without vitals.']);
 
     let nextStepBody;
     if (tr.emt_signed_off && tr.route && ROUTES[tr.route]) {
@@ -367,7 +384,7 @@ export function renderEmt(ctx, params = {}) {
         other ? el('button', {
           class: 'btn btn--ghost btn--sm',
           style: 'margin-top:var(--space-3)',
-          onClick: () => doRoute(id, other),
+          onClick: () => doRoute(id, other, pendingVitals()),
         }, [icon(ROUTES[other].ic, { size: 15 }), `Transfer to ${ROUTES[other].label} instead`]) : null,
       ]);
     } else if (tr.route && ROUTES[tr.route]) {
@@ -380,17 +397,19 @@ export function renderEmt(ctx, params = {}) {
         el('button', {
           class: 'btn btn--primary btn--block',
           style: 'margin-top:var(--space-3)',
-          onClick: () => doRoute(id, tr.route),
+          onClick: () => doRoute(id, tr.route, pendingVitals()),
         }, [icon(ROUTES[tr.route].ic, { size: 16 }), `Sign off & send to ${ROUTES[tr.route].label}`]),
+        vitalsGateNote,
         other ? el('button', {
           class: 'btn btn--ghost btn--sm btn--block',
           style: 'margin-top:var(--space-2)',
-          onClick: () => doRoute(id, other),
+          onClick: () => doRoute(id, other, pendingVitals()),
         }, [`Send to the ${ROUTES[other].label} instead`]) : null,
       ]);
     } else {
       nextStepBody = el('div', {}, [
         el('p', { class: 'subtle small' }, ['No provider on record — sign off to the dentist or hygienist:']),
+        vitalsGateNote,
         el('div', { style: 'display:flex;gap:var(--space-2);flex-wrap:wrap;margin-top:var(--space-2)' }, [
           inlineRouteBtn('dentist'),
           inlineRouteBtn('hygienist'),

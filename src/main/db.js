@@ -999,8 +999,23 @@ function saveVitals(actor, patientId, data) {
 // treatment queues (patients.status 'triaged' is the legacy value the doctor
 // and dashboard queues already key on, so routing reuses it).
 const ROUTES = ['dentist', 'hygienist', 'both'];
+// v1.5.24: vitals are a hard gate. A patient cannot reach a treatment chair
+// without a blood pressure or pulse on file — the reading is what tells the
+// dentist whether it is safe to give anaesthetic or extract, so a visit that
+// skips it is not safe to treat. Enforced here rather than in the UI so every
+// path (EMT station, admin override, sync) obeys the same rule.
+function hasVitalsRecorded(patientId) {
+  const tr = db.prepare('SELECT bp_systolic, heart_rate FROM triage WHERE patient_id = ?').get(patientId);
+  return !!(tr && (tr.bp_systolic != null || tr.heart_rate != null));
+}
+function requireVitals(patientId) {
+  if (!hasVitalsRecorded(patientId)) {
+    throw new Error('Vitals have not been recorded yet. This patient must have their blood pressure or pulse taken at the vitals station before they can go to the dentist or hygienist.');
+  }
+}
 function routePatient(actor, patientId, route) {
   if (!ROUTES.includes(route)) throw new Error('Choose where the patient goes next: dentist, hygienist, or both.');
+  requireVitals(patientId);
   const tr = db.prepare('SELECT id FROM triage WHERE patient_id = ?').get(patientId);
   if (!tr) {
     db.prepare(`INSERT INTO triage (patient_id, status, route, routed_by, routed_at, emt_signed_off)
@@ -1113,15 +1128,35 @@ function dismissPatient(actor, id) {
 // v1.4.0: admin management override — move a patient to any stage regardless of
 // the normal flow (send back to vitals, re-route, re-open a finished record so it
 // can be edited again, or check them out). Admin-only via the IPC role matrix.
-const MOVE_TARGETS = ['emt', 'dentist', 'hygienist', 'reopen', 'dismiss'];
+// Where an admin can move a patient, forwards or back. 'checkin' and 'emt' walk
+// the patient BACK up the flow; the rest move them on.
+const MOVE_TARGETS = ['checkin', 'emt', 'dentist', 'hygienist', 'reopen', 'dismiss'];
 function adminMovePatient(actor, id, target) {
   if (!MOVE_TARGETS.includes(target)) throw new Error('Unknown move target.');
   const p = db.prepare('SELECT * FROM patients WHERE id = ?').get(id);
   if (!p) throw new Error('Patient not found.');
+  // Moving TO a treatment chair still obeys the vitals gate, so an override
+  // can't quietly walk a patient past the vitals station.
   if (target === 'dentist' || target === 'hygienist') return routePatient(actor, id, target);
-  if (target === 'emt') {
-    // Send back to the vitals/EMT queue.
-    db.prepare("UPDATE patients SET status='checked_in', updated_at=? WHERE id=?").run(now(), id);
+  if (target === 'checkin') {
+    // All the way back to the front desk: they are no longer confirmed present,
+    // no longer signed off by the EMT, and no longer assigned onward. Recorded
+    // vitals are kept — they are clinical facts, not workflow state — so the
+    // patient reappears in the arrivals list and the vitals queue.
+    db.prepare(`UPDATE patients SET status='checked_in', arrived_at=NULL, arrived_by_name=NULL,
+                  dismissed_by=NULL, dismissed_by_name=NULL, dismissed_at=NULL, updated_at=? WHERE id=?`).run(now(), id);
+    db.prepare(`UPDATE triage SET route=NULL, routed_by=NULL, routed_at=NULL, emt_signed_off=0,
+                  status='waiting' WHERE patient_id=?`).run(id);
+    db.prepare('UPDATE treatments SET locked=0 WHERE patient_id=?').run(id);
+  } else if (target === 'emt') {
+    // Back to the vitals queue: undo the EMT sign-off that sent them onward, so
+    // they are genuinely waiting to be seen again rather than sitting in a
+    // treatment queue with a 'checked_in' label.
+    db.prepare(`UPDATE patients SET status='checked_in', dismissed_by=NULL, dismissed_by_name=NULL,
+                  dismissed_at=NULL, updated_at=? WHERE id=?`).run(now(), id);
+    db.prepare(`UPDATE triage SET routed_at=NULL, emt_signed_off=0,
+                  status='waiting' WHERE patient_id=?`).run(id);
+    db.prepare('UPDATE treatments SET locked=0 WHERE patient_id=?').run(id);
   } else if (target === 'reopen') {
     // Bring a completed OR dismissed patient back into treatment and unlock the
     // record so it can be edited again (clears any dismissal).
