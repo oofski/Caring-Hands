@@ -507,7 +507,10 @@ export function renderAdmin(ctx, params = {}) {
           connItem('Fully offline', 'All core features work with zero internet.', 'green'),
           connItem('USB export', 'Post-event backup & archiving to USB / encrypted drive.', 'blue'),
           connItem('Local network print', 'Print to a wireless laser printer on the same network.', 'teal'),
-          connItem('No cloud', 'Zero network calls. Data never leaves this device.', 'green'),
+          // This used to read "No cloud — data never leaves this device", which
+          // stopped being true when sync became always-on. Saying it on the page
+          // about handling patient data was actively misleading.
+          connItem('Clinic cloud', 'Stations share one live queue. Turn it off under Admin → Cloud.', 'green'),
         ]),
       ]),
     );
