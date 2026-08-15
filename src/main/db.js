@@ -217,6 +217,20 @@ function migrate() {
   // "present".
   addColumn('patients', 'arrived_at', 'TEXT');
   addColumn('patients', 'arrived_by_name', 'TEXT');
+  // v1.6.0: deleting a record locally used to be undone by the next sync — the
+  // row was simply pulled back from the cloud. A tombstone is the record OF a
+  // deletion: it carries the uid and nothing else (no patient data), is pushed
+  // like any other row, and tells every other station and the cloud to drop it.
+  db.exec(`CREATE TABLE IF NOT EXISTS tombstones (
+    uid TEXT PRIMARY KEY, entity TEXT NOT NULL, event_uid TEXT,
+    updated_at TEXT NOT NULL, synced_rev TEXT, created_at TEXT NOT NULL)`);
+  // v1.6.0: what a finished clinic leaves behind — counts only, no patients.
+  db.exec(`CREATE TABLE IF NOT EXISTS event_reports (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, uid TEXT, event_id INTEGER,
+    summary TEXT NOT NULL, patients_seen INTEGER, finished_at TEXT,
+    finished_by_name TEXT, created_at TEXT, updated_at TEXT,
+    synced_rev TEXT, content_rev TEXT)`);
+  db.exec('CREATE INDEX IF NOT EXISTS idx_reports_event ON event_reports(event_id)');
   addColumn('triage', 'triaged_by_name', 'TEXT');
   addColumn('triage', 'vitals_by_name', 'TEXT');
   addColumn('triage', 'routed_by_name', 'TEXT');
@@ -885,7 +899,28 @@ function patientHistory(patientId) {
   });
 }
 
+function tombstonePatient(id) {
+  const p = db.prepare('SELECT id, uid, event_id FROM patients WHERE id = ?').get(id);
+  if (!p) return;
+  ensureUids();
+  const evUid = p.event_id ? uidOf('events', p.event_id) : null;
+  const tomb = db.prepare(
+    `INSERT INTO tombstones (uid, entity, event_uid, updated_at, synced_rev, created_at)
+     VALUES (?,?,?,?,NULL,?) ON CONFLICT(uid) DO UPDATE SET synced_rev = NULL, updated_at = excluded.updated_at`
+  );
+  for (const [table, entity] of [['triage', 'triage'], ['treatments', 'treatment'], ['consents', 'consent'], ['xrays', 'xray']]) {
+    for (const c of db.prepare(`SELECT uid FROM ${table} WHERE patient_id = ?`).all(id)) {
+      if (c.uid) tomb.run(c.uid, entity, evUid, stampNow(), now());
+    }
+  }
+  const fresh = db.prepare('SELECT uid FROM patients WHERE id = ?').get(id);
+  if (fresh && fresh.uid) tomb.run(fresh.uid, 'patient', evUid, stampNow(), now());
+}
+
 function deletePatient(actor, id) {
+  // Record the deletion BEFORE the rows go, so it reaches the cloud and the
+  // other stations instead of the record simply being pulled back.
+  tombstonePatient(id);
   const p = db.prepare('SELECT * FROM patients WHERE id = ?').get(id);
   if (!p) throw new Error('Patient not found.');
   // triage/treatments/consents/xrays cascade via FK ON DELETE CASCADE.
@@ -1513,6 +1548,260 @@ function backupTo(destPath) {
   return db.backup(destPath);
 }
 
+/* ---------------- Clinic bundle: export, restore, purge ----------------- */
+
+// A COMPLETE, restorable copy of one clinic event — raw rows, uids and all,
+// including the things a spreadsheet cannot hold (consent signatures, x-ray
+// images). This is the file that makes it safe to wipe a laptop after a clinic:
+// the spreadsheet is for reading, this is for putting the clinic back.
+const BUNDLE_FORMAT = 'caring-hands-clinic';
+const BUNDLE_VERSION = 1;
+function exportClinicBundle(eventId) {
+  // uids are normally handed out lazily by the first cloud sync. A clinic that
+  // ran entirely offline would otherwise export rows with no uid at all, and
+  // nothing could be matched on restore — every re-import would duplicate the
+  // whole clinic and every consent and x-ray would be dropped.
+  ensureUids();
+  const evId = eventId || Number(getSetting('active_event_id'));
+  const event = db.prepare('SELECT * FROM events WHERE id = ?').get(evId);
+  if (!event) throw new Error('No clinic event to export.');
+  const patients = db.prepare('SELECT * FROM patients WHERE event_id = ?').all(evId);
+  const ids = patients.map((p) => p.id);
+  const kids = (table) => (ids.length
+    ? db.prepare(`SELECT * FROM ${table} WHERE patient_id IN (${ids.map(() => '?').join(',')})`).all(...ids)
+    : []);
+  return {
+    format: BUNDLE_FORMAT,
+    version: BUNDLE_VERSION,
+    exported_at: now(),
+    event,
+    patients,
+    triage: kids('triage'),
+    treatments: kids('treatments'),
+    consents: kids('consents'),
+    xrays: kids('xrays'),
+  };
+}
+
+// Put a clinic back. Matched by uid, so re-importing the same file twice cannot
+// duplicate anyone, and importing a clinic that is partly still present merges
+// rather than doubling it.
+function importClinicBundle(actor, bundle) {
+  const b = bundle || {};
+  if (b.format !== BUNDLE_FORMAT) throw new Error('That is not a Caring Hands clinic backup file.');
+  if (!b.event || !Array.isArray(b.patients)) throw new Error('This backup file is incomplete or damaged.');
+
+  const counts = { patients: 0, updated: 0, consents: 0, xrays: 0 };
+  const tx = db.transaction(() => {
+    // The event first — everything else hangs off it.
+    let ev = b.event.uid ? db.prepare('SELECT * FROM events WHERE uid = ?').get(b.event.uid) : null;
+    if (!ev) ev = db.prepare('SELECT * FROM events WHERE name = ? AND created_at = ?').get(b.event.name, b.event.created_at);
+    let eventId;
+    if (ev) {
+      eventId = ev.id;
+    } else {
+      const info = db.prepare(
+        `INSERT INTO events (uid, name, location, start_date, end_date, languages, active, created_at, selected_at)
+         VALUES (?,?,?,?,?,?,?,?,?)`
+      ).run(b.event.uid || crypto.randomUUID(), b.event.name, b.event.location || '', b.event.start_date || today(),
+        b.event.end_date || '', b.event.languages || 'en,es', 0, b.event.created_at || now(), null);
+      eventId = info.lastInsertRowid;
+    }
+
+    // Patients, keyed by uid so a repeat import updates instead of duplicating.
+    const PCOLS = ['language', 'first_name', 'last_name', 'dob', 'gender', 'phone', 'email',
+      'demographics', 'medical_history', 'dental_history', 'status', 'created_at', 'updated_at',
+      'dismissed_at', 'dismissed_by_name', 'arrived_at', 'arrived_by_name'];
+    const idByUid = new Map();
+    for (const p of b.patients) {
+      const uid = p.uid || crypto.randomUUID();
+      const existing = db.prepare('SELECT id FROM patients WHERE uid = ?').get(uid);
+      if (existing) {
+        db.prepare(`UPDATE patients SET ${PCOLS.map((c) => c + '=?').join(', ')}, event_id=? WHERE id=?`)
+          .run(...PCOLS.map((c) => (p[c] === undefined ? null : p[c])), eventId, existing.id);
+        idByUid.set(uid, existing.id);
+        counts.updated++;
+      } else {
+        const info = db.prepare(
+          `INSERT INTO patients (uid, event_id, ${PCOLS.join(', ')}) VALUES (?, ?, ${PCOLS.map(() => '?').join(', ')})`
+        ).run(uid, eventId, ...PCOLS.map((c) => (p[c] === undefined ? null : p[c])));
+        idByUid.set(uid, info.lastInsertRowid);
+        counts.patients++;
+      }
+    }
+
+    // Child rows. triage/treatments are one-per-patient, so they upsert on the
+    // patient rather than on their own uid.
+    const childOf = (row) => {
+      const puid = (b.patients.find((p) => p.id === row.patient_id) || {}).uid;
+      return puid ? idByUid.get(puid) : null;
+    };
+    const restoreOnePerPatient = (table, cols) => {
+      for (const row of (b[table] || [])) {
+        const pid = childOf(row);
+        if (!pid) continue;
+        const existing = db.prepare(`SELECT id FROM ${table} WHERE patient_id = ?`).get(pid);
+        const vals = cols.map((c) => (row[c] === undefined ? null : row[c]));
+        if (existing) {
+          db.prepare(`UPDATE ${table} SET ${cols.map((c) => c + '=?').join(', ')} WHERE id=?`).run(...vals, existing.id);
+        } else {
+          db.prepare(`INSERT INTO ${table} (uid, patient_id, ${cols.join(', ')}) VALUES (?, ?, ${cols.map(() => '?').join(', ')})`)
+            .run(row.uid || crypto.randomUUID(), pid, ...vals);
+        }
+      }
+    };
+    const restoreMany = (table, cols, counterKey) => {
+      for (const row of (b[table] || [])) {
+        const pid = childOf(row);
+        if (!pid) continue;
+        const uid = row.uid || crypto.randomUUID();
+        const existing = db.prepare(`SELECT id FROM ${table} WHERE uid = ?`).get(uid);
+        const vals = cols.map((c) => (row[c] === undefined ? null : row[c]));
+        if (existing) {
+          db.prepare(`UPDATE ${table} SET ${cols.map((c) => c + '=?').join(', ')} WHERE id=?`).run(...vals, existing.id);
+        } else {
+          db.prepare(`INSERT INTO ${table} (uid, patient_id, ${cols.join(', ')}) VALUES (?, ?, ${cols.map(() => '?').join(', ')})`)
+            .run(uid, pid, ...vals);
+          if (counterKey) counts[counterKey]++;
+        }
+      }
+    };
+    restoreOnePerPatient('triage', SYNC_COLS.triage);
+    restoreOnePerPatient('treatments', SYNC_COLS.treatment);
+    restoreMany('consents', SYNC_COLS.consent, 'consents');
+    restoreMany('xrays', SYNC_COLS.xray, 'xrays');
+    return eventId;
+  });
+  const eventId = tx();
+  // A restored record must not be re-deleted by its own tombstone on the next
+  // sync — and the cloud copy must be re-published, so clear the sent marker.
+  const uids = [];
+  for (const p of (b.patients || [])) if (p.uid) uids.push(p.uid);
+  for (const t of ['triage', 'treatments', 'consents', 'xrays']) {
+    for (const r of (b[t] || [])) if (r.uid) uids.push(r.uid);
+  }
+  if (uids.length) {
+    const chunk = 400;
+    for (let i = 0; i < uids.length; i += chunk) {
+      const part = uids.slice(i, i + chunk);
+      db.prepare(`DELETE FROM tombstones WHERE uid IN (${part.map(() => '?').join(',')})`).run(...part);
+    }
+  }
+  audit(actor, 'import', 'event', eventId, `${counts.patients} restored, ${counts.updated} updated`);
+  return { ok: true, event_id: eventId, ...counts };
+}
+
+// The de-identified figures a finished clinic leaves behind. Everything here is
+// a count or a band — there is no row that belongs to a person, so it can sit on
+// the server indefinitely without holding patient information.
+function buildEventSummary(eventId) {
+  const evId = eventId || Number(getSetting('active_event_id'));
+  const event = db.prepare('SELECT * FROM events WHERE id = ?').get(evId);
+  const patients = db.prepare('SELECT * FROM patients WHERE event_id = ?').all(evId).map(rowToPatient);
+  const bump = (o, k) => { const key = k || 'Not recorded'; o[key] = (o[key] || 0) + 1; };
+  const ageBand = (a) => (a == null ? 'Not recorded' : a < 18 ? 'Under 18' : a < 35 ? '18–34' : a < 55 ? '35–54' : '55+');
+  const by_gender = {}, by_age = {}, by_language = {}, by_city = {}, by_day = {}, conditions = {}, visit_types = {};
+  let extractions = 0, fillings = 0, cleanings = 0, xrays = 0, completed = 0;
+  for (const p of patients) {
+    const d = p.demographics || {}, m = p.medical_history || {}, dh = p.dental_history || {};
+    bump(by_gender, p.gender); bump(by_age, ageBand(p.age)); bump(by_language, p.language);
+    bump(by_city, d.city ? (d.city + (d.state ? ', ' + d.state : '')) : 'Not recorded');
+    bump(by_day, String(p.created_at || '').slice(0, 10) || 'Not recorded');
+    bump(visit_types, dh.visit_type);
+    (m.conditions || []).forEach((c) => bump(conditions, c));
+    if (p.status === 'completed' || p.status === 'dismissed') completed++;
+    const t = db.prepare('SELECT * FROM treatments WHERE patient_id = ?').get(p.id);
+    if (t) {
+      extractions += safeJson(t.extractions, []).length;
+      fillings += safeJson(t.fillings, []).length;
+      const cl = safeJson(t.cleaning, {});
+      if (cl && Object.keys(cl).length) cleanings++;
+    }
+    xrays += db.prepare('SELECT COUNT(*) AS n FROM xrays WHERE patient_id = ?').get(p.id).n;
+  }
+  return {
+    event_name: event ? event.name : null,
+    event_location: event ? event.location : null,
+    event_start: event ? event.start_date : null,
+    patients_seen: patients.length,
+    visits_completed: completed,
+    extractions, fillings, cleanings, xrays,
+    by_gender, by_age, by_language, by_city, by_day, visit_types,
+    conditions,
+    generated_at: now(),
+  };
+}
+
+// Remove every patient record for an event from THIS device and, via tombstones,
+// from the cloud and every other station. Irreversible by design — the caller is
+// expected to have exported a backup first, which the UI enforces.
+function purgeEventPatients(actor, eventId) {
+  const evId = eventId || Number(getSetting('active_event_id'));
+  const ev = db.prepare('SELECT * FROM events WHERE id = ?').get(evId);
+  if (!ev) throw new Error('Event not found.');
+  ensureUids(); // nothing can be tombstoned that has no uid yet
+  const patients = db.prepare('SELECT id, uid FROM patients WHERE event_id = ?').all(evId);
+  const tomb = db.prepare(
+    `INSERT INTO tombstones (uid, entity, event_uid, updated_at, synced_rev, created_at)
+     VALUES (?,?,?,?,NULL,?) ON CONFLICT(uid) DO UPDATE SET synced_rev = NULL, updated_at = excluded.updated_at`
+  );
+  // Deleting the patient row locally cascades to the chart, but the CLOUD holds
+  // each row separately — so every child needs its own tombstone. Miss them and
+  // the consent signatures and x-ray images (the most identifying data in the
+  // system) stay in the cloud forever and are re-served to every station.
+  const CHILDREN = [['triage', 'triage'], ['treatments', 'treatment'], ['consents', 'consent'], ['xrays', 'xray']];
+  const tx = db.transaction(() => {
+    for (const p of patients) {
+      for (const [table, entity] of CHILDREN) {
+        for (const c of db.prepare(`SELECT uid FROM ${table} WHERE patient_id = ?`).all(p.id)) {
+          if (c.uid) tomb.run(c.uid, entity, ev.uid || null, stampNow(), now());
+        }
+      }
+      if (p.uid) tomb.run(p.uid, 'patient', ev.uid || null, stampNow(), now());
+      db.prepare('DELETE FROM patients WHERE id = ?').run(p.id);
+    }
+    // A purged patient's rows may also be parked in the orphan buffer waiting for
+    // a parent that will never come back; drop them or they are re-applied later.
+    const purged = new Set(patients.map((p) => p.uid).filter(Boolean));
+    const pending = safeJson(getSetting('cloud_pending'), []) || [];
+    setSetting('cloud_pending', JSON.stringify(pending.filter((r) => !purged.has(r.patient_uid) && !purged.has(r.uid))));
+  });
+  tx();
+  persistStamp();
+  audit(actor, 'purge', 'event', evId, `${patients.length} patient record(s) removed`);
+  return { ok: true, removed: patients.length, event_uid: ev.uid || null };
+}
+
+// Close a clinic: keep the de-identified figures, remove every patient record.
+function finishEvent(actor, eventId) {
+  const evId = eventId || Number(getSetting('active_event_id'));
+  const ev = db.prepare('SELECT * FROM events WHERE id = ?').get(evId);
+  if (!ev) throw new Error('Event not found.');
+  const summary = buildEventSummary(evId);
+  const existing = db.prepare('SELECT id FROM event_reports WHERE event_id = ?').get(evId);
+  if (existing) {
+    db.prepare('UPDATE event_reports SET summary=?, patients_seen=?, finished_at=?, finished_by_name=?, updated_at=?, synced_rev=NULL, content_rev=NULL WHERE id=?')
+      .run(JSON.stringify(summary), summary.patients_seen, now(), (actor && actor.full_name) || null, now(), existing.id);
+  } else {
+    db.prepare(`INSERT INTO event_reports (uid, event_id, summary, patients_seen, finished_at, finished_by_name, created_at, updated_at)
+                VALUES (?,?,?,?,?,?,?,?)`)
+      .run(crypto.randomUUID(), evId, JSON.stringify(summary), summary.patients_seen, now(),
+        (actor && actor.full_name) || null, now(), now());
+  }
+  const purged = purgeEventPatients(actor, evId);
+  db.prepare('UPDATE events SET active = 0 WHERE id = ?').run(evId);
+  resolveActiveEvent();
+  audit(actor, 'finish', 'event', evId, `${purged.removed} record(s) purged; report kept`);
+  return { ok: true, summary, removed: purged.removed, event_uid: ev.uid || null };
+}
+
+function listEventReports() {
+  return db.prepare(`SELECT r.*, e.name AS event_name, e.location AS event_location, e.start_date
+                     FROM event_reports r LEFT JOIN events e ON e.id = r.event_id
+                     ORDER BY r.finished_at DESC`).all()
+    .map((r) => ({ ...r, summary: safeJson(r.summary, {}) }));
+}
+
 function exportEventJson(eventId) {
   const evId = eventId || Number(getSetting('active_event_id'));
   const event = db.prepare('SELECT * FROM events WHERE id = ?').get(evId);
@@ -1530,10 +1819,10 @@ function exportEventJson(eventId) {
 /*  fields are hashed) so no write path had to change.                 */
 /* ================================================================== */
 
-const ENTITY_TABLE = { event: 'events', user: 'users', patient: 'patients', triage: 'triage', treatment: 'treatments', consent: 'consents', xray: 'xrays' };
+const ENTITY_TABLE = { event: 'events', user: 'users', report: 'event_reports', patient: 'patients', triage: 'triage', treatment: 'treatments', consent: 'consents', xray: 'xrays' };
 // 'user' is applied right after 'event' (a scoped staff account is parented to an
 // event, exactly like a patient) and before patients.
-const APPLY_ORDER = ['event', 'user', 'patient', 'triage', 'treatment', 'consent', 'xray'];
+const APPLY_ORDER = ['event', 'user', 'report', 'patient', 'triage', 'treatment', 'consent', 'xray'];
 // Syncable payload columns per entity (fixed order -> stable content hash).
 const SYNC_COLS = {
   event: ['name', 'location', 'start_date', 'end_date', 'languages', 'active', 'created_at', 'selected_at'],
@@ -1545,6 +1834,9 @@ const SYNC_COLS = {
   treatment: ['fillings', 'extractions', 'cleaning', 'anesthetic', 'other_procedures', 'clinical_notes', 'provider_name', 'provider_signature', 'locked', 'completed_at', 'completed_by_name'],
   consent: ['type', 'version', 'language', 'signer_name', 'relationship', 'signature_png', 'signed_at', 'tooth_numbers', 'amended_by', 'amended_at'],
   xray: ['station', 'image_png', 'note', 'created_at', 'tooth'],
+  // v1.6.0: the de-identified totals a finished clinic leaves behind. Event-
+  // scoped like a patient, so it survives on the server after the PHI is gone.
+  report: ['summary', 'patients_seen', 'finished_at', 'finished_by_name', 'created_at'],
 };
 // Denormalized name field -> the local user-id column it is resolved from.
 const NAME_SOURCE = {
@@ -1639,12 +1931,24 @@ function collectSyncRows(max = 400) {
         entity, uid: row.uid,
         // Patients and (event-scoped) staff both hang off an event; a global admin
         // has event_id NULL -> event_uid NULL (no parent, never deferred on apply).
-        event_uid: (entity === 'patient' || entity === 'user') ? uidOf('events', row.event_id) : null,
-        patient_uid: (entity !== 'event' && entity !== 'patient' && entity !== 'user') ? uidOf('patients', row.patient_id) : null,
+        event_uid: (entity === 'patient' || entity === 'user' || entity === 'report') ? uidOf('events', row.event_id) : null,
+        patient_uid: (entity !== 'event' && entity !== 'patient' && entity !== 'user' && entity !== 'report') ? uidOf('patients', row.patient_id) : null,
         deleted: 0, updated_at: updatedAt, data,
       });
       mark.push({ table, id: row.id, sig: s });
     }
+  }
+  // Deletions travel too. A tombstone carries a uid and nothing else, so a
+  // purge reaches every other station and the cloud instead of being quietly
+  // undone by the next pull.
+  for (const tomb of db.prepare('SELECT * FROM tombstones WHERE synced_rev IS NULL').all()) {
+    if (rows.length >= max) break;
+    rows.push({
+      entity: tomb.entity, uid: tomb.uid,
+      event_uid: tomb.event_uid || null, patient_uid: null,
+      deleted: 1, updated_at: tomb.updated_at, data: {},
+    });
+    mark.push({ tombstone: tomb.uid });
   }
   persistStamp(); // survive restarts / clock rewinds
   return { rows, mark };
@@ -1655,6 +1959,10 @@ function collectSyncRows(max = 400) {
 function markSynced(mark) {
   const tx = db.transaction(() => {
     for (const m of (mark || [])) {
+      if (m.tombstone) {
+        db.prepare("UPDATE tombstones SET synced_rev = 'sent' WHERE uid = ?").run(m.tombstone);
+        continue;
+      }
       db.prepare(`UPDATE ${m.table} SET synced_rev = ? WHERE id = ? AND content_rev = ?`).run(m.sig, m.id, m.sig);
     }
   });
@@ -1669,7 +1977,16 @@ function applyRemoteRows(remoteRows) {
   const deferredRows = [];
   const applyOne = (env) => {
     const entity = env.entity, table = ENTITY_TABLE[entity];
-    if (!table || !env.uid || !env.data) { skipped++; return; }
+    if (!table || !env.uid) { skipped++; return; }
+    // A tombstone from another station (or the cloud purge): remove the record
+    // here too. Children cascade via the schema's ON DELETE CASCADE.
+    if (env.deleted) {
+      const hit = db.prepare(`SELECT id FROM ${table} WHERE uid = ?`).get(env.uid);
+      if (hit) { db.prepare(`DELETE FROM ${table} WHERE id = ?`).run(hit.id); applied++; }
+      else skipped++;
+      return;
+    }
+    if (!env.data) { skipped++; return; }
     const existing = db.prepare(`SELECT id, updated_at FROM ${table} WHERE uid = ?`).get(env.uid);
     if (existing && existing.updated_at && env.updated_at && existing.updated_at >= env.updated_at) { skipped++; return; }
     // Rebuild an ordered data object so the applied sig matches the origin's.
@@ -1678,7 +1995,7 @@ function applyRemoteRows(remoteRows) {
     const rowSig = sig(data);
     // Resolve parent local id.
     let parentCol = null, parentId = null;
-    if (entity === 'patient') { parentCol = 'event_id'; parentId = localIdByUid('events', env.event_uid); if (!parentId) { deferred++; deferredRows.push(env); return; } }
+    if (entity === 'patient' || entity === 'report') { parentCol = 'event_id'; parentId = localIdByUid('events', env.event_uid); if (!parentId) { deferred++; deferredRows.push(env); return; } }
     else if (entity === 'user') {
       // A staff account is parented to an event (NULL for a global admin). Defer a
       // scoped account whose event hasn't synced here yet; a NULL parent is fine.
@@ -1827,6 +2144,7 @@ module.exports = {
   addXray, updateXrayTooth, getXray, listXrays, deleteXray,
   dashboardStats, listAudit, audit,
   backupTo, exportEventJson,
+  exportClinicBundle, importClinicBundle, buildEventSummary, purgeEventPatients, finishEvent, listEventReports,
   getSetting, setSetting,
   // v1.1.0 cloud sync
   collectSyncRows, applyRemoteRows, markSynced, getSyncMeta, setSyncMeta, ensureDeviceId,

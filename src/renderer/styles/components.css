@@ -35,7 +35,12 @@
 .card-head-row .card-title{ margin:0; }
 .split{ display:grid; grid-template-columns:1fr 1fr; gap:var(--space-4); align-items:start; }
 .col{ min-width:0; }
-@media (min-width:1240px){ .split{ grid-template-columns:340px 1fr; } .split .col--wide{ order:-1; } }
+/* The wide column holds the main content (patient health history, the record);
+   the narrow one is the sign-off / actions rail. The template used to put the
+   340px track FIRST while .col--wide was ordered first too, so the "wide"
+   column was in fact the narrow one and the history cards were crushed into it
+   on every screen that shows them (hygienist, check-out, records). */
+@media (min-width:1240px){ .split{ grid-template-columns:minmax(0,1fr) 340px; } }
 .note-banner{ background:var(--brand-green-soft); border:1px solid var(--success-border); color:var(--success); padding:11px 14px; border-radius:var(--radius-md); margin-top:var(--space-2); display:flex; gap:9px; align-items:center; font-size:var(--fs-sm); }
 .banner{ padding:11px 14px; border-radius:var(--radius-md); margin-bottom:var(--space-4); font-weight:var(--fw-medium); font-size:var(--fs-sm); display:flex; gap:9px; align-items:center; }
 .banner--alert{ background:var(--danger-soft); color:var(--danger); border:1px solid var(--danger-border); }
@@ -88,7 +93,11 @@
 .num{ font-family:var(--font-mono); font-variant-numeric:var(--num-tabular); }
 
 /* key-value */
-.kv-grid{ display:grid; grid-template-columns:1fr 1fr; gap:12px 18px; }
+.kv-grid{ display:grid; grid-template-columns:repeat(auto-fit, minmax(118px, 1fr)); gap:12px 18px; }
+.kv{ min-width:0; }
+.kv-label{ overflow-wrap:anywhere; }
+/* Long values (emails, addresses) must wrap inside the card, never push it wider. */
+.kv-val{ overflow-wrap:anywhere; }
 .kv{ display:flex; flex-direction:column; gap:2px; }
 .kv-label{ font-size:var(--fs-2xs); text-transform:uppercase; letter-spacing:var(--tracking-eyebrow); color:var(--text-subtle); font-weight:var(--fw-semibold); }
 .kv-val{ font-weight:var(--fw-medium); color:var(--text-strong); }
@@ -221,7 +230,7 @@
 .sigpad-hint{ font-size:var(--fs-2xs); color:var(--text-subtle); text-transform:uppercase; letter-spacing:var(--tracking-eyebrow); font-weight:var(--fw-semibold); margin-bottom:4px; }
 .sigpad-canvas{ width:100%; height:170px; background:var(--surface); border:1px solid var(--border-strong); border-radius:var(--radius-md); touch-action:none; display:block; }
 .sigpad-actions{ margin-top:6px; }
-.sig-thumb,.sig-locked{ max-height:68px; background:var(--surface); border:var(--border-line); border-radius:var(--radius-sm); padding:4px; margin-top:6px; }
+.sig-thumb,.sig-locked{ max-height:68px; max-width:100%; object-fit:contain; background:var(--surface); border:var(--border-line); border-radius:var(--radius-sm); padding:4px; margin-top:6px; }
 
 /* review & thank-you */
 .review{ max-width:720px; margin:0 auto; }
@@ -241,7 +250,9 @@
 .lookup-item{ text-align:left; background:var(--surface-sunken); border:var(--border-line); border-radius:var(--radius-sm); padding:8px 12px; cursor:pointer; }
 .lookup-item:hover{ background:var(--accent-soft); }
 .search-input{ margin-top:6px; }
-.consent-grid{ display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+.consent-grid{ display:grid; grid-template-columns:repeat(auto-fit, minmax(190px, 1fr)); gap:12px; }
+.consent-card{ min-width:0; }
+.consent-card-title{ overflow-wrap:anywhere; }
 .consent-card{ border:var(--border-line); border-radius:var(--radius-md); padding:12px; }
 .consent-card-title{ font-weight:var(--fw-semibold); color:var(--text-strong); }
 
@@ -417,9 +428,15 @@
 .history-summary::-webkit-details-marker{ display:none; }
 .history-summary::after{ content:''; width:8px; height:8px; border-right:2px solid var(--text-subtle); border-bottom:2px solid var(--text-subtle); transform:rotate(-45deg); margin-left:auto; transition:transform var(--dur-fast) var(--ease); }
 .history-details[open] .history-summary::after{ transform:rotate(45deg); }
-.history-grid{ display:grid; grid-template-columns:1fr 1fr; gap:var(--space-4); padding:var(--space-4); }
-.history-grid .card{ margin:0; background:var(--surface-sunken); }
-@media (max-width:1100px){ .history-grid{ grid-template-columns:1fr; } }
+.history-grid{ display:grid; grid-template-columns:repeat(auto-fit, minmax(280px, 1fr));
+  gap:var(--space-4); padding:var(--space-4); align-items:start; }
+.history-grid .card{ margin:0; background:var(--surface-sunken); min-width:0; }
+.history-grid .card-title{ margin-bottom:var(--space-3); }
+/* Health history is read at a glance while a patient is in the chair, so give it
+   a little more room to breathe than a dense admin table. */
+.history-grid .pill{ margin:2px 4px 2px 0; }
+.collapse-body{ min-width:0; }
+.collapse{ overflow:hidden; }
 
 /* kiosk language gate */
 .kiosk-gate{ height:100vh; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:14px; background:var(--surface-canvas); position:relative; }

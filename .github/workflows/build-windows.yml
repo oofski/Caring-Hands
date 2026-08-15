@@ -50,16 +50,24 @@ jobs:
       - name: Publish downloadable release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.5.27-build.${{ github.run_number }}
-          name: Caring Hands v1.5.27 (build ${{ github.run_number }})
+          tag_name: v1.6.0-build.${{ github.run_number }}
+          name: Caring Hands v1.6.0 (build ${{ github.run_number }})
           prerelease: false
           make_latest: true
           body: |
-            ## Caring Hands Worldwide — Practice Management Software (v1.5.27)
+            ## Caring Hands Worldwide — Practice Management Software (v1.6.0)
 
             Offline-first dental clinic app for Windows. **Download the installer once — it auto-updates from here on.**
 
-            **New in v1.5.27 — hygienist sees the health history, check-in scale fixed, arrivals tidied up**
+            **New in v1.6.0 — take the clinic with you, then take it off the laptops**
+            - **Export a clinic as an Excel workbook.** Under **Admin → Backup & Export**, *Export clinic* saves a readable **.xlsx** with a sheet each for **Patients, Treatment, Consents and X-rays** — open it in Excel, Google Sheets or Numbers. Phone numbers and dates of birth stay text so Excel can't reformat them.
+            - **…and a backup file that can put the clinic back.** Saved beside the workbook as a **.chbak.json**. A spreadsheet physically cannot hold **signed consents or x-ray images**, so the backup is what a real restore uses. *Restore a clinic from backup* brings everything back — patients, vitals, treatments, signatures and images — matched by record, so restoring twice never duplicates anyone.
+            - **Delete the clinic's patient data when you're done.** The delete button unlocks only **after** you've exported, then removes every patient record from **this computer, the clinic cloud, and every other station** when it next syncs. Previously a deleted record simply came back on the next sync — deletions now travel properly, including the consents and x-rays.
+            - **"Finish clinic" keeps the numbers, not the people.** Under **Admin → Events**, finishing a clinic keeps its **reporting totals** — patients seen, procedures, and the breakdowns by **age band, gender, language and city** — and permanently removes every patient record. The kept report holds **no name, date of birth, phone, address, signature or x-ray**, so it can sit on the server indefinitely and still answer a grant return.
+
+            **Please read before using the delete button:** the exported files are **not encrypted**. Once you delete, those two files are the only copy of that clinic — keep them on an encrypted drive, and treat them as patient records.
+
+            **From v1.5.27 — hygienist sees the health history, check-in scale fixed, arrivals tidied up**
             - **The hygienist now sees the patient's medical history.** It was tucked away collapsed and carried none of the patient's earlier visits, so in practice it wasn't being read. It is now **open by default** and shows the same full picture the dentist gets — conditions, allergies, medications, prior visits. The hygienist is the person who decides whether it's safe to scale someone on a blood thinner, and the one who spots an extraction and hands it to the dentist, so they need it in front of them.
             - **Fixed: the "What do you need today?" scale at check-in could reject a patient who had answered.** The slider sits at position 1 before anything is picked, so a patient who wanted **option 1 (Extraction — in pain)** and slid or tapped there changed nothing — the app never registered a choice and refused to move on with "please choose what you need today". Any touch of the scale now registers the answer, and the scale is greyed until a choice is made so it no longer looks pre-selected.
             - **Arrivals is now split into two tabs — "Pre-registered online" and "Registered at the desk"** — because they are two different jobs: meeting someone who booked ahead, versus someone standing in front of you. Each tab shows its own count, and the screen opens on whichever queue actually has people waiting.
@@ -229,8 +237,8 @@ jobs:
 
             Includes everything from v1.0.2–1.1.1 (optional Cloud Sync, triage-free flow, per-event staff, Oregon consent, USB workflow, accountability, Russian, in-app auto-update).
 
-            - **Caring-Hands-Setup-1.5.27.exe** — installer (recommended; required for auto-update).
-            - **Caring-Hands-Portable-1.5.27.exe** — portable (no auto-update).
+            - **Caring-Hands-Setup-1.6.0.exe** — installer (recommended; required for auto-update).
+            - **Caring-Hands-Portable-1.6.0.exe** — portable (no auto-update).
 
             First sign-in: `admin / admin` — then create your staff accounts. All clinical data stays on the device unless you enable Cloud Sync.
           files: |

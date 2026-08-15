@@ -1250,6 +1250,94 @@ async function main() {
     log(!!panel && panel.hasAttribute('open'), 'v1.5.26: the history is open by default, not hidden behind a toggle');
   }
 
+  // ---- v1.6.0: export as a spreadsheet, restore it, and purge PHI ----
+  {
+    currentUser = db.login('admin', 'admin');
+    const ev = db.createEvent(currentUser, { name: 'Export Test', location: 'Sandy' });
+    db.setActiveEvent(currentUser, ev.id);
+    const pt = db.createPatient(currentUser, {
+      first_name: 'Wilhelmina', last_name: 'Farnsworth', dob: '1988-09-14', gender: 'female', phone: '5035550142',
+      demographics: { city: 'Sandy', state: 'OR' },
+      medical_history: { allergies: ['penicillin'], allergies_other: 'Sulfa', conditions: ['diabetes'] },
+      dental_history: { visit_type: 'extraction_pain', reason: 'Molar pain' },
+      consents: [{ type: 'general', signer_name: 'Wilhelmina Farnsworth', signature_png: 'data:image/png;base64,AAAA' }],
+    });
+    db.saveVitals(currentUser, pt.id, { bp_systolic: '148', bp_diastolic: '92', heart_rate: '78' });
+    db.routePatient(currentUser, pt.id, 'dentist');
+    db.addXray(currentUser, pt.id, { station: 'dentist', image_png: 'data:image/jpeg;base64,BBBB', note: 'Farnsworth_W_T30.jpg', tooth: '30' });
+
+    const bundle = db.exportClinicBundle(ev.id);
+    log(bundle.patients.length === 1 && bundle.consents.length === 1 && bundle.xrays.length === 1 && !!bundle.patients[0].uid,
+      'v1.6.0: the clinic export carries patients, consents and x-rays, each with a stable id');
+    log(String(bundle.consents[0].signature_png).startsWith('data:image') && String(bundle.xrays[0].image_png).startsWith('data:image'),
+      'v1.6.0: signatures and x-ray images are in the backup (a spreadsheet cannot hold them)');
+
+    // The readable workbook.
+    const { clinicSheets } = await import('../src/main/clinicSheets.js');
+    const { buildWorkbook } = await import('../src/main/xlsx.js');
+    const sheets = clinicSheets(bundle);
+    const names = sheets.map((s) => s.name);
+    log(names.includes('Patients') && names.includes('Treatment') && names.includes('Consents') && names.includes('X-rays'),
+      'v1.6.0: the workbook has a sheet for patients, treatment, consents and x-rays');
+    const pRow = sheets[0].rows[0];
+    const pCols = sheets[0].columns;
+    log(pRow[pCols.indexOf('Allergies')] === 'Penicillin, Sulfa',
+      'v1.6.0: the spreadsheet shows a typed-in allergy alongside the ticked ones');
+    log(pRow[pCols.indexOf('Blood pressure')] === '148/92' && pRow[pCols.indexOf('City')] === 'Sandy',
+      'v1.6.0: vitals and city read plainly in the spreadsheet');
+    const wb = buildWorkbook(sheets);
+    log(Buffer.isBuffer(wb) && wb.slice(0, 2).toString() === 'PK', 'v1.6.0: the workbook is a real .xlsx file');
+
+    // Finishing the clinic keeps the figures and removes the people.
+    const fin = db.finishEvent(currentUser, ev.id);
+    log(fin.removed === 1 && db.listPatients({ eventId: ev.id }).length === 0,
+      'v1.6.0: finishing a clinic removes every patient record');
+    const reports = db.listEventReports();
+    const rep = reports.find((r) => r.event_id === ev.id);
+    log(!!rep && rep.summary.patients_seen === 1 && rep.summary.extractions === 0,
+      'v1.6.0: the de-identified reporting totals are kept');
+    log(!!rep && rep.summary.by_city['Sandy, OR'] === 1 && !!rep.summary.by_age,
+      'v1.6.0: the kept report still has the by-city and by-age breakdowns for grant returns');
+    const repText = JSON.stringify(rep.summary);
+    log(!/Wilhelmina|Farnsworth/.test(repText) && !/5035550142/.test(repText) && !/1988-09-14/.test(repText),
+      'v1.6.0: the kept report contains no name, phone or date of birth');
+
+    // The deletion must travel, or the cloud simply sends the patient back.
+    const pending = db.collectSyncRows(400).rows.filter((r) => r.deleted);
+    const tombEntities = new Set(pending.map((r) => r.entity));
+    log(pending.some((r) => r.uid === bundle.patients[0].uid) && pending.every((r) => JSON.stringify(r.data) === '{}'),
+      'v1.6.0: a purge queues a deletion for the cloud, carrying no patient data');
+    // The whole chart must be tombstoned. A patient-only tombstone would leave
+    // the consent signatures and x-ray images sitting in the cloud forever —
+    // the most identifying data in the system.
+    log(tombEntities.has('patient') && tombEntities.has('consent') && tombEntities.has('xray') && tombEntities.has('triage'),
+      'v1.6.0: consents, x-rays and vitals are purged from the cloud too, not just the patient row');
+    const tombUids = new Set(pending.map((r) => r.uid));
+    log(tombUids.has(bundle.consents[0].uid) && tombUids.has(bundle.xrays[0].uid),
+      'v1.6.0: the purged signature and x-ray are named explicitly so the cloud drops them');
+    // ...and an incoming deletion removes the record here too.
+    db.setEventActive(currentUser, ev.id, true); // finishing the clinic turned it off
+    db.setActiveEvent(currentUser, ev.id);
+    const victim = db.createPatient(currentUser, { first_name: 'Gone', last_name: 'Soon', demographics: {}, medical_history: {}, dental_history: {} });
+    const vUid = db.exportClinicBundle(ev.id).patients.find((p) => p.last_name === 'Soon').uid;
+    const del = db.applyRemoteRows([{ entity: 'patient', uid: vUid, deleted: 1, updated_at: '2099-12-31T00:00:00.000Z@peer', data: {} }]);
+    log(del.applied === 1 && !db.listPatients({ eventId: ev.id }).find((p) => p.id === victim.id),
+      'v1.6.0: a deletion from another station removes the patient here as well');
+
+    // Restore puts the whole clinic back, signatures and images included.
+    const back = db.importClinicBundle(currentUser, bundle);
+    const restored = db.listPatients({ eventId: ev.id }).find((p) => p.last_name === 'Farnsworth');
+    const full = restored ? db.getPatient(restored.id) : null;
+    log(back.patients === 1 && !!full, 'v1.6.0: a clinic can be restored from its backup file');
+    log(!!full && String((full.consents[0] || {}).signature_png).startsWith('data:image') && String(full.triage.bp_systolic) === '148',
+      'v1.6.0: the restored record still has its signed consent and vitals');
+    log(!!full && full.xrays.length === 1 && String(db.getXray(full.xrays[0].id).image_png).startsWith('data:image'),
+      'v1.6.0: the restored record still has its x-ray image');
+    db.importClinicBundle(currentUser, bundle);
+    log(db.listPatients({ eventId: ev.id }).filter((p) => p.last_name === 'Farnsworth').length === 1,
+      'v1.6.0: importing the same file twice does not duplicate anyone');
+  }
+
   await tick();
   if (errors.length) errors.forEach((e) => log(false, 'RUNTIME: ' + e));
   const failed = results.filter((r) => !r[0]).length;

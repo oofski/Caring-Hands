@@ -267,6 +267,26 @@ export function renderAdmin(ctx, params = {}) {
       if (e.active && !isActive) actions.append(el('button', { class: 'btn btn--ghost btn--sm', onClick: () => setActive(e) }, ['Set active']));
       if (e.prereg_url) actions.append(el('button', { class: 'btn btn--ghost btn--sm', title: 'Patient pre-registration link', onClick: () => preregLink(e) }, [icon('globe', { size: 14 }), 'Pre-reg link']));
       actions.append(el('button', { class: 'btn btn--ghost btn--sm', onClick: () => editEvent(e) }, [icon('pen', { size: 14 }), 'Edit']));
+      // Close a clinic: keep the figures for reporting, remove the patients.
+      actions.append(el('button', {
+        class: 'btn btn--soft btn--sm',
+        title: 'Keep the reporting totals, remove every patient record',
+        onClick: async () => {
+          const ok = await modal({
+            title: `Finish “${e.name}”?`,
+            body: 'The clinic’s <b>reporting totals are kept</b> — patients seen, procedures, and the breakdowns by age, gender, language and city — so this event still appears in Reports and grant returns.<br><br>Every <b>patient record is permanently removed</b> from this computer, the clinic cloud, and every other station. Export the clinic first if you want to be able to restore it.<br><br>This cannot be undone.',
+            confirmText: 'Finish clinic & remove patient data',
+            cancelText: 'Cancel',
+            danger: true,
+          });
+          if (!ok) return;
+          try {
+            const r = await api.finishEvent(e.id);
+            toast(`“${e.name}” finished — report kept, ${r.removed} patient record(s) removed.`, 'success');
+            paint();
+          } catch (err) { toast(err.message, 'error'); }
+        },
+      }, [icon('checkCircle', { size: 14 }), 'Finish clinic']));
       if (e.active) actions.append(el('button', { class: 'btn btn--ghost btn--sm', onClick: () => setState(e, false) }, ['Turn off']));
       else actions.append(el('button', { class: 'btn btn--ghost btn--sm', onClick: () => setState(e, true) }, ['Reactivate']));
       actions.append(el('button', { class: 'btn btn--danger btn--sm', onClick: () => delEvent(e) }, [icon('trash', { size: 14 })]));
@@ -399,7 +419,68 @@ export function renderAdmin(ctx, params = {}) {
         } }, [icon('trash', { size: 16 }), `Delete all ${incomplete.length} empty record(s)`]),
       ]));
     }
+    // End-of-clinic: take the data with you as a spreadsheet, then take it off
+    // the machines. The purge is deliberately gated behind a fresh export.
+    let exported = null;
+    const purgeBtn = el('button', {
+      class: 'btn btn--danger', disabled: true,
+      title: 'Export first — this cannot be undone',
+      onClick: async () => {
+        const ok = await modal({
+          title: 'Remove this clinic’s patient data?',
+          body: `This permanently deletes <b>every patient record for the current clinic</b> from this computer, from the clinic cloud, and from every other station when it next syncs.<br><br>You exported <b>${exported && exported.patients} patient record(s)</b> to:<br><code>${exported && exported.xlsxPath}</code><br><br>Keep that file safe — restoring later is only possible from the <b>.chbak.json</b> saved beside it. This cannot be undone.`,
+          confirmText: 'Delete the patient data',
+          cancelText: 'Cancel',
+          danger: true,
+        });
+        if (!ok) return;
+        purgeBtn.disabled = true;
+        try {
+          const r = await api.purgeEvent();
+          toast(`${r.removed} patient record(s) removed from this computer and the cloud.`, 'success');
+          exported = null; paint();
+        } catch (e) { toast(e.message, 'error'); purgeBtn.disabled = false; }
+      },
+    }, [icon('trash', { size: 16 }), 'Delete this clinic’s patient data']);
+    const exportHint = el('p', { class: 'muted small', style: 'margin:var(--space-2) 0 0' }, [
+      'Export first — the delete button unlocks once you have saved a copy.',
+    ]);
+
     body.append(
+      el('div', { class: 'card' }, [
+        el('h3', { class: 'card-title' }, [icon('download', { size: 15 }), 'End of clinic — take the data with you']),
+        el('p', { class: 'muted', style: 'margin:0 0 var(--space-4);' }, [
+          'Saves two files side by side: an ',
+          el('strong', {}, ['Excel workbook']),
+          ' you can read and share, and a ',
+          el('strong', {}, ['.chbak.json backup']),
+          ' that can put the whole clinic back later — including signed consents and x-ray images, which a spreadsheet cannot hold.',
+        ]),
+        el('div', { class: 'action-row', style: 'margin-top:0;' }, [
+          el('button', { class: 'btn btn--primary', onClick: async (e) => {
+            const btn = e.currentTarget; const prev = btn.textContent; btn.disabled = true; btn.textContent = 'Exporting…';
+            try {
+              const r = await api.exportClinic();
+              if (r.saved) {
+                exported = r;
+                purgeBtn.disabled = false;
+                purgeBtn.title = 'Permanently delete this clinic’s patient data';
+                exportHint.textContent = `Saved ${r.patients} patient record(s). Workbook: ${r.xlsxPath} · Backup: ${r.backupPath}`;
+                toast(`Exported ${r.patients} patient record(s).`, 'success');
+              }
+            } catch (err) { toast(err.message, 'error'); }
+            finally { btn.disabled = false; btn.textContent = prev; }
+          } }, [icon('download', { size: 16 }), 'Export clinic (Excel + backup)']),
+          el('button', { class: 'btn btn--ghost', onClick: async () => {
+            try {
+              const r = await api.importClinic();
+              if (r.imported) { toast(`Restored ${r.patients} patient record(s) (${r.updated} updated).`, 'success'); paint(); }
+            } catch (e) { toast(e.message, 'error'); }
+          } }, [icon('refresh', { size: 16 }), 'Restore a clinic from backup']),
+          purgeBtn,
+        ]),
+        exportHint,
+      ]),
       el('div', { class: 'card' }, [
         el('h3', { class: 'card-title' }, [icon('database', { size: 15 }), 'Backup & export']),
         el('p', { class: 'muted', style: 'margin:0 0 var(--space-4);' }, ['All data lives only on this device. Back up regularly to a USB drive or encrypted external drive, especially after each event.']),

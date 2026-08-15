@@ -82,6 +82,11 @@ export const api = {
   backup: () => call('backupRun'),
   exportEvent: () => call('exportEvent'),
   exportZip: () => call('exportZip'),
+  exportClinic: (eventId) => call('exportClinic', { eventId }),
+  importClinic: () => call('importClinic'),
+  finishEvent: (eventId) => call('eventFinish', { eventId }),
+  purgeEvent: (eventId) => call('eventPurge', { eventId }),
+  archivedReports: () => call('reportsArchived'),
 
   appVersion: () => call('appVersion'),
   checkUpdate: (opts) => call('updateCheck', opts || {}),

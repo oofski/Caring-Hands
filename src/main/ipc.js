@@ -19,6 +19,8 @@ const cloud = require('./cloud');
 const usb = require('./usb');
 const xrayFolder = require('./xrayFolder');
 const zipStore = require('./zipStore');
+const xlsx = require('./xlsx');
+const { clinicSheets } = require('./clinicSheets');
 const os = require('os');
 
 let currentUser = null;
@@ -79,6 +81,11 @@ const PERMS = {
   'usb:clear': ['admin', 'doctor', 'triage', 'checkout'],
   'backup:run': ['admin'],
   'export:zip': ['admin'],
+  'export:clinic': ['admin'],
+  'import:clinic': ['admin'],
+  'event:finish': ['admin'],
+  'event:purge': ['admin'],
+  'reports:archived': ['admin', 'doctor'],
   'export:event': ['admin'],
   'audit:list': ['admin'],
   'cloud:config': ['admin'],
@@ -148,6 +155,44 @@ function register(getMainWindow) {
   handle('cloud:status', () => cloud.status());
   handle('cloud:syncNow', () => cloud.syncOnce());
   handle('cloud:resync', () => cloud.resyncAll());
+
+  /* ---- Clinic export / restore / purge (v1.6.0) ---- */
+  // Two files: a readable workbook, and the backup that can actually put the
+  // clinic back (signatures and x-ray images cannot live in a spreadsheet).
+  handle('export:clinic', async ({ eventId } = {}) => {
+    const bundle = db.exportClinicBundle(eventId);
+    const evName = String((bundle.event && bundle.event.name) || 'clinic').replace(/[^a-z0-9]+/gi, '-');
+    const stamp = new Date().toISOString().slice(0, 10);
+    const base = `Clinic-${evName}-${stamp}`;
+    const res = await dialog.showSaveDialog({
+      title: 'Save clinic export',
+      defaultPath: path.join(os.homedir(), base + '.xlsx'),
+      filters: [{ name: 'Excel workbook', extensions: ['xlsx'] }],
+    });
+    if (res.canceled || !res.filePath) return { saved: false };
+    const xlsxPath = res.filePath.endsWith('.xlsx') ? res.filePath : res.filePath + '.xlsx';
+    const backupPath = xlsxPath.replace(/\.xlsx$/i, '') + '.chbak.json';
+    fs.writeFileSync(xlsxPath, xlsx.buildWorkbook(clinicSheets(bundle)));
+    fs.writeFileSync(backupPath, JSON.stringify(bundle));
+    return { saved: true, xlsxPath, backupPath, patients: bundle.patients.length };
+  });
+
+  handle('import:clinic', async () => {
+    const res = await dialog.showOpenDialog({
+      title: 'Choose a clinic backup file',
+      properties: ['openFile'],
+      filters: [{ name: 'Caring Hands backup', extensions: ['json'] }],
+    });
+    if (res.canceled || !res.filePaths || !res.filePaths[0]) return { imported: false };
+    let bundle;
+    try { bundle = JSON.parse(fs.readFileSync(res.filePaths[0], 'utf8')); }
+    catch (_e) { throw new Error('That file could not be read. Choose the .chbak.json file saved with the export.'); }
+    return { imported: true, ...db.importClinicBundle(currentUser, bundle) };
+  });
+
+  handle('event:finish', ({ eventId } = {}) => db.finishEvent(currentUser, eventId));
+  handle('event:purge', ({ eventId } = {}) => db.purgeEventPatients(currentUser, eventId));
+  handle('reports:archived', () => db.listEventReports());
 
   /* ---- Front-desk arrivals (v1.5.24) ---- */
   handle('patients:arrivalCheck', (id) => db.arrivalReadiness(id));
