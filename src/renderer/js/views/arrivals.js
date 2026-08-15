@@ -26,10 +26,19 @@ function matches(p, q) {
   return q.toLowerCase().split(/\s+/).filter(Boolean).every((w) => hay.includes(w));
 }
 
+// Surname first, the way a desk list is read down.
+const byName = (a, b) =>
+  String(a.last_name || '').localeCompare(String(b.last_name || ''), undefined, { sensitivity: 'base' }) ||
+  String(a.first_name || '').localeCompare(String(b.first_name || ''), undefined, { sensitivity: 'base' });
+
 export function renderArrivals(ctx) {
   const root = el('div', { class: 'view' });
   let latest = { event: null, patients: [] };
   let query = '';
+  // 'prereg' = registered online | 'walkin' = registered at the desk. Null until
+  // the first paint picks whichever queue actually has people waiting, so the
+  // desk never opens onto an empty tab; after that the user's choice sticks.
+  let tab = null;
 
   // Built once and re-used across repaints, so a queue refresh mid-typing can't
   // wipe what the desk has entered.
@@ -50,11 +59,22 @@ export function renderArrivals(ctx) {
   function paint() {
     const { event, patients } = latest;
 
-    // Waiting to be confirmed vs. already here. Anyone past check-in has
-    // obviously arrived, so this screen only concerns the checked-in stage.
+    // Anyone past check-in has obviously arrived, so this screen only concerns
+    // the checked-in stage.
     const checkedIn = patients.filter((p) => p.status === 'checked_in');
-    const allWaiting = checkedIn.filter((p) => !p.arrived_at);
-    const allHere = checkedIn.filter((p) => p.arrived_at);
+    // Two very different queues: people who filled the form online and are being
+    // met for the first time, and people registered at the desk just now.
+    const tabCounts = {
+      prereg: checkedIn.filter((p) => p.preregistered).length,
+      walkin: checkedIn.filter((p) => !p.preregistered).length,
+    };
+    if (tab === null) {
+      const waitingIn = (pre) => checkedIn.filter((p) => !!p.preregistered === pre && !p.arrived_at).length;
+      tab = waitingIn(true) ? 'prereg' : (waitingIn(false) ? 'walkin' : 'prereg');
+    }
+    const inTab = checkedIn.filter((p) => (tab === 'prereg' ? p.preregistered : !p.preregistered));
+    const allWaiting = inTab.filter((p) => !p.arrived_at).sort(byName);
+    const allHere = inTab.filter((p) => p.arrived_at).sort(byName);
     const waiting = allWaiting.filter((p) => matches(p, query));
     const here = allHere.filter((p) => matches(p, query));
     const hiddenBySearch = (allWaiting.length - waiting.length) + (allHere.length - here.length);
@@ -114,9 +134,12 @@ export function renderArrivals(ctx) {
       ]);
     }
 
+    const who = tab === 'prereg' ? 'pre-registered' : 'desk-registered';
     const emptyText = (confirmed) => (query
       ? 'No match here for “' + query + '”.'
-      : (confirmed ? 'Nobody confirmed yet today.' : 'Nobody is waiting — everyone who has checked in has been confirmed.'));
+      : (confirmed
+        ? `No ${who} patients confirmed yet.`
+        : `No ${who} patients waiting — everyone here has been confirmed.`));
     const section = (title, note, list, confirmed) => el('div', { class: 'card' }, [
       el('div', { class: 'section-title-row' }, [
         el('h2', { class: 'section-title' }, [title]),
@@ -139,6 +162,7 @@ export function renderArrivals(ctx) {
           el('p', { class: 'view-sub' }, [
             'Confirm each patient is here before they go through. ',
             el('strong', {}, [event ? event.name : 'No active event']),
+            ' · listed A–Z by surname',
           ]),
         ]),
         el('div', { class: 'view-head-actions' }, [
@@ -146,6 +170,18 @@ export function renderArrivals(ctx) {
           el('button', { class: 'btn btn--ghost btn--sm', onClick: load }, [icon('refresh', { size: 15 }), 'Refresh']),
         ]),
       ]),
+      el('div', { class: 'arrival-tabs' }, [
+        ['prereg', 'Pre-registered online', 'People who filled the form in before they came'],
+        ['walkin', 'Registered at the desk', 'People checked in here at the clinic'],
+      ].map(([key, label, hint]) => el('button', {
+        class: 'arrival-tab' + (tab === key ? ' is-active' : ''),
+        title: hint,
+        onClick: () => { tab = key; paint(); },
+      }, [
+        el('span', { class: 'arrival-tab-label' }, [label]),
+        el('span', { class: 'crm-col-count' }, [String(tabCounts[key])]),
+      ]))),
+
       el('div', { class: 'card arrival-search' }, [
         el('label', { class: 'field', style: 'margin:0' }, [
           el('span', { class: 'field-label' }, ['Find a patient']),

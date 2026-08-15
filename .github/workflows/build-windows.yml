@@ -50,16 +50,23 @@ jobs:
       - name: Publish downloadable release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.5.26-build.${{ github.run_number }}
-          name: Caring Hands v1.5.26 (build ${{ github.run_number }})
+          tag_name: v1.5.27-build.${{ github.run_number }}
+          name: Caring Hands v1.5.27 (build ${{ github.run_number }})
           prerelease: false
           make_latest: true
           body: |
-            ## Caring Hands Worldwide — Practice Management Software (v1.5.26)
+            ## Caring Hands Worldwide — Practice Management Software (v1.5.27)
 
             Offline-first dental clinic app for Windows. **Download the installer once — it auto-updates from here on.**
 
-            **New in v1.5.26 — search the Arrivals list**
+            **New in v1.5.27 — hygienist sees the health history, check-in scale fixed, arrivals tidied up**
+            - **The hygienist now sees the patient's medical history.** It was tucked away collapsed and carried none of the patient's earlier visits, so in practice it wasn't being read. It is now **open by default** and shows the same full picture the dentist gets — conditions, allergies, medications, prior visits. The hygienist is the person who decides whether it's safe to scale someone on a blood thinner, and the one who spots an extraction and hands it to the dentist, so they need it in front of them.
+            - **Fixed: the "What do you need today?" scale at check-in could reject a patient who had answered.** The slider sits at position 1 before anything is picked, so a patient who wanted **option 1 (Extraction — in pain)** and slid or tapped there changed nothing — the app never registered a choice and refused to move on with "please choose what you need today". Any touch of the scale now registers the answer, and the scale is greyed until a choice is made so it no longer looks pre-selected.
+            - **Arrivals is now split into two tabs — "Pre-registered online" and "Registered at the desk"** — because they are two different jobs: meeting someone who booked ahead, versus someone standing in front of you. Each tab shows its own count, and the screen opens on whichever queue actually has people waiting.
+            - **Both lists are in A–Z order by surname**, so a name can be found by eye without scrolling the whole queue.
+            - **Safety fix: a written-in allergy or condition is never hidden.** If someone typed "Sulfa" in the *other allergy* box without also ticking the "Other" checkbox, it was invisible on every screen and on the printed record. Typed-in text now always shows — on the history panel, the records screen, and the PDF.
+
+            **From v1.5.26 — search the Arrivals list**
             - **Find a patient instantly on the Arrivals screen.** A search box at the top filters both lists as you type — by **name, phone number, or date of birth** — so a busy front desk can pull up one person out of a long queue instead of scrolling. Words can be typed in any order ("ruiz car" finds Carmen Ruiz), it says how many are hidden, and one tap clears it. Your typing is never wiped when the queue refreshes in the background.
 
             **From v1.5.25 — vitals are now a hard requirement, and you can move patients back a stage**
@@ -222,8 +229,8 @@ jobs:
 
             Includes everything from v1.0.2–1.1.1 (optional Cloud Sync, triage-free flow, per-event staff, Oregon consent, USB workflow, accountability, Russian, in-app auto-update).
 
-            - **Caring-Hands-Setup-1.5.26.exe** — installer (recommended; required for auto-update).
-            - **Caring-Hands-Portable-1.5.26.exe** — portable (no auto-update).
+            - **Caring-Hands-Setup-1.5.27.exe** — installer (recommended; required for auto-update).
+            - **Caring-Hands-Portable-1.5.27.exe** — portable (no auto-update).
 
             First sign-in: `admin / admin` — then create your staff accounts. All clinical data stays on the device unless you enable Cloud Sync.
           files: |

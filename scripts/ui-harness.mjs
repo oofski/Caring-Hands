@@ -276,6 +276,15 @@ async function main() {
   log(!!vrange, 'dental step has the 1–4 visit-type scale');
   const vticks = $all('.kiosk-body .highlight-field button');
   log(vticks.length === 4, 'visit-type scale offers 4 options (' + vticks.length + ')');
+  // v1.5.26: the slider parks on 1 before anything is chosen, so sliding TO 1
+  // changes nothing and fires no 'input' event. The patient was then refused at
+  // Next for an answer they thought they had given. Any interaction now commits.
+  log(vrange.style.opacity === '0.45', 'v1.5.26: the scale looks unset until a choice is made');
+  vrange.value = '1';
+  vrange.dispatchEvent(new window.Event('click', { bubbles: true }));
+  await tick();
+  log(/1\./.test($('.visit-desc').textContent) && vrange.style.opacity === '1',
+    'v1.5.26: tapping the scale on option 1 registers the choice (no silent rejection)');
   if (vrange) { vrange.value = '3'; vrange.dispatchEvent(new window.Event('input', { bubbles: true })); }
   clickText('Next');
   await tick();
@@ -1041,6 +1050,14 @@ async function main() {
     const ctx24 = { navigate: () => {}, toast: () => {}, store: store24, setDetail: () => {} };
     const arrivals = (await import('../src/renderer/js/views/arrivals.js')).renderArrivals(ctx24);
     document.body.append(arrivals); await tick(); await tick();
+    // v1.5.26: the screen is split by how the patient registered. These patients
+    // were registered at the desk, so open that tab.
+    const pickTab = (view, label) => {
+      const b = Array.from(view.querySelectorAll('.arrival-tab')).find((x) => new RegExp(label, 'i').test(x.textContent));
+      if (b) b.click();
+      return b;
+    };
+    pickTab(arrivals, 'Registered at the desk'); await tick();
     const atxt = arrivals.textContent;
     log(/Arrivals/.test(atxt) && /Waiting to be confirmed/.test(atxt) && /Confirmed here/.test(atxt),
       'v1.5.24: the Arrivals screen lists who is waiting and who is confirmed');
@@ -1065,6 +1082,7 @@ async function main() {
     });
     const arr2 = (await import('../src/renderer/js/views/arrivals.js')).renderArrivals(ctx24);
     document.body.append(arr2); await tick(); await tick();
+    pickTab(arr2, 'Registered at the desk'); await tick();
     const box = arr2.querySelector('input[type="search"]');
     log(!!box, 'v1.5.25: the arrivals screen has a search box');
     const rowsFor = () => Array.from(arr2.querySelectorAll('.arrival-row')).map((r) => r.textContent);
@@ -1154,6 +1172,82 @@ async function main() {
     row = db.listPatients({}).find((p) => p.id === outP.id);
     log(row.status === 'checked_in' && !row.dismissed_at,
       'v1.5.24: a checked-out patient can be brought all the way back to check-in');
+  }
+
+  // ---- v1.5.26: arrivals tabs + A–Z order; hygienist history; slider fix ----
+  {
+    currentUser = db.login('admin', 'admin');
+    const ev26 = db.listEvents().find((e) => e.active) || db.listEvents()[0];
+    const signed = [{ type: 'general', signer_name: 'S', signature_png: 'data:image/png;base64,AAAA' }];
+    // Desk-registered, deliberately out of alphabetical order.
+    for (const last of ['Zimmerman', 'Abbott', 'Mercer']) {
+      db.createPatient(currentUser, {
+        first_name: 'Desk', last_name: last, dob: '1980-01-01', gender: 'male',
+        demographics: {}, medical_history: {}, dental_history: { visit_type: 'cleaning' }, consents: signed,
+      });
+    }
+    // Pre-registered, also out of order (arrives through sync, as the Worker writes it).
+    ['Yardley', 'Bannister'].forEach((last, i) => db.applyRemoteRows([{
+      entity: 'patient', uid: 'tabs-prereg-' + last, event_uid: ev26.uid, patient_uid: null, deleted: 0,
+      updated_at: '2099-03-0' + (i + 1) + 'T00:00:00.000Z@prereg',
+      data: {
+        language: 'en', first_name: 'Online', last_name: last, dob: '1990-01-01', gender: 'female',
+        phone: null, email: null, demographics: JSON.stringify({ preregistered: true }),
+        medical_history: '{}', dental_history: JSON.stringify({ visit_type: 'cleaning' }),
+        status: 'checked_in', created_at: '2099-03-01T00:00:00.000Z', dismissed_at: null, dismissed_by_name: null,
+      },
+    }]));
+
+    const store26 = (await import('../src/renderer/js/store.js')).store; store26.setUser(currentUser);
+    const ctx26 = { navigate: () => {}, toast: () => {}, store: store26, setDetail: () => {} };
+    const view = (await import('../src/renderer/js/views/arrivals.js')).renderArrivals(ctx26);
+    document.body.append(view); await tick(); await tick();
+
+    const tabs = Array.from(view.querySelectorAll('.arrival-tab')).map((b) => b.textContent);
+    log(tabs.length === 2 && /Pre-registered/i.test(tabs[0]) && /Registered at the desk/i.test(tabs[1]),
+      'v1.5.26: arrivals is split into "Pre-registered online" and "Registered at the desk" tabs');
+    const surnames = () => Array.from(view.querySelectorAll('.arrival-row strong')).map((e) => e.textContent.split(',')[0]);
+    const click = (label) => {
+      const b = Array.from(view.querySelectorAll('.arrival-tab')).find((x) => new RegExp(label, 'i').test(x.textContent));
+      b.click(); return b;
+    };
+
+    click('Pre-registered'); await tick();
+    const pre = surnames();
+    log(pre.includes('Yardley') && pre.includes('Bannister') && !pre.includes('Abbott'),
+      'v1.5.26: the pre-registered tab shows only patients who registered online');
+    log(JSON.stringify(pre) === JSON.stringify([...pre].sort()), 'v1.5.26: the pre-registered list is in A–Z order by surname');
+
+    click('Registered at the desk'); await tick();
+    const desk = surnames();
+    log(desk.includes('Abbott') && desk.includes('Zimmerman') && !desk.includes('Yardley'),
+      'v1.5.26: the desk tab shows only patients registered here');
+    const deskIdx = [desk.indexOf('Abbott'), desk.indexOf('Mercer'), desk.indexOf('Zimmerman')];
+    log(deskIdx[0] < deskIdx[1] && deskIdx[1] < deskIdx[2], 'v1.5.26: the desk list is in A–Z order by surname');
+  }
+
+  // The hygienist must see the medical history, not just the dentist.
+  {
+    currentUser = db.login('admin', 'admin');
+    const hp26 = db.createPatient(currentUser, {
+      first_name: 'Hyg', last_name: 'History', dob: '1975-05-05', gender: 'female',
+      demographics: {}, medical_history: { conditions: ['diabetes', 'high_bp'], allergies: ['penicillin'], allergies_other: 'Sulfa', under_treatment: 'yes' },
+      dental_history: { visit_type: 'cleaning' },
+      consents: [{ type: 'general', signer_name: 'H', signature_png: 'data:image/png;base64,AAAA' }],
+    });
+    db.saveVitals(currentUser, hp26.id, { bp_systolic: '124', bp_diastolic: '80', heart_rate: '70' });
+    db.routePatient(currentUser, hp26.id, 'hygienist');
+    const storeH = (await import('../src/renderer/js/store.js')).store; storeH.setUser(currentUser);
+    const ctxH = { navigate: () => {}, toast: () => {}, store: storeH, setDetail: () => {} };
+    const hv = (await import('../src/renderer/js/views/hygienist.js')).renderHygienist(ctxH, { id: hp26.id });
+    document.body.append(hv);
+    for (let i = 0; i < 8; i++) await tick();
+    const htxt = hv.textContent;
+    log(/Medical history/i.test(htxt), 'v1.5.26: the hygienist screen shows the medical history section');
+    log(/Diabetes/i.test(htxt) && /High blood pressure/i.test(htxt), 'v1.5.26: the hygienist sees the patient\'s conditions');
+    log(/Penicillin/i.test(htxt) && /Sulfa/i.test(htxt), 'v1.5.26: the hygienist sees allergies, including a typed-in one');
+    const panel = hv.querySelector('details.collapse');
+    log(!!panel && panel.hasAttribute('open'), 'v1.5.26: the history is open by default, not hidden behind a toggle');
   }
 
   await tick();

@@ -354,6 +354,9 @@ export function renderKiosk(ctx) {
       el('span', { style: 'font-size:var(--fs-2xs);text-align:center;line-height:1.15' }, [o.label]),
     ]));
     function paintVisit() {
+      // Dim the track until a choice is actually made, so the thumb parked at 1
+      // doesn't read as "option 1 is selected".
+      visitRange.style.opacity = visitNum ? '1' : '0.45';
       visitTicks.forEach((tk, i) => {
         const on = visitNum === i + 1;
         tk.style.borderColor = on ? 'var(--accent)' : '';
@@ -370,7 +373,16 @@ export function renderKiosk(ctx) {
       }
     }
     function setVisit(n) { visitNum = n; visitRange.value = String(n); paintVisit(); }
-    visitRange.addEventListener('input', () => setVisit(Number(visitRange.value)));
+    // A range input only fires `input` when the value CHANGES. With nothing
+    // chosen the thumb already sits at 1, so a patient who wants option 1 and
+    // slides/taps there produces no event at all — and is then refused at Next
+    // with "please choose what you need today", which reads as the form kicking
+    // them back for an answer they did give. Commit on any interaction.
+    const commitVisit = () => setVisit(Number(visitRange.value));
+    visitRange.addEventListener('input', commitVisit);
+    visitRange.addEventListener('change', commitVisit);
+    visitRange.addEventListener('click', commitVisit);
+    visitRange.addEventListener('keyup', commitVisit);
     paintVisit();
     const visitField = el('div', { class: 'highlight-field' }, [
       el('span', { class: 'field-label' }, [visitQ]),

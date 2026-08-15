@@ -344,7 +344,8 @@ function titleKey(k) {
 // "Sulfa") is never dropped from the printed record.
 function historyItems(arr, m, otherKey) {
   const items = (arr || []).filter((x) => x !== 'other' && x !== 'none').map((x) => esc(titleKey(x)));
-  if ((arr || []).includes('other') && m && m[otherKey]) items.push(esc(m[otherKey]));
+  // Print typed-in text whenever present, ticked or not (matches the screens).
+  if (m && m[otherKey]) items.push(esc(m[otherKey]));
   return items;
 }
 

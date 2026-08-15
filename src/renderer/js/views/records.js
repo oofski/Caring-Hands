@@ -105,8 +105,9 @@ export function renderRecords(ctx, params = {}) {
     const condLabels = conditions().filter((c) => (p.medical_history.conditions || []).includes(c.key)).map((c) => ({ label: c.label, flag: c.flag }));
     const allergyLabels = allergies().filter((a) => (p.medical_history.allergies || []).includes(a.key)).map((a) => a.label);
     // Include the typed "Other" free-text allergy/condition so it's never hidden.
-    if ((p.medical_history.allergies || []).includes('other') && p.medical_history.allergies_other) allergyLabels.push(p.medical_history.allergies_other);
-    if ((p.medical_history.conditions || []).includes('other') && p.medical_history.conditions_other) condLabels.push({ label: p.medical_history.conditions_other, flag: false });
+    // Typed-in text shows whenever present, ticked or not (see patientHistory.js).
+    if (p.medical_history.allergies_other) allergyLabels.push(p.medical_history.allergies_other);
+    if (p.medical_history.conditions_other) condLabels.push({ label: p.medical_history.conditions_other, flag: false });
 
     const kv = (label, val) => el('div', { class: 'kv' }, [el('span', { class: 'kv-label' }, [label]), el('span', { class: 'kv-val' }, [val || '—'])]);
 

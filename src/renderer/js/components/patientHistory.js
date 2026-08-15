@@ -37,9 +37,11 @@ export function patientHistoryCards(p, priorVisits = []) {
   // SAFETY: a typed "Other" allergy/condition (e.g. "Sulfa") must be visible on
   // screen, not buried in a PDF. Build the display pills with the free text added.
   const allergyPills = allergyLabels.map((a) => el('span', { class: 'pill pill--danger' }, [el('span', { class: 'pill-dot' }), a.label]));
-  if ((m.allergies || []).includes('other') && m.allergies_other) allergyPills.push(el('span', { class: 'pill pill--danger' }, [el('span', { class: 'pill-dot' }), m.allergies_other]));
+  // Show typed-in text whenever it exists, even if the 'Other' chip wasn't
+  // ticked — a written allergy must never be invisible because of a missing box.
+  if (m.allergies_other) allergyPills.push(el('span', { class: 'pill pill--danger' }, [el('span', { class: 'pill-dot' }), m.allergies_other]));
   const condPills = condLabels.map((c) => el('span', { class: `pill ${c.flag ? 'pill--danger' : 'pill--info'}` }, [c.flag ? el('span', { class: 'pill-dot' }) : null, c.label]));
-  if ((m.conditions || []).includes('other') && m.conditions_other) condPills.push(el('span', { class: 'pill pill--info' }, [m.conditions_other]));
+  if (m.conditions_other) condPills.push(el('span', { class: 'pill pill--info' }, [m.conditions_other]));
 
   const kv = (label, val) => el('div', { class: 'kv' }, [el('span', { class: 'kv-label' }, [label]), el('span', { class: 'kv-val' }, [val == null || val === '' ? '—' : String(val)])]);
   const card = (ic, title, ...kids) => el('div', { class: 'card' }, [el('div', { class: 'card-title' }, [icon(ic, { size: 15 }), title]), ...kids]);

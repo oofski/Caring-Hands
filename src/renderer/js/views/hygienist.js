@@ -65,6 +65,11 @@ export function renderHygienist(ctx, params = {}) {
   async function detail(id) {
     ctx.setDetail && ctx.setDetail(true);
     const p = await api.getPatient(id);
+    // The hygienist needs the medical history as much as the dentist does — they
+    // decide whether it is safe to scale someone on a blood thinner, and they are
+    // the ones who spot an extraction and transfer it on. Load their prior visits
+    // too, so the panel shows the same picture the dentist gets.
+    const priorVisits = await api.patientHistory(id).catch(() => []);
     const tx = p.treatment || {};
     const tr = p.triage || {};
     const cl = tr.checklist || {};
@@ -208,7 +213,7 @@ export function renderHygienist(ctx, params = {}) {
           (() => { const bt = bloodThinnerText(p); return bt.level === 'danger'
             ? el('div', { class: 'card', style: 'border-left:3px solid var(--danger);display:flex;gap:8px;align-items:center;padding:10px 12px;margin-bottom:12px' }, [icon('alert', { size: 16 }), el('span', {}, [bt.text])])
             : null; })(),
-          patientHistoryPanel(p, [], { open: false }),
+          patientHistoryPanel(p, priorVisits, { open: true }),
         ]),
         el('div', { class: 'col' }, [
           el('div', { class: 'card' }, [
