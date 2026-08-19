@@ -569,3 +569,17 @@
 .chart-swatch{ width:11px; height:11px; border-radius:3px; display:inline-block; }
 .chart-swatch--seen{ background:var(--accent-soft-2, var(--surface-sunken)); border:1px solid var(--accent-border); }
 .chart-swatch--done{ background:var(--success); }
+
+/* ---- Sign-ups vs check-outs (v1.6.2) ---- */
+.signup-table{ display:flex; flex-direction:column; gap:2px; }
+.signup-row{ display:grid; grid-template-columns:minmax(150px,1.4fr) auto auto minmax(120px,1fr);
+  gap:16px; align-items:center; padding:11px 12px; border-radius:var(--radius-sm); }
+.signup-row:nth-child(odd){ background:var(--surface-sunken); }
+.signup-row--total{ margin-top:6px; border-top:var(--border-line-strong); border-radius:0 0 var(--radius-sm) var(--radius-sm); background:transparent !important; }
+.signup-label{ min-width:0; }
+.signup-nums{ display:flex; flex-direction:column; align-items:flex-end; line-height:1.2; }
+.signup-n{ font-size:var(--fs-h3); font-weight:var(--fw-bold); color:var(--text-strong); }
+.signup-bar{ display:flex; align-items:center; gap:9px; }
+.signup-bar .bar-track{ flex:1; }
+.signup-pct{ font-weight:var(--fw-semibold); color:var(--text-strong); min-width:38px; text-align:right; }
+@media (max-width:900px){ .signup-row{ grid-template-columns:1fr auto auto; } .signup-bar{ grid-column:1 / -1; } }

@@ -50,7 +50,13 @@ export function renderReports(ctx) {
     const full = await Promise.all(patients.map((p) => api.getPatient(p.id)));
 
     // ---- Totals + breakdowns (all real, computed from the records) ----
-    let fillings = 0, extractions = 0, cleanings = 0, xrays = 0, flagged = 0, completed = 0, withXray = 0;
+    // A visit is FINISHED when the patient has been through and gone: status
+    // 'completed' (treatment done) or 'dismissed' (checked out and left). Counting
+    // only 'completed' made the ring read 0% for a clinic where everyone had been
+    // seen and sent home, because check-out moves them straight past 'completed'.
+    let fillings = 0, extractions = 0, cleanings = 0, xrays = 0, flagged = 0, finished = 0, withXray = 0;
+    let preSignups = 0, preFinished = 0, onSiteSignups = 0, onSiteFinished = 0, checkedOut = 0;
+    const isFinished = (p) => p.status === 'completed' || p.status === 'dismissed';
     const days = {};
     const ensure = (k) => (days[k] = days[k] || { date: k, seen: 0, completed: 0, fillings: 0, extractions: 0, cleanings: 0, treatments: 0 });
     const gender = {}, age = {}, lang = {}, city = {};
@@ -63,7 +69,12 @@ export function renderReports(ctx) {
       fillings += f; extractions += x; cleanings += c; xrays += nx;
       if (nx) withXray += 1;
       if (p.triage && (p.triage.flags || []).length) flagged += 1;
-      if (p.status === 'completed') completed += 1;
+      if (isFinished(p)) finished += 1;
+      if (p.status === 'dismissed') checkedOut += 1;
+      // Where the patient came from: the online link, or the front desk.
+      const pre = !!(p.demographics && p.demographics.preregistered);
+      if (pre) { preSignups += 1; if (p.status === 'dismissed') preFinished += 1; }
+      else { onSiteSignups += 1; if (p.status === 'dismissed') onSiteFinished += 1; }
 
       bump(gender, genderLabel(p.gender));
       bump(age, ageBucket(p.age));
@@ -74,13 +85,15 @@ export function renderReports(ctx) {
       const txDay = ensure(dayKey((tx.completed_at) || p.updated_at || p.created_at));
       txDay.fillings += f; txDay.extractions += x; txDay.cleanings += c;
       txDay.treatments += f + x + c;
-      if (p.status === 'completed') txDay.completed += 1;
+      if (isFinished(p)) txDay.completed += 1;
     });
     const dailyRows = Object.values(days).filter((d) => d.date !== 'unknown').sort((a, b) => a.date < b.date ? -1 : 1);
 
     const byStatus = count(patients, (p) => p.status);
     const total = patients.length;
-    const completePct = total ? Math.round((completed / total) * 100) : 0;
+    const completePct = total ? Math.round((finished / total) * 100) : 0;
+    const inProgress = Math.max(0, total - finished);
+    const outPct = total ? Math.round((checkedOut / total) * 100) : 0;
 
     const condCounts = {};
     full.forEach((p) => (p.medical_history.conditions || []).forEach((k) => { condCounts[k] = (condCounts[k] || 0) + 1; }));
@@ -107,7 +120,7 @@ export function renderReports(ctx) {
       // ---- KPI cards ----
       el('div', { class: 'kpi-grid' }, [
         kpi('users', total, 'Patients seen', { accent: true }),
-        kpi('checkCircle', completed, 'Completed', { sub: total ? `${completePct}% of ${total}` : null }),
+        kpi('checkCircle', finished, 'Visits finished', { sub: total ? `${completePct}% of ${total} · ${checkedOut} checked out` : null }),
         kpi('xray', xrays, 'X-rays uploaded', { sub: withXray ? `${withXray} patient(s)` : null }),
         kpi('tooth', extractions, 'Extractions'),
         kpi('pen', fillings, 'Fillings'),
@@ -121,9 +134,9 @@ export function renderReports(ctx) {
           el('div', { class: 'ring-wrap' }, [
             ring(completePct, `${completePct}%`, 'completed'),
             el('div', { class: 'ring-legend' }, [
-              legRow('var(--success)', 'Completed', completed),
-              legRow('var(--warning)', 'In progress', Math.max(0, total - completed - (byStatus.dismissed || 0))),
-              legRow('var(--text-subtle)', 'Checked out', byStatus.dismissed || 0),
+              legRow('var(--success)', 'Finished', finished),
+              legRow('var(--text-subtle)', 'of which checked out', checkedOut),
+              legRow('var(--warning)', 'Still in the clinic', inProgress),
             ]),
           ]),
           el('div', { class: 'card-sub-title' }, ['Patients by status']),
@@ -137,6 +150,9 @@ export function renderReports(ctx) {
           demoGroup('By city', city, Object.keys(city), { limit: 5 }),
         ]),
       ]),
+
+      // ---- Sign-ups vs check-outs, split by where they registered ----
+      signupCard({ total, checkedOut, outPct, preSignups, preFinished, onSiteSignups, onSiteFinished }),
 
       // ---- Procedures + conditions ----
       el('div', { class: 'dash-grid' }, [
@@ -176,6 +192,57 @@ export function renderReports(ctx) {
 
   load().catch((e) => toast(e.message, 'error'));
   return root;
+}
+
+// How many of the people who signed up actually made it through the clinic —
+// and whether the ones who booked online turn up and finish at the same rate as
+// the ones registered at the desk. That comparison is the whole point of the
+// pre-registration link, and nothing in the app was answering it.
+function signupCard(d) {
+  const pct = (n, of) => (of ? Math.round((n / of) * 100) : 0);
+  const row = (label, signed, out, hint) => {
+    const p = pct(out, signed);
+    return el('div', { class: 'signup-row' }, [
+      el('div', { class: 'signup-label' }, [
+        el('strong', {}, [label]),
+        hint ? el('div', { class: 'subtle small' }, [hint]) : null,
+      ]),
+      el('div', { class: 'signup-nums' }, [
+        el('span', { class: 'mono signup-n' }, [String(signed)]),
+        el('span', { class: 'subtle small' }, ['signed up']),
+      ]),
+      el('div', { class: 'signup-nums' }, [
+        el('span', { class: 'mono signup-n' }, [String(out)]),
+        el('span', { class: 'subtle small' }, ['checked out']),
+      ]),
+      el('div', { class: 'signup-bar' }, [
+        el('span', { class: 'bar-track' }, [el('span', { class: 'bar-fill', style: `width:${Math.max(2, p)}%` })]),
+        el('span', { class: 'mono signup-pct' }, [p + '%']),
+      ]),
+    ]);
+  };
+  const share = (n) => (d.total ? Math.round((n / d.total) * 100) : 0);
+  return el('div', { class: 'card' }, [
+    el('div', { class: 'card-title' }, [icon('users', { size: 15 }), 'Sign-ups vs check-outs']),
+    el('p', { class: 'muted small', style: 'margin:0 0 var(--space-4)' }, [
+      `${d.checkedOut} of ${d.total} patient(s) who signed up were checked out — `,
+      el('strong', {}, [d.outPct + '%']),
+      '. The rest are still in the clinic or did not complete their visit.',
+    ]),
+    el('div', { class: 'signup-table' }, [
+      row('Pre-registered online', d.preSignups, d.preFinished, `${share(d.preSignups)}% of all sign-ups`),
+      row('Registered on site', d.onSiteSignups, d.onSiteFinished, `${share(d.onSiteSignups)}% of all sign-ups`),
+      el('div', { class: 'signup-row signup-row--total' }, [
+        el('div', { class: 'signup-label' }, [el('strong', {}, ['All patients'])]),
+        el('div', { class: 'signup-nums' }, [el('span', { class: 'mono signup-n' }, [String(d.total)]), el('span', { class: 'subtle small' }, ['signed up'])]),
+        el('div', { class: 'signup-nums' }, [el('span', { class: 'mono signup-n' }, [String(d.checkedOut)]), el('span', { class: 'subtle small' }, ['checked out'])]),
+        el('div', { class: 'signup-bar' }, [
+          el('span', { class: 'bar-track' }, [el('span', { class: 'bar-fill', style: `width:${Math.max(2, d.outPct)}%` })]),
+          el('span', { class: 'mono signup-pct' }, [d.outPct + '%']),
+        ]),
+      ]),
+    ]),
+  ]);
 }
 
 // ---- KPI card ----

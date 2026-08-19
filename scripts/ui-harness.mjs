@@ -1398,6 +1398,120 @@ async function main() {
     log(!!rep.querySelector('details.collapse'), 'v1.6.1: the day-by-day numbers are still available, tucked under the chart');
   }
 
+  // ---- v1.6.2: a patient who left HAS finished; sign-ups vs check-outs ----
+  {
+    currentUser = db.login('admin', 'admin');
+    const ev62 = db.createEvent(currentUser, { name: 'Completion Test', location: 'Sandy' });
+    db.setActiveEvent(currentUser, ev62.id);
+    const mk62 = (last, { prereg = false, finish = false } = {}) => {
+      const p = db.createPatient(currentUser, {
+        first_name: 'C', last_name: last, dob: '1980-01-01', gender: 'female',
+        demographics: { city: 'Sandy', state: 'OR', preregistered: prereg },
+        medical_history: {}, dental_history: { visit_type: 'cleaning' },
+        consents: [{ type: 'general', signer_name: 'C', signature_png: 'data:image/png;base64,AAAA' }],
+      });
+      db.saveVitals(currentUser, p.id, { bp_systolic: '120', bp_diastolic: '78', heart_rate: '70' });
+      db.routePatient(currentUser, p.id, 'hygienist');
+      if (finish) { db.saveTreatment(currentUser, p.id, { cleaning: { scaling: true } }, true); db.dismissPatient(currentUser, p.id); }
+      return p;
+    };
+    // 2 pre-reg (1 left), 2 on-site (1 left) -> 50% checked out overall.
+    mk62('PreDone', { prereg: true, finish: true });
+    mk62('PreStill', { prereg: true });
+    mk62('SiteDone', { finish: true });
+    mk62('SiteStill', {});
+
+    const store62 = (await import('../src/renderer/js/store.js')).store; store62.setUser(currentUser);
+    const ctx62 = { navigate: () => {}, toast: () => {}, store: store62, setDetail: () => {} };
+    const rp = (await import('../src/renderer/js/views/reports.js')).renderReports(ctx62);
+    document.body.append(rp);
+    for (let i = 0; i < 12; i++) await tick();
+    // Scope to this event only, so other tests' patients don't skew the maths.
+    const sel = rp.querySelector('select');
+    const opt = Array.from(sel.options).find((o) => /Completion Test/.test(o.textContent));
+    sel.value = opt.value; sel.dispatchEvent(new window.Event('change', { bubbles: true }));
+    for (let i = 0; i < 12; i++) await tick();
+
+    // A dismissed patient has finished — this used to read 0%.
+    const kpiCards = Array.from(rp.querySelectorAll('.kpi'));
+    const finishedKpi = kpiCards.find((k) => /Visits finished/i.test(k.textContent));
+    log(!!finishedKpi && /\b2\b/.test(finishedKpi.querySelector('.kpi-val').textContent),
+      'v1.6.2: a patient who was checked out counts as a finished visit');
+    log(!!finishedKpi && /50% of 4/.test(finishedKpi.textContent) && /2 checked out/.test(finishedKpi.textContent),
+      'v1.6.2: the finished KPI shows the real share and how many actually left');
+    const ringTxt = rp.querySelector('.ring-top') ? rp.querySelector('.ring-top').textContent : '';
+    log(/50%/.test(ringTxt), 'v1.6.2: the completion ring agrees with it');
+    const ringLegend = rp.querySelector('.ring-legend').textContent;
+    log(/Still in the clinic/.test(ringLegend) && /of which checked out/.test(ringLegend),
+      'v1.6.2: the ring separates "finished" from "still in the clinic"');
+
+    // Sign-ups vs check-outs, split by where they registered.
+    const su = Array.from(rp.querySelectorAll('.card')).find((c) => /Sign-ups vs check-outs/i.test(c.textContent));
+    log(!!su, 'v1.6.2: reports has a sign-ups vs check-outs breakdown');
+    log(!!su && /2 of 4 patient\(s\) who signed up were checked out/.test(su.textContent) && /50%/.test(su.textContent),
+      'v1.6.2: it states how many who signed up were checked out, as a percentage');
+    const rowsSU = Array.from(su.querySelectorAll('.signup-row'));
+    const preRow = rowsSU.find((r) => /Pre-registered online/.test(r.textContent));
+    const siteRow = rowsSU.find((r) => /Registered on site/.test(r.textContent));
+    log(!!preRow && /50% of all sign-ups/.test(preRow.textContent) && /50%/.test(preRow.querySelector('.signup-pct').textContent),
+      'v1.6.2: pre-registered shows its share of sign-ups and its own check-out rate');
+    log(!!siteRow && /50% of all sign-ups/.test(siteRow.textContent),
+      'v1.6.2: on-site registration shows its share of sign-ups');
+    const totalRow = rowsSU.find((r) => /All patients/.test(r.textContent));
+    log(!!totalRow && /50%/.test(totalRow.querySelector('.signup-pct').textContent),
+      'v1.6.2: the total row carries the overall check-out rate');
+  }
+
+  // ---- v1.6.2: a deleted patient STAYS deleted, everywhere ----
+  {
+    currentUser = db.login('admin', 'admin');
+    const evD = db.createEvent(currentUser, { name: 'Deletion Test' });
+    db.setActiveEvent(currentUser, evD.id);
+    const ghost = db.createPatient(currentUser, {
+      first_name: 'Ghost', last_name: 'Gone', dob: '1980-01-01', gender: 'male',
+      demographics: {}, medical_history: {}, dental_history: { visit_type: 'cleaning' },
+      consents: [{ type: 'general', signer_name: 'G', signature_png: 'data:image/png;base64,AAAA' }],
+    });
+    db.saveVitals(currentUser, ghost.id, { bp_systolic: '120', heart_rate: '70' });
+
+    // Capture the rows exactly as the cloud holds them BEFORE the deletion.
+    const snap = db.collectSyncRows(400); db.markSynced(snap.mark);
+    const liveRow = snap.rows.find((r) => r.entity === 'patient' && r.data.last_name === 'Gone');
+    const liveConsent = snap.rows.find((r) => r.entity === 'consent');
+
+    db.deletePatient(currentUser, ghost.id);
+    log(!db.listPatients({ eventId: evD.id }).some((p) => p.last_name === 'Gone'),
+      'v1.6.2: deleting a patient removes them locally');
+    const tombs = db.collectSyncRows(400).rows.filter((r) => r.deleted);
+    log(tombs.some((r) => r.entity === 'patient') && tombs.some((r) => r.entity === 'consent'),
+      'v1.6.2: the deletion is queued for the cloud, chart and all');
+
+    // The failure the clinic hit: a station still holding the old copy pushes it
+    // back and the patient reappears as if nothing happened.
+    db.applyRemoteRows([liveRow]);
+    log(!db.listPatients({ eventId: evD.id }).some((p) => p.last_name === 'Gone'),
+      'v1.6.2: an old copy arriving from another station does NOT bring them back');
+    db.applyRemoteRows([liveConsent]);
+    log(!db.getPatient(ghost.id), 'v1.6.2: nor does an old consent or chart row re-create them');
+
+    // ...but a deliberate restore (a genuinely newer copy) must still work,
+    // otherwise "Restore a clinic from backup" would be silently blocked.
+    db.applyRemoteRows([{ ...liveRow, updated_at: '2099-12-31T23:59:59.000Z@peer' }]);
+    log(db.listPatients({ eventId: evD.id }).some((p) => p.last_name === 'Gone'),
+      'v1.6.2: a deliberate restore (a newer copy) still brings the patient back');
+
+    // A deletion arriving FROM another station is remembered here too, so this
+    // machine also refuses to re-create the record later.
+    const back = db.listPatients({ eventId: evD.id }).find((p) => p.last_name === 'Gone');
+    const uid = db.exportClinicBundle(evD.id).patients.find((p) => p.last_name === 'Gone').uid;
+    db.applyRemoteRows([{ entity: 'patient', uid, deleted: 1, updated_at: '2100-01-01T00:00:00.000Z@peer', data: {} }]);
+    log(!db.listPatients({ eventId: evD.id }).some((p) => p.id === back.id),
+      'v1.6.2: a deletion from another station removes the patient here');
+    db.applyRemoteRows([{ ...liveRow, uid, updated_at: '2099-06-01T00:00:00.000Z@peer' }]);
+    log(!db.listPatients({ eventId: evD.id }).some((p) => p.last_name === 'Gone'),
+      'v1.6.2: ...and this station then refuses to re-create it from an older copy');
+  }
+
   await tick();
   if (errors.length) errors.forEach((e) => log(false, 'RUNTIME: ' + e));
   const failed = results.filter((r) => !r[0]).length;

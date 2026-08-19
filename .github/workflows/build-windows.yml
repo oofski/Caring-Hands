@@ -50,16 +50,21 @@ jobs:
       - name: Publish downloadable release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.6.1-build.${{ github.run_number }}
-          name: Caring Hands v1.6.1 (build ${{ github.run_number }})
+          tag_name: v1.6.2-build.${{ github.run_number }}
+          name: Caring Hands v1.6.2 (build ${{ github.run_number }})
           prerelease: false
           make_latest: true
           body: |
-            ## Caring Hands Worldwide — Practice Management Software (v1.6.1)
+            ## Caring Hands Worldwide — Practice Management Software (v1.6.2)
 
             Offline-first dental clinic app for Windows. **Download the installer once — it auto-updates from here on.**
 
-            **New in v1.6.1 — tick patients out in one tap, and a clearer Reports tab**
+            **New in v1.6.2 — the numbers are right, and a deleted patient stays deleted**
+            - **IMPORTANT FIX: a deleted patient could come back.** Deleting someone removed them from the screen, but any other computer still holding the old copy would push it back on the next sync and the patient would reappear — which is why deletions looked like they "didn't take" across screens. Each station now remembers the deletion, so an old copy arriving from anywhere is refused. Deleting a patient still removes their whole chart — vitals, treatment, consents and x-rays — from every computer and the cloud. Restoring a clinic from a backup still works, because a deliberate restore is newer than the deletion.
+            - **Fixed: "Completed" ignored everyone who had been checked out.** A patient who has been seen and sent home has finished their visit, but the report only counted patients sitting at status "completed" — so a clinic where everyone had been through could read **0%**. The tile is now **"Visits finished"** and counts everyone who finished *or* was checked out, with the real share and how many actually left. The completion ring and the daily chart agree with it.
+            - **New: sign-ups vs check-outs.** A breakdown of how many people who signed up were actually checked out, as a percentage — split by **pre-registered online** versus **registered on site**, each with its share of all sign-ups and its own check-out rate. That answers whether the people who book through the online link turn up and finish at the same rate as walk-ins, which nothing in the app could tell you before.
+
+            **From v1.6.1 — tick patients out in one tap, and a clearer Reports tab**
             - **Check patients out with a single tick.** Every patient in **Ready to check out** now has a green **✓ Check out** button right on their row, so the desk can work down a queue of finished patients without opening each record. It still asks you to confirm. Opening the record to review first is unchanged for anyone who wants it.
             - **A completed tick on everyone who has left.** Checked-out patients show a green check beside their name and the row settles back, so at a glance you can see who is still waiting and who is done.
             - **Reports reads like a report now.** Every breakdown — gender, age, language, city, procedures, conditions — is **ranked biggest first** and shows **both the count and its share of the total**, which is the number a grant return actually asks for. Long lists (cities, languages) show the top few with a *Show more* rather than running down the page.
@@ -243,8 +248,8 @@ jobs:
 
             Includes everything from v1.0.2–1.1.1 (optional Cloud Sync, triage-free flow, per-event staff, Oregon consent, USB workflow, accountability, Russian, in-app auto-update).
 
-            - **Caring-Hands-Setup-1.6.1.exe** — installer (recommended; required for auto-update).
-            - **Caring-Hands-Portable-1.6.1.exe** — portable (no auto-update).
+            - **Caring-Hands-Setup-1.6.2.exe** — installer (recommended; required for auto-update).
+            - **Caring-Hands-Portable-1.6.2.exe** — portable (no auto-update).
 
             First sign-in: `admin / admin` — then create your staff accounts. All clinical data stays on the device unless you enable Cloud Sync.
           files: |

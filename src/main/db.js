@@ -1984,7 +1984,24 @@ function applyRemoteRows(remoteRows) {
       const hit = db.prepare(`SELECT id FROM ${table} WHERE uid = ?`).get(env.uid);
       if (hit) { db.prepare(`DELETE FROM ${table} WHERE id = ?`).run(hit.id); applied++; }
       else skipped++;
+      // Remember the deletion locally too. Without this the record is gone now
+      // but any station still holding an old copy re-creates it on the next
+      // sync — the patient reappears and the deletion looks like it never took.
+      // Marked 'sent' because this tombstone came FROM the cloud.
+      db.prepare(`INSERT INTO tombstones (uid, entity, event_uid, updated_at, synced_rev, created_at)
+                  VALUES (?,?,?,?,'sent',?)
+                  ON CONFLICT(uid) DO UPDATE SET updated_at = excluded.updated_at`)
+        .run(env.uid, entity, env.event_uid || null, env.updated_at || stampNow(), now());
       return;
+    }
+    // Was this record deleted here? A deletion beats any copy that is not newer
+    // than the deletion itself. A copy that IS newer means the record was
+    // deliberately brought back (a restore, or an edit after the delete), so the
+    // tombstone is retired and the row applies normally.
+    const tomb = db.prepare('SELECT updated_at FROM tombstones WHERE uid = ?').get(env.uid);
+    if (tomb) {
+      if (!(env.updated_at && String(env.updated_at) > String(tomb.updated_at))) { skipped++; return; }
+      db.prepare('DELETE FROM tombstones WHERE uid = ?').run(env.uid);
     }
     if (!env.data) { skipped++; return; }
     const existing = db.prepare(`SELECT id, updated_at FROM ${table} WHERE uid = ?`).get(env.uid);
