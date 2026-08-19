@@ -643,7 +643,7 @@ export function renderAdmin(ctx, params = {}) {
       onClick: async () => {
         const ok = await modal({
           title: 'Re-sync everything?',
-          body: 'This station will re-read every patient and record from the clinic cloud. Nothing is deleted and nothing is duplicated — use it if this computer is missing patients that the other computers can see. It can take a minute on a big clinic.',
+          body: 'This station will re-read every patient and record from the clinic cloud, and re-apply any deletions made on the other computers. Nothing is duplicated, and nothing you have here that the cloud does not know about is lost — use it if this computer is out of step with the others. It can take a minute on a big clinic.',
           confirmText: 'Re-sync everything',
           cancelText: 'Cancel',
         });
@@ -651,7 +651,10 @@ export function renderAdmin(ctx, params = {}) {
         resyncBtn.disabled = true;
         try {
           const r = await api.cloudResync();
-          toast(`Re-synced — ${r.applied || 0} record(s) brought in`, 'success');
+          // Deletions used to be counted as records "brought in", which read as
+          // the opposite of what had happened.
+          const brought = r.applied || 0, removed = r.deleted || 0;
+          toast(`Re-synced — ${brought} record(s) brought in${removed ? `, ${removed} removed` : ''}`, 'success');
           paint();
         } catch (e) { toast(e.message, 'error'); }
         finally { resyncBtn.disabled = false; }

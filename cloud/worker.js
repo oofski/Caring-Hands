@@ -1,4 +1,4 @@
-// Caring Hands — Cloud Sync Worker (v1.6.0)
+// Caring Hands — Cloud Sync Worker (v1.6.1)
 // =============================================================================
 // NO INSTALLS NEEDED. To deploy: create a Worker in the Cloudflare dashboard,
 // paste THIS ENTIRE FILE into its code editor, then:
@@ -15,7 +15,7 @@
 // See ./SYNC_CONTRACT.md for the exact API + schema this implements.
 
 const SERVICE = 'caring-hands-sync';
-const VERSION = '1.6.0';
+const VERSION = '1.6.1';
 const DEFAULT_LIMIT = 500;
 const MAX_LIMIT = 1000;
 
@@ -183,11 +183,21 @@ async function handlePush(request, env) {
     // apply rule ("apply only when env > local") — server and client can never
     // diverge on an equal-timestamp tie.
     const existing = await env.DB
-      .prepare('SELECT updated_at FROM sync_rows WHERE uid = ?')
+      .prepare('SELECT updated_at, deleted FROM sync_rows WHERE uid = ?')
       .bind(row.uid)
       .first();
 
     if (existing && String(row.updated_at) <= String(existing.updated_at)) {
+      skipped++;
+      continue;
+    }
+
+    // A deletion is sticky. Plain last-write-wins let a station that had been
+    // offline push its old copy back over the tombstone — the row's `deleted`
+    // flag was cleared and the patient reappeared on every station, as a shell
+    // with no chart (the children stayed deleted). A record only comes back when
+    // someone deliberately restores it, which says so explicitly.
+    if (existing && existing.deleted && !row.deleted && !isUndelete(row)) {
       skipped++;
       continue;
     }
@@ -791,6 +801,12 @@ function constantTimeEqual(a, b) {
 // ---------------------------------------------------------------------------
 // Validation & helpers
 // ---------------------------------------------------------------------------
+
+// A restore is the one legitimate way to bring a deleted record back, and it
+// says so on the row rather than relying on being "newer than the deletion".
+function isUndelete(row) {
+  return row && (row.undelete === true || row.undelete === 1 || row.undelete === 'true');
+}
 
 function isValidRow(row) {
   return (

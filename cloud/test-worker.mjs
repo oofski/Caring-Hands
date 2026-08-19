@@ -35,10 +35,10 @@ function makeFakeD1() {
       },
       async first() {
         const s = this._sql;
-        if (/SELECT updated_at FROM sync_rows WHERE uid = \?/.test(s)) {
+        if (/SELECT updated_at(, deleted)? FROM sync_rows WHERE uid = \?/.test(s)) {
           const uid = this._binds[0];
           const row = store.get(uid);
-          return row ? { updated_at: row.updated_at } : null;
+          return row ? { updated_at: row.updated_at, deleted: row.deleted ? 1 : 0 } : null;
         }
         // Pre-registration: look up an event row by uid (must exist, not deleted).
         if (/SELECT data FROM sync_rows WHERE uid = \? AND entity = 'event' AND deleted = 0/.test(s)) {
@@ -159,7 +159,7 @@ async function main() {
       h.data &&
       h.data.ok === true &&
       h.data.service === 'caring-hands-sync' &&
-      h.data.version === '1.6.0' &&
+      h.data.version === '1.6.1' &&
       h.data.seq === true &&
       typeof h.data.time === 'string'
   );
@@ -628,6 +628,37 @@ async function main() {
     const legacy = await pullFrom('2026-07-30T17:01:00.000Z@old');
     check('v1.5.0: an older app\'s timestamp cursor is still served (rolling update)',
       legacy.data.mode === 'time' && String(legacy.data.cursor).includes('T') && namesIn(legacy).includes('Bianca'));
+  }
+
+  // --- v1.6.1: a deletion is sticky in the cloud ---
+  // Plain last-write-wins let a station that had been offline push its old copy
+  // back over the tombstone, clearing `deleted` and resurrecting the patient on
+  // every station — as a shell, because the chart rows stayed deleted.
+  {
+    const envD = { CLINIC_KEY, DB: makeFakeD1() };
+    const push = (rows) => call(envD, 'POST', '/v1/push', { auth: CLINIC_KEY, body: { device_id: 'd', rows } });
+    const pull = () => call(envD, 'GET', '/v1/pull?since=0&limit=100', { auth: CLINIC_KEY });
+    const live = (stamp, extra = {}) => ({
+      entity: 'patient', uid: 'p-sticky', event_uid: 'e1', patient_uid: null, deleted: 0,
+      updated_at: stamp, data: { first_name: 'Back', last_name: 'Again' }, ...extra,
+    });
+
+    await push([live('2026-01-01T00:00:00.000Z@a')]);
+    await push([{ entity: 'patient', uid: 'p-sticky', event_uid: 'e1', deleted: 1, updated_at: '2026-01-02T00:00:00.000Z@a', data: {} }]);
+    let rows = (await pull()).data.rows.filter((r) => r.uid === 'p-sticky');
+    check('v1.6.1: a deletion is stored in the cloud', rows.length === 1 && rows[0].deleted === 1);
+
+    // The offline station catches up and pushes its NEWER copy.
+    const late = await push([live('2026-01-03T00:00:00.000Z@b')]);
+    rows = (await pull()).data.rows.filter((r) => r.uid === 'p-sticky');
+    check('v1.6.1: a newer copy from a station that missed the deletion does NOT undo it',
+      late.data.skipped === 1 && rows[0].deleted === 1);
+
+    // A deliberate restore says so, and is allowed through.
+    const revive = await push([live('2026-01-04T00:00:00.000Z@a', { undelete: true })]);
+    rows = (await pull()).data.rows.filter((r) => r.uid === 'p-sticky');
+    check('v1.6.1: a deliberate restore is allowed to bring the record back',
+      revive.data.applied === 1 && rows[0].deleted === 0 && rows[0].data.last_name === 'Again');
   }
 
   // --- summary ---

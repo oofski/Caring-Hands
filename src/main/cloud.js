@@ -79,7 +79,7 @@ async function pullOnce(base, key) {
     try { health = await httpJson('GET', base + '/health', null); } catch { /* offline / older server */ }
     if (health && health.seq === true) { cursor = ''; db.setSyncMeta({ cursor }); }
   }
-  let pulled = 0, applied = 0, guard = 0;
+  let pulled = 0, applied = 0, removed = 0, guard = 0;
   // Retry any previously-orphaned rows first — their parent may have arrived
   // since (e.g. a treatment that was pulled before its patient).
   let carry = db.getSyncPending();
@@ -97,7 +97,7 @@ async function pullOnce(base, key) {
     const batch = carry.length ? carry.concat(rows) : rows;
     if (batch.length) {
       const res = db.applyRemoteRows(batch);
-      applied += res.applied; pulled += rows.length;
+      applied += res.applied; removed += (res.deleted || 0); pulled += rows.length;
       carry = res.deferredRows || [];
     }
     // Accept "0" as a real cursor value (a counter can legitimately be 0).
@@ -107,7 +107,7 @@ async function pullOnce(base, key) {
   }
   // Park still-unresolved orphans for the next cycle (bounded, persisted).
   db.setSyncPending(carry);
-  return { pulled, applied };
+  return { pulled, applied, deleted: removed };
 }
 
 // One full push+pull cycle. Never throws — records status instead.
@@ -120,11 +120,11 @@ async function syncOnce() {
   const deviceId = db.ensureDeviceId();
   try {
     const pushed = await pushOnce(base, meta.key, deviceId);
-    const { pulled, applied } = await pullOnce(base, meta.key);
+    const { pulled, applied, deleted } = await pullOnce(base, meta.key);
     db.setSyncMeta({ lastOk: new Date().toISOString(), lastError: '' });
-    lastResult = { pushed, pulled, applied };
+    lastResult = { pushed, pulled, applied, deleted };
     if (applied > 0) notifyRenderer();
-    return { ok: true, pushed, pulled, applied };
+    return { ok: true, pushed, pulled, applied, deleted };
   } catch (e) {
     db.setSyncMeta({ lastError: e.message || String(e) });
     return { ok: false, error: e.message || String(e) };

@@ -7,7 +7,10 @@ export function isIncompleteRecord(p) {
   const noName = !(p.first_name || '').trim() || !(p.last_name || '').trim();
   const d = p.demographics || {}, m = p.medical_history || {}, dh = p.dental_history || {};
   const emptyData = !Object.keys(d).length && !Object.keys(m).length && !Object.keys(dh).length;
-  return noName || emptyData;
+  // BOTH, not either. A patient whose name simply wasn't captured can still have
+  // vitals, a signed consent and x-rays on file, and "delete this empty record"
+  // cascades all of it. Only a record that is genuinely empty qualifies.
+  return noName && emptyData;
 }
 
 // A clear banner explaining an incomplete legacy record, with optional actions.

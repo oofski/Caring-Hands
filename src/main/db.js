@@ -221,6 +221,9 @@ function migrate() {
   // row was simply pulled back from the cloud. A tombstone is the record OF a
   // deletion: it carries the uid and nothing else (no patient data), is pushed
   // like any other row, and tells every other station and the cloud to drop it.
+  // Rows a restore is deliberately bringing back from the dead. Consumed once,
+  // when the row is next pushed, so the cloud lets it past a sticky deletion.
+  db.exec('CREATE TABLE IF NOT EXISTS undeletes (uid TEXT PRIMARY KEY, created_at TEXT NOT NULL)');
   db.exec(`CREATE TABLE IF NOT EXISTS tombstones (
     uid TEXT PRIMARY KEY, entity TEXT NOT NULL, event_uid TEXT,
     updated_at TEXT NOT NULL, synced_rev TEXT, created_at TEXT NOT NULL)`);
@@ -535,12 +538,19 @@ function createUser(actor, { username, full_name, role, password, event_id }) {
 function clearEventStaff(actor, eventId) {
   const eid = Number(eventId);
   if (!eid) throw new Error('An event is required to clear its staff.');
+  ensureUids();
   const rows = db.prepare(
     `SELECT * FROM users WHERE event_id = ? AND role != 'admin'`
   ).all(eid).filter((r) => !(actor && actor.id === r.id));
   const ids = rows.map((r) => r.id);
   const del = db.prepare('DELETE FROM users WHERE id = ?');
-  const tx = db.transaction(() => { detachUserRefs(ids); ids.forEach((id) => del.run(id)); });
+  const tx = db.transaction(() => {
+    detachUserRefs(ids);
+    // Each account carries its own password hash to every laptop, so clearing
+    // staff has to travel or they simply keep signing in elsewhere.
+    rows.forEach((r) => recordTombstone(r.uid, 'user', r.event_id ? uidOf('events', r.event_id) : null));
+    ids.forEach((id) => del.run(id));
+  });
   tx();
   audit(actor, 'clear_staff', 'event', eid, `${rows.length} staff account(s)`);
   return { deleted: rows.length };
@@ -590,6 +600,13 @@ function detachUserRefs(ids) {
 }
 
 function deleteUser(actor, id) {
+  ensureUids();
+  // A staff account is a synced entity carrying its own password hash, so a
+  // local-only delete leaves them able to sign in on every other laptop.
+  {
+    const u = db.prepare('SELECT uid, event_id FROM users WHERE id = ?').get(id);
+    if (u && u.uid) recordTombstone(u.uid, 'user', u.event_id ? uidOf('events', u.event_id) : null);
+  }
   const row = db.prepare('SELECT * FROM users WHERE id = ?').get(id);
   if (!row) throw new Error('User not found.');
   if (actor && actor.id === id) throw new Error('You cannot delete your own account.');
@@ -676,8 +693,15 @@ function deleteEvent(actor, id, { force } = {}) {
   if (count > 0 && !force) {
     throw new Error(`This event has ${count} patient record(s). Turn it off instead, or confirm permanent deletion.`);
   }
-  // Cascade: patients -> (triage/treatments/consents/xrays cascade via FK ON DELETE CASCADE)
+  // Cascade: patients -> (triage/treatments/consents/xrays cascade via FK ON DELETE CASCADE).
+  // The local cascade has no cloud counterpart, so every row has to be
+  // tombstoned by hand or the whole clinic survives on the other stations.
+  ensureUids();
   const tx = db.transaction(() => {
+    for (const p of db.prepare('SELECT id FROM patients WHERE event_id = ?').all(id)) tombstonePatient(p.id);
+    recordTombstone(e.uid, 'event', null);
+    // event_reports has no FK to events, so its rows would be orphaned locally.
+    db.prepare('DELETE FROM event_reports WHERE event_id = ?').run(id);
     db.prepare('DELETE FROM patients WHERE event_id = ?').run(id);
     db.prepare('DELETE FROM events WHERE id = ?').run(id);
   });
@@ -899,6 +923,17 @@ function patientHistory(patientId) {
   });
 }
 
+// Record that a row was deleted, so the deletion reaches the cloud and every
+// other station instead of the record simply being pulled back. Every delete
+// path must call this — a DELETE without one is a local-only illusion.
+function recordTombstone(uid, entity, eventUid) {
+  if (!uid) return;
+  db.prepare(
+    `INSERT INTO tombstones (uid, entity, event_uid, updated_at, synced_rev, created_at)
+     VALUES (?,?,?,?,NULL,?) ON CONFLICT(uid) DO UPDATE SET synced_rev = NULL, updated_at = excluded.updated_at`
+  ).run(uid, entity, eventUid || null, stampNow(), now());
+}
+
 function tombstonePatient(id) {
   const p = db.prepare('SELECT id, uid, event_id FROM patients WHERE id = ?').get(id);
   if (!p) return;
@@ -943,7 +978,7 @@ function listIncompletePatients() {
 function deleteIncompletePatients(actor) {
   const rows = listIncompletePatients();
   const del = db.prepare('DELETE FROM patients WHERE id = ?');
-  const tx = db.transaction(() => { rows.forEach((r) => del.run(r.id)); });
+  const tx = db.transaction(() => { rows.forEach((r) => { tombstonePatient(r.id); del.run(r.id); }); });
   tx();
   audit(actor, 'cleanup', 'patient', null, `${rows.length} incomplete record(s)`);
   return { deleted: rows.length };
@@ -1498,6 +1533,17 @@ function listXrays(patientId) {
 }
 
 function deleteXray(actor, id) {
+  ensureUids();
+  // An x-ray is a full sync entity carrying the image itself, so deleting it on
+  // one laptop and nowhere else leaves the image on every other station and in
+  // the cloud forever.
+  {
+    const x = db.prepare('SELECT uid, patient_id FROM xrays WHERE id = ?').get(id);
+    if (x && x.uid) {
+      const pr = db.prepare('SELECT event_id FROM patients WHERE id = ?').get(x.patient_id);
+      recordTombstone(x.uid, 'xray', pr && pr.event_id ? uidOf('events', pr.event_id) : null);
+    }
+  }
   const row = db.prepare('SELECT patient_id FROM xrays WHERE id = ?').get(id);
   if (!row) throw new Error('X-ray not found.');
   db.prepare('DELETE FROM xrays WHERE id = ?').run(id);
@@ -1685,6 +1731,10 @@ function importClinicBundle(actor, bundle) {
     for (let i = 0; i < uids.length; i += chunk) {
       const part = uids.slice(i, i + chunk);
       db.prepare(`DELETE FROM tombstones WHERE uid IN (${part.map(() => '?').join(',')})`).run(...part);
+      // The cloud treats a deletion as sticky, so a restored row has to say
+      // explicitly that it is a deliberate revival or it will be refused.
+      db.prepare(`INSERT INTO undeletes (uid, created_at) VALUES ${part.map(() => '(?,?)').join(',')}
+                  ON CONFLICT(uid) DO NOTHING`).run(...part.flatMap((u) => [u, now()]));
     }
   }
   audit(actor, 'import', 'event', eventId, `${counts.patients} restored, ${counts.updated} updated`);
@@ -1927,15 +1977,17 @@ function collectSyncRows(max = 400) {
           db.prepare(`UPDATE ${table} SET updated_at = ?, content_rev = ? WHERE id = ?`).run(updatedAt, s, row.id);
         }
       }
+      const reviving = !!db.prepare('SELECT 1 FROM undeletes WHERE uid = ?').get(row.uid);
       rows.push({
         entity, uid: row.uid,
+        ...(reviving ? { undelete: true } : {}),
         // Patients and (event-scoped) staff both hang off an event; a global admin
         // has event_id NULL -> event_uid NULL (no parent, never deferred on apply).
         event_uid: (entity === 'patient' || entity === 'user' || entity === 'report') ? uidOf('events', row.event_id) : null,
         patient_uid: (entity !== 'event' && entity !== 'patient' && entity !== 'user' && entity !== 'report') ? uidOf('patients', row.patient_id) : null,
         deleted: 0, updated_at: updatedAt, data,
       });
-      mark.push({ table, id: row.id, sig: s });
+      mark.push({ table, id: row.id, sig: s, undelete: reviving ? row.uid : null });
     }
   }
   // Deletions travel too. A tombstone carries a uid and nothing else, so a
@@ -1964,6 +2016,7 @@ function markSynced(mark) {
         continue;
       }
       db.prepare(`UPDATE ${m.table} SET synced_rev = ? WHERE id = ? AND content_rev = ?`).run(m.sig, m.id, m.sig);
+      if (m.undelete) db.prepare('DELETE FROM undeletes WHERE uid = ?').run(m.undelete);
     }
   });
   tx();
@@ -1973,7 +2026,7 @@ function markSynced(mark) {
 // local ids and marking applied rows clean so they are never echoed back.
 function applyRemoteRows(remoteRows) {
   const list = (remoteRows || []).slice().sort((a, b) => APPLY_ORDER.indexOf(a.entity) - APPLY_ORDER.indexOf(b.entity));
-  let applied = 0, skipped = 0, deferred = 0;
+  let applied = 0, skipped = 0, deferred = 0, deleted = 0;
   const deferredRows = [];
   const applyOne = (env) => {
     const entity = env.entity, table = ENTITY_TABLE[entity];
@@ -1981,8 +2034,12 @@ function applyRemoteRows(remoteRows) {
     // A tombstone from another station (or the cloud purge): remove the record
     // here too. Children cascade via the schema's ON DELETE CASCADE.
     if (env.deleted) {
-      const hit = db.prepare(`SELECT id FROM ${table} WHERE uid = ?`).get(env.uid);
-      if (hit) { db.prepare(`DELETE FROM ${table} WHERE id = ?`).run(hit.id); applied++; }
+      const hit = db.prepare(`SELECT id, updated_at FROM ${table} WHERE uid = ?`).get(env.uid);
+      // Same last-write-wins rule the live branch uses. Without it, a station
+      // with a big unpushed backlog has recent local edits wiped by an older
+      // deletion it is only now catching up on.
+      if (hit && hit.updated_at && env.updated_at && String(hit.updated_at) >= String(env.updated_at)) { skipped++; return; }
+      if (hit) { db.prepare(`DELETE FROM ${table} WHERE id = ?`).run(hit.id); deleted++; }
       else skipped++;
       // Remember the deletion locally too. Without this the record is gone now
       // but any station still holding an old copy re-creates it on the next
@@ -2072,7 +2129,9 @@ function applyRemoteRows(remoteRows) {
   if (list.some((e) => e.entity === 'event')) resolveActiveEvent();
   // deferredRows = children whose parent wasn't present in THIS batch. The caller
   // (cloud.js) holds the sync cursor back so they are re-pulled, never lost.
-  return { applied, skipped, deferred, deferredRows };
+  // Deletions are reported separately so a caller (and the user-facing toast)
+  // can say "brought in" and "removed" honestly instead of lumping them together.
+  return { applied, skipped, deferred, deleted, deferredRows };
 }
 
 // Cloud config/state lives in the settings table under a cloud_ prefix.

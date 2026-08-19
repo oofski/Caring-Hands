@@ -58,7 +58,20 @@ function saveNavGroupsState(s) { try { window.localStorage.setItem(NAV_STATE_KEY
 // auto-refresh never repaints over an open chart. (Internal detail() calls
 // don't go through navigate(), so params.id alone can't tell us.)
 let detailOpen = false;
-const ctx = { navigate, toast: (m, k) => toast(m, k), store, setDetail: (v) => { detailOpen = !!v; } };
+const ctx = {
+  navigate,
+  toast: (m, k) => toast(m, k),
+  store,
+  // Closing a patient detail also has to clear the id we navigated in with.
+  // The EMT, hygienist and check-out screens return to their queue by calling
+  // their own queue() rather than navigate(), so lastNav.params.id stayed set
+  // and the live-refresh guard below bailed out for the rest of the session —
+  // those queues silently stopped updating, including for deletions.
+  setDetail: (v) => {
+    detailOpen = !!v;
+    if (!detailOpen && lastNav.params && lastNav.params.id) lastNav = { name: lastNav.name, params: {} };
+  },
+};
 
 // App version + offline-update state, shown in any view.
 const appInfo = { version: '', hasUpdate: false, latest: null, checked: false };

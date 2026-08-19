@@ -1320,8 +1320,9 @@ async function main() {
     db.setActiveEvent(currentUser, ev.id);
     const victim = db.createPatient(currentUser, { first_name: 'Gone', last_name: 'Soon', demographics: {}, medical_history: {}, dental_history: {} });
     const vUid = db.exportClinicBundle(ev.id).patients.find((p) => p.last_name === 'Soon').uid;
+    // v1.6.3: deletions are counted separately from records brought in.
     const del = db.applyRemoteRows([{ entity: 'patient', uid: vUid, deleted: 1, updated_at: '2099-12-31T00:00:00.000Z@peer', data: {} }]);
-    log(del.applied === 1 && !db.listPatients({ eventId: ev.id }).find((p) => p.id === victim.id),
+    log(del.deleted === 1 && !db.listPatients({ eventId: ev.id }).find((p) => p.id === victim.id),
       'v1.6.0: a deletion from another station removes the patient here as well');
 
     // Restore puts the whole clinic back, signatures and images included.
@@ -1510,6 +1511,60 @@ async function main() {
     db.applyRemoteRows([{ ...liveRow, uid, updated_at: '2099-06-01T00:00:00.000Z@peer' }]);
     log(!db.listPatients({ eventId: evD.id }).some((p) => p.last_name === 'Gone'),
       'v1.6.2: ...and this station then refuses to re-create it from an older copy');
+  }
+
+  // ---- v1.6.3: EVERY delete travels, not just the patient one ----
+  {
+    currentUser = db.login('admin', 'admin');
+    const evT = db.createEvent(currentUser, { name: 'Travel Test' });
+    db.setActiveEvent(currentUser, evT.id);
+    const tombUids = () => new Set(db.collectSyncRows(800).rows.filter((r) => r.deleted).map((r) => r.uid));
+
+    // An x-ray carries its own image to every station.
+    const xp = db.createPatient(currentUser, { first_name: 'X', last_name: 'Ray', demographics: {}, medical_history: {}, dental_history: {} });
+    const xr = db.addXray(currentUser, xp.id, { station: 'dentist', image_png: 'data:image/jpeg;base64,AAAA', note: 'x.jpg', tooth: '14' });
+    const xUid = db.exportClinicBundle(evT.id).xrays.find((x) => x.id === xr.id).uid;
+    db.deleteXray(currentUser, xr.id);
+    log(tombUids().has(xUid), 'v1.6.3: deleting an x-ray removes it from the cloud too, not just this laptop');
+
+    // The empty-record cleanup says "permanently"; make sure it is.
+    const junk = db.createPatient(currentUser, { first_name: 'A', last_name: 'B', demographics: {}, medical_history: {}, dental_history: {} });
+    const junkUid = db.exportClinicBundle(evT.id).patients.find((p) => p.id === junk.id).uid;
+    db.deleteIncompletePatients(currentUser);
+    log(tombUids().has(junkUid), 'v1.6.3: clearing empty records is permanent everywhere, as the dialog claims');
+
+    // Revoking a staff account has to revoke it on every laptop — the account
+    // carries its own password hash.
+    const u = db.createUser(currentUser, { username: 'gone.soon', full_name: 'Gone Soon', role: 'emt', password: 'demo1234', event_id: evT.id });
+    db.collectSyncRows(800); // give the account a uid, as a first sync would
+    db.deleteUser(currentUser, u.id);
+    const afterUsers = db.collectSyncRows(800).rows.filter((r) => r.deleted && r.entity === 'user');
+    log(afterUsers.length >= 1, 'v1.6.3: deleting a staff account revokes it on every laptop');
+
+    // "Start fresh for next event" is a revocation, not a local tidy-up.
+    const u2 = db.createUser(currentUser, { username: 'fresh.one', full_name: 'Fresh One', role: 'hygienist', password: 'demo1234', event_id: evT.id });
+    db.collectSyncRows(800);
+    db.clearEventStaff(currentUser, evT.id);
+    const clearedTombs = db.collectSyncRows(800).rows.filter((r) => r.deleted && r.entity === 'user');
+    log(clearedTombs.length >= 1, 'v1.6.3: "Start fresh for next event" revokes those accounts everywhere');
+
+    // Force-deleting an event must clear its patients from the cloud as well.
+    const ev2 = db.createEvent(currentUser, { name: 'Doomed' });
+    db.setActiveEvent(currentUser, ev2.id);
+    const dp = db.createPatient(currentUser, { first_name: 'Doom', last_name: 'Ed', demographics: {}, medical_history: {}, dental_history: {} });
+    const dpUid = db.exportClinicBundle(ev2.id).patients.find((p) => p.id === dp.id).uid;
+    db.setActiveEvent(currentUser, evT.id);
+    db.deleteEvent(currentUser, ev2.id, { force: true });
+    log(tombUids().has(dpUid), 'v1.6.3: force-deleting an event clears its patients from the cloud too');
+
+    // A stale deletion must not wipe a newer local edit.
+    const keep = db.createPatient(currentUser, { first_name: 'Keep', last_name: 'Me', demographics: {}, medical_history: {}, dental_history: {} });
+    db.collectSyncRows(800);
+    const keepUid = db.exportClinicBundle(evT.id).patients.find((p) => p.id === keep.id).uid;
+    db.updatePatient(currentUser, keep.id, { first_name: 'Keep', last_name: 'Me', phone: '5035551234' });
+    const stale = db.applyRemoteRows([{ entity: 'patient', uid: keepUid, deleted: 1, updated_at: '2000-01-01T00:00:00.000Z@old', data: {} }]);
+    log(stale.deleted === 0 && !!db.listPatients({ eventId: evT.id }).find((p) => p.id === keep.id),
+      'v1.6.3: an old deletion does not wipe a newer local edit');
   }
 
   await tick();

@@ -50,16 +50,28 @@ jobs:
       - name: Publish downloadable release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.6.2-build.${{ github.run_number }}
-          name: Caring Hands v1.6.2 (build ${{ github.run_number }})
+          tag_name: v1.6.3-build.${{ github.run_number }}
+          name: Caring Hands v1.6.3 (build ${{ github.run_number }})
           prerelease: false
           make_latest: true
           body: |
-            ## Caring Hands Worldwide — Practice Management Software (v1.6.2)
+            ## Caring Hands Worldwide — Practice Management Software (v1.6.3)
 
             Offline-first dental clinic app for Windows. **Download the installer once — it auto-updates from here on.**
 
-            **New in v1.6.2 — the numbers are right, and a deleted patient stays deleted**
+            **New in v1.6.3 — every kind of deletion now sticks, everywhere**
+            v1.6.2 stopped deleted *patients* coming back. A full audit found the same hole in every other kind of delete, plus a bug that quietly froze three queues. All fixed:
+            - **Deleting an x-ray** now removes it from every computer and the cloud. Before, it vanished on one laptop and stayed on all the others — image and all.
+            - **Removing a staff account, and "Start fresh for next event"**, now revoke access on **every** laptop. Before, a removed volunteer could still sign in on any other computer, and the accounts came back on a re-sync. Both dialogs said "this cannot be undone"; now that is true.
+            - **"Delete all empty records"** and **deleting an event with its patients** now clear those records from the cloud as well, as their warnings always claimed.
+            - **Fixed: the Vitals, Cleanings and Check-Out queues could silently stop updating.** If you opened a patient from the Dashboard or Management and then pressed Back, that screen never auto-refreshed again for the rest of the session — so patients moving through, *including ones deleted elsewhere*, stopped appearing until you clicked the sidebar item again.
+            - **A deleted record can no longer be revived by accident.** If a laptop was offline when a patient was deleted, its old copy used to overwrite the deletion and bring the patient back — as an empty shell with no chart. Deletions now win; only a deliberate **Restore from backup** brings a record back.
+            - **An old deletion can no longer wipe newer work.** A station catching up after a long time offline used to lose recent edits to a deletion it was only now hearing about.
+            - **Safety fix:** the dentist's "Delete this empty record" button deleted immediately with no confirmation, and could appear on a record that had a name missing but real vitals, x-rays and a signed consent on file. It now asks first, and only appears on records that are genuinely empty.
+            - **Honest wording:** "Re-sync everything" no longer claims nothing is deleted (it does re-apply deletions from other computers), and its summary counts records brought in and removed separately instead of reporting removals as arrivals.
+            - *This needs the clinic server refreshed (now v1.6.1) — the same one-time paste your admin has done before.*
+
+            **From v1.6.2 — the numbers are right, and a deleted patient stays deleted**
             - **IMPORTANT FIX: a deleted patient could come back.** Deleting someone removed them from the screen, but any other computer still holding the old copy would push it back on the next sync and the patient would reappear — which is why deletions looked like they "didn't take" across screens. Each station now remembers the deletion, so an old copy arriving from anywhere is refused. Deleting a patient still removes their whole chart — vitals, treatment, consents and x-rays — from every computer and the cloud. Restoring a clinic from a backup still works, because a deliberate restore is newer than the deletion.
             - **Fixed: "Completed" ignored everyone who had been checked out.** A patient who has been seen and sent home has finished their visit, but the report only counted patients sitting at status "completed" — so a clinic where everyone had been through could read **0%**. The tile is now **"Visits finished"** and counts everyone who finished *or* was checked out, with the real share and how many actually left. The completion ring and the daily chart agree with it.
             - **New: sign-ups vs check-outs.** A breakdown of how many people who signed up were actually checked out, as a percentage — split by **pre-registered online** versus **registered on site**, each with its share of all sign-ups and its own check-out rate. That answers whether the people who book through the online link turn up and finish at the same rate as walk-ins, which nothing in the app could tell you before.
@@ -248,8 +260,8 @@ jobs:
 
             Includes everything from v1.0.2–1.1.1 (optional Cloud Sync, triage-free flow, per-event staff, Oregon consent, USB workflow, accountability, Russian, in-app auto-update).
 
-            - **Caring-Hands-Setup-1.6.2.exe** — installer (recommended; required for auto-update).
-            - **Caring-Hands-Portable-1.6.2.exe** — portable (no auto-update).
+            - **Caring-Hands-Setup-1.6.3.exe** — installer (recommended; required for auto-update).
+            - **Caring-Hands-Portable-1.6.3.exe** — portable (no auto-update).
 
             First sign-in: `admin / admin` — then create your staff accounts. All clinical data stays on the device unless you enable Cloud Sync.
           files: |

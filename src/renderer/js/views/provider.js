@@ -776,7 +776,17 @@ export function renderProvider(ctx, params = {}) {
 
       incompleteBanner(p, {
         isAdmin: store.is('admin'),
-        onDelete: async () => { try { await api.deletePatient(id); toast('Empty record deleted', 'success'); ctx.navigate('provider'); } catch (e) { toast(e.message, 'error'); } },
+        // Deleting reaches every station and the cloud, so it asks first — the
+        // same confirmation the Records screen has always used.
+        onDelete: async () => {
+          const ok = await modal({
+            title: 'Delete this empty record?',
+            body: 'This record has no name and no intake data. Deleting it removes it from this computer, the clinic cloud and every other station. This cannot be undone.',
+            confirmText: 'Delete record', cancelText: 'Cancel', danger: true,
+          });
+          if (!ok) return;
+          try { await api.deletePatient(id); toast('Empty record deleted', 'success'); ctx.navigate('provider'); } catch (e) { toast(e.message, 'error'); }
+        },
         onNewCheckin: () => ctx.navigate('kiosk'),
       }),
       // F12: blood thinners get their own prominent danger banner above other
