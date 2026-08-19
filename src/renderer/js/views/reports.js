@@ -131,10 +131,10 @@ export function renderReports(ctx) {
         ]),
         el('div', { class: 'card' }, [
           el('div', { class: 'card-title' }, [icon('users', { size: 15 }), 'Patient demographics']),
-          demoGroup('By gender', gender, ['Male', 'Female', 'Other', 'Not recorded']),
-          demoGroup('By age', age, ['Under 18', '18–34', '35–54', '55+', 'Not recorded']),
-          demoGroup('By language', lang, Object.keys(lang)),
-          demoGroup('By city', city, Object.keys(city)),
+          demoGroup('By gender', gender, ['Male', 'Female', 'Other', 'Not recorded'], { sort: false }),
+          demoGroup('By age', age, ['Under 18', '18–34', '35–54', '55+', 'Not recorded'], { sort: false }),
+          demoGroup('By language', lang, Object.keys(lang), { limit: 4 }),
+          demoGroup('By city', city, Object.keys(city), { limit: 5 }),
         ]),
       ]),
 
@@ -156,8 +156,20 @@ export function renderReports(ctx) {
 
       // ---- Daily breakdown ----
       el('div', { class: 'card' }, [
-        el('div', { class: 'card-title' }, [icon('calendar', { size: 15 }), 'Daily breakdown']),
-        dailyRows.length ? dailyTable(dailyRows) : el('p', { class: 'muted' }, ['No activity recorded yet.']),
+        el('div', { class: 'card-title' }, [icon('calendar', { size: 15 }), 'Clinic activity by day']),
+        dailyRows.length
+          ? el('div', {}, [
+            dayChart(dailyRows),
+            el('div', { class: 'chart-key' }, [
+              el('span', { class: 'chart-key-item' }, [el('span', { class: 'chart-swatch chart-swatch--seen' }), 'Seen']),
+              el('span', { class: 'chart-key-item' }, [el('span', { class: 'chart-swatch chart-swatch--done' }), 'Completed']),
+            ]),
+            el('details', { class: 'collapse', style: 'margin-top:14px' }, [
+              el('summary', {}, [el('span', {}, ['Day-by-day numbers']), el('span', { class: 'subtle small' }, ['Show'])]),
+              el('div', { class: 'collapse-body' }, [dailyTable(dailyRows)]),
+            ]),
+          ])
+          : el('p', { class: 'muted' }, ['No activity recorded yet.']),
       ]),
     );
   }
@@ -194,14 +206,15 @@ function legRow(color, label, val) {
 }
 
 // ---- Demographics group: a sub-heading + ordered bar list (present buckets) ----
-function demoGroup(title, counts, order) {
+function demoGroup(title, counts, order, opts = {}) {
   const keys = order.filter((k) => counts[k]);
   Object.keys(counts).forEach((k) => { if (!keys.includes(k)) keys.push(k); });
   const obj = {};
   keys.forEach((k) => { obj[k] = counts[k]; });
+  const n = keys.reduce((t, k) => t + counts[k], 0);
   return el('div', { class: 'demo-group' }, [
-    el('div', { class: 'demo-h' }, [title]),
-    keys.length ? barList(obj) : el('p', { class: 'muted small' }, ['No data yet.']),
+    el('div', { class: 'demo-h' }, [title, el('span', { class: 'demo-n mono' }, [String(n)])]),
+    keys.length ? barList(obj, opts) : el('p', { class: 'muted small' }, ['No data yet.']),
   ]);
 }
 
@@ -243,13 +256,56 @@ function count(arr, fn) {
   arr.forEach((x) => { const k = fn(x) || 'Unknown'; out[k] = (out[k] || 0) + 1; });
   return out;
 }
-function barList(obj) {
-  const max = Math.max(1, ...Object.values(obj));
-  return el('div', { class: 'bar-list' }, Object.entries(obj).map(([k, v]) => el('div', { class: 'bar-row' }, [
-    el('span', { class: 'bar-label' }, [k]),
-    el('span', { class: 'bar-track' }, [el('span', { class: 'bar-fill', style: `width:${Math.round((v / max) * 100)}%` })]),
-    el('span', { class: 'bar-val' }, [String(v)]),
-  ])));
+// Ranked bars. Biggest first, because the question a clinic asks of any of
+// these lists is "which is the most" — and each row carries its share of the
+// total, which is what a grant return actually asks for.
+function barList(obj, opts = {}) {
+  const entries = Object.entries(obj).filter(([, v]) => v != null);
+  if (opts.sort !== false) entries.sort((a, b) => b[1] - a[1]);
+  const max = Math.max(1, ...entries.map(([, v]) => v));
+  const sum = entries.reduce((n, [, v]) => n + v, 0);
+  const limit = opts.limit || entries.length;
+  const shown = entries.slice(0, limit);
+  const rest = entries.slice(limit);
+
+  const rowFor = ([k, v]) => el('div', { class: 'bar-row' }, [
+    el('span', { class: 'bar-label', title: k }, [k]),
+    el('span', { class: 'bar-track' }, [el('span', { class: 'bar-fill', style: `width:${Math.max(2, Math.round((v / max) * 100))}%` })]),
+    el('span', { class: 'bar-val mono' }, [String(v)]),
+    el('span', { class: 'bar-pct mono' }, [sum ? Math.round((v / sum) * 100) + '%' : '—']),
+  ]);
+
+  const list = el('div', { class: 'bar-list' }, shown.map(rowFor));
+  if (!rest.length) return list;
+  // Long tails (cities, languages) stay out of the way until asked for.
+  const more = el('div', { class: 'bar-list', style: 'display:none' }, rest.map(rowFor));
+  const toggle = el('button', {
+    class: 'btn btn--ghost btn--sm', style: 'margin-top:8px',
+    onClick: () => {
+      const open = more.style.display !== 'none';
+      more.style.display = open ? 'none' : '';
+      toggle.textContent = open ? `Show ${rest.length} more` : 'Show fewer';
+    },
+  }, [`Show ${rest.length} more`]);
+  return el('div', {}, [list, more, toggle]);
+}
+
+// A compact column chart of the clinic day — the shape of the week at a glance,
+// which a table of numbers does not give you.
+function dayChart(rows) {
+  const max = Math.max(1, ...rows.map((d) => d.seen));
+  return el('div', { class: 'day-chart' }, rows.map((d) => {
+    const h = Math.max(3, Math.round((d.seen / max) * 100));
+    return el('div', { class: 'day-col', title: `${fmtDay(d.date)} — ${d.seen} seen, ${d.completed} completed` }, [
+      el('div', { class: 'day-bar-wrap' }, [
+        el('div', { class: 'day-bar', style: `height:${h}%` }, [
+          d.completed ? el('div', { class: 'day-bar-done', style: `height:${Math.round((d.completed / Math.max(1, d.seen)) * 100)}%` }) : null,
+        ]),
+      ]),
+      el('div', { class: 'day-n mono' }, [String(d.seen)]),
+      el('div', { class: 'day-label' }, [fmtDay(d.date)]),
+    ]);
+  }));
 }
 
 // ---- Email visit summaries: checked-out patients who left an email ----

@@ -50,16 +50,22 @@ jobs:
       - name: Publish downloadable release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.6.0-build.${{ github.run_number }}
-          name: Caring Hands v1.6.0 (build ${{ github.run_number }})
+          tag_name: v1.6.1-build.${{ github.run_number }}
+          name: Caring Hands v1.6.1 (build ${{ github.run_number }})
           prerelease: false
           make_latest: true
           body: |
-            ## Caring Hands Worldwide — Practice Management Software (v1.6.0)
+            ## Caring Hands Worldwide — Practice Management Software (v1.6.1)
 
             Offline-first dental clinic app for Windows. **Download the installer once — it auto-updates from here on.**
 
-            **New in v1.6.0 — take the clinic with you, then take it off the laptops**
+            **New in v1.6.1 — tick patients out in one tap, and a clearer Reports tab**
+            - **Check patients out with a single tick.** Every patient in **Ready to check out** now has a green **✓ Check out** button right on their row, so the desk can work down a queue of finished patients without opening each record. It still asks you to confirm. Opening the record to review first is unchanged for anyone who wants it.
+            - **A completed tick on everyone who has left.** Checked-out patients show a green check beside their name and the row settles back, so at a glance you can see who is still waiting and who is done.
+            - **Reports reads like a report now.** Every breakdown — gender, age, language, city, procedures, conditions — is **ranked biggest first** and shows **both the count and its share of the total**, which is the number a grant return actually asks for. Long lists (cities, languages) show the top few with a *Show more* rather than running down the page.
+            - **Clinic activity is a chart, not a wall of numbers.** The daily breakdown is now a **day-by-day column chart** with completed visits shaded inside each bar, so the shape of the clinic is visible at a glance. The full day-by-day table is still there, tucked underneath.
+
+            **From v1.6.0 — take the clinic with you, then take it off the laptops**
             - **Export a clinic as an Excel workbook.** Under **Admin → Backup & Export**, *Export clinic* saves a readable **.xlsx** with a sheet each for **Patients, Treatment, Consents and X-rays** — open it in Excel, Google Sheets or Numbers. Phone numbers and dates of birth stay text so Excel can't reformat them.
             - **…and a backup file that can put the clinic back.** Saved beside the workbook as a **.chbak.json**. A spreadsheet physically cannot hold **signed consents or x-ray images**, so the backup is what a real restore uses. *Restore a clinic from backup* brings everything back — patients, vitals, treatments, signatures and images — matched by record, so restoring twice never duplicates anyone.
             - **Delete the clinic's patient data when you're done.** The delete button unlocks only **after** you've exported, then removes every patient record from **this computer, the clinic cloud, and every other station** when it next syncs. Previously a deleted record simply came back on the next sync — deletions now travel properly, including the consents and x-rays.
@@ -237,8 +243,8 @@ jobs:
 
             Includes everything from v1.0.2–1.1.1 (optional Cloud Sync, triage-free flow, per-event staff, Oregon consent, USB workflow, accountability, Russian, in-app auto-update).
 
-            - **Caring-Hands-Setup-1.6.0.exe** — installer (recommended; required for auto-update).
-            - **Caring-Hands-Portable-1.6.0.exe** — portable (no auto-update).
+            - **Caring-Hands-Setup-1.6.1.exe** — installer (recommended; required for auto-update).
+            - **Caring-Hands-Portable-1.6.1.exe** — portable (no auto-update).
 
             First sign-in: `admin / admin` — then create your staff accounts. All clinical data stays on the device unless you enable Cloud Sync.
           files: |

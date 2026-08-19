@@ -1338,6 +1338,66 @@ async function main() {
       'v1.6.0: importing the same file twice does not duplicate anyone');
   }
 
+  // ---- v1.6.1: one-tap check-out tick, and a modernised Reports tab ----
+  {
+    currentUser = db.login('admin', 'admin');
+    const ev61 = db.listEvents().find((e) => e.active) || db.listEvents()[0];
+    db.setActiveEvent(currentUser, ev61.id);
+    const mk = (last, city) => {
+      const p = db.createPatient(currentUser, {
+        first_name: 'Tick', last_name: last, dob: '1980-01-01', gender: 'female',
+        demographics: { city, state: 'OR' }, medical_history: { conditions: ['diabetes'] },
+        dental_history: { visit_type: 'cleaning' },
+        consents: [{ type: 'general', signer_name: 'T', signature_png: 'data:image/png;base64,AAAA' }],
+      });
+      db.saveVitals(currentUser, p.id, { bp_systolic: '120', bp_diastolic: '78', heart_rate: '70' });
+      db.routePatient(currentUser, p.id, 'hygienist');
+      db.saveTreatment(currentUser, p.id, { cleaning: { scaling: true }, clinical_notes: 'done' }, true);
+      return p;
+    };
+    const a1 = mk('Alpha', 'Sandy');
+    mk('Beta', 'Boring');
+
+    const store61 = (await import('../src/renderer/js/store.js')).store; store61.setUser(currentUser);
+    const ctx61 = { navigate: () => {}, toast: () => {}, store: store61, setDetail: () => {} };
+    const co = (await import('../src/renderer/js/views/checkout.js')).renderCheckout(ctx61);
+    document.body.append(co);
+    for (let i = 0; i < 6; i++) await tick();
+
+    const tickBtns = Array.from(co.querySelectorAll('.tick-btn'));
+    log(tickBtns.length >= 2, 'v1.6.1: check-out lists a one-tap "Check out" tick for each ready patient');
+    const alphaRow = Array.from(co.querySelectorAll('tr')).find((r) => /Alpha/.test(r.textContent));
+    log(!!alphaRow && !!alphaRow.querySelector('.tick-btn'), 'v1.6.1: the tick sits on the patient\'s own row');
+
+    // Tick -> confirm -> the patient is checked out, without opening the record.
+    alphaRow.querySelector('.tick-btn').click();
+    await tick();
+    const confirmBtn = Array.from(document.querySelectorAll('.modal-card button')).find((b) => /Verify & dismiss/i.test(b.textContent));
+    log(!!confirmBtn, 'v1.6.1: ticking asks for confirmation before checking someone out');
+    confirmBtn.click();
+    for (let i = 0; i < 8; i++) await tick();
+    log(db.listPatients({}).find((p) => p.id === a1.id).status === 'dismissed',
+      'v1.6.1: confirming the tick checks the patient out from the list');
+    const doneRow = Array.from(co.querySelectorAll('tr')).find((r) => /Alpha/.test(r.textContent));
+    log(!!doneRow && !!doneRow.querySelector('.tick-done') && !doneRow.querySelector('.tick-btn'),
+      'v1.6.1: a checked-out patient shows the completed tick and no longer offers the button');
+
+    // Reports: ranked bars now carry a count AND a share, and the day chart draws.
+    const rep = (await import('../src/renderer/js/views/reports.js')).renderReports(ctx61);
+    document.body.append(rep);
+    for (let i = 0; i < 10; i++) await tick();
+    const rows = Array.from(rep.querySelectorAll('.bar-row'));
+    log(rows.length > 0 && rows.every((r) => r.querySelectorAll('.bar-val').length === 1 && r.querySelectorAll('.bar-pct').length === 1),
+      'v1.6.1: every breakdown row shows both a count and its share of the total');
+    const cityRows = Array.from(rep.querySelectorAll('.demo-group')).find((g) => /By city/i.test(g.textContent));
+    log(!!cityRows && /%/.test(cityRows.textContent), 'v1.6.1: the by-city breakdown carries percentages for grant reporting');
+    const cols = rep.querySelectorAll('.day-chart .day-col');
+    log(cols.length > 0, 'v1.6.1: clinic activity is drawn as a day-by-day chart');
+    log(!!rep.querySelector('.chart-key') && /Seen/.test(rep.textContent) && /Completed/.test(rep.textContent),
+      'v1.6.1: the chart is labelled so the bars can be read');
+    log(!!rep.querySelector('details.collapse'), 'v1.6.1: the day-by-day numbers are still available, tucked under the chart');
+  }
+
   await tick();
   if (errors.length) errors.forEach((e) => log(false, 'RUNTIME: ' + e));
   const failed = results.filter((r) => !r[0]).length;

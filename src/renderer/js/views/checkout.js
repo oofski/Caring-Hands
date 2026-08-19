@@ -31,15 +31,32 @@ export function renderCheckout(ctx, params = {}) {
     const patients = await api.listPatients({});
     const ready = patients.filter((p) => p.status === 'completed');
     const done = patients.filter((p) => p.status === 'dismissed');
-    const rowFor = (p) => el('tr', { style: 'cursor:pointer', onClick: () => detail(p.id) }, [
-      el('td', {}, [el('strong', {}, [`${p.last_name}, ${p.first_name}`])]),
-      el('td', { class: 'num' }, [p.age != null ? String(p.age) : '—']),
-      el('td', {}, [p.complaint || '—']),
-      el('td', {}, [statusPill(p.status),
-        // Green "Left" tag once the patient has actually been checked out.
-        p.status === 'dismissed' ? el('span', { class: 'pill pill--success', style: 'margin-left:6px', title: 'Checked out — the patient has left' }, [el('span', { class: 'pill-dot' }), 'Left']) : null]),
-      el('td', {}, [el('button', { class: 'btn btn--primary btn--sm', onClick: (e) => { e.stopPropagation(); detail(p.id); } }, ['Review', icon('chevron', { size: 15 })])]),
-    ]);
+    const rowFor = (p) => {
+      const isDone = p.status === 'dismissed';
+      // One-tap tick: check a patient out straight from the list. Opening the
+      // record to review first is still there, but a desk working through a
+      // queue of finished patients shouldn't have to open each one.
+      const tickBtn = el('button', {
+        class: 'btn btn--success btn--sm tick-btn',
+        title: `Check ${p.first_name} out`,
+        onClick: async (e) => { e.stopPropagation(); await dismiss(p); },
+      }, [icon('checkCircle', { size: 15 }), 'Check out']);
+      return el('tr', { class: isDone ? 'row--done' : '', style: 'cursor:pointer', onClick: () => detail(p.id) }, [
+        el('td', {}, [
+          isDone ? el('span', { class: 'tick-done', title: 'Checked out' }, [icon('checkCircle', { size: 16 })]) : null,
+          el('strong', {}, [`${p.last_name}, ${p.first_name}`]),
+        ]),
+        el('td', { class: 'num' }, [p.age != null ? String(p.age) : '—']),
+        el('td', {}, [p.complaint || '—']),
+        el('td', {}, [statusPill(p.status),
+          // Green "Left" tag once the patient has actually been checked out.
+          isDone ? el('span', { class: 'pill pill--success', style: 'margin-left:6px', title: 'Checked out — the patient has left' }, [el('span', { class: 'pill-dot' }), 'Left']) : null]),
+        el('td', {}, [el('div', { class: 'inline-row', style: 'margin:0; justify-content:flex-end' }, [
+          isDone ? null : tickBtn,
+          el('button', { class: 'btn btn--ghost btn--sm', onClick: (e) => { e.stopPropagation(); detail(p.id); } }, ['Review', icon('chevron', { size: 15 })]),
+        ])]),
+      ]);
+    };
     clear(root);
     mount(root,
       el('div', { class: 'view-head' }, [

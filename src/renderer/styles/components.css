@@ -117,10 +117,10 @@
 
 /* bars */
 .bar-list{ display:flex; flex-direction:column; gap:9px; }
-.bar-row{ display:grid; grid-template-columns:150px 1fr 36px; gap:10px; align-items:center; }
+.bar-row{ display:grid; grid-template-columns:minmax(84px,150px) 1fr 34px 38px; gap:10px; align-items:center; }
 .bar-label{ font-size:var(--fs-sm); color:var(--text-muted); }
-.bar-track{ background:var(--surface-sunken); border:1px solid var(--border-subtle); border-radius:var(--radius-xs); height:14px; overflow:hidden; }
-.bar-fill{ display:block; height:100%; background:var(--accent); }
+.bar-track{ background:var(--surface-sunken); border:1px solid var(--border-subtle); border-radius:999px; height:10px; overflow:hidden; }
+.bar-fill{ display:block; height:100%; background:var(--accent); border-radius:999px; transition:width var(--dur-med,.25s) var(--ease); }
 .bar-val{ font-weight:var(--fw-semibold); text-align:right; color:var(--text-strong); font-family:var(--font-mono); }
 
 /* connectivity & language packs */
@@ -376,7 +376,7 @@
 .demo-group{ margin-top:6px; }
 .demo-group + .demo-group{ margin-top:16px; }
 .demo-h{ font-size:var(--fs-2xs); text-transform:uppercase; letter-spacing:.06em; color:var(--text-subtle); font-weight:var(--fw-semibold); margin-bottom:8px; }
-.demo-group .bar-row{ grid-template-columns:110px 1fr 30px; }
+.demo-group .bar-row{ grid-template-columns:minmax(72px,110px) 1fr 30px 34px; }
 
 /* ===== Clinic dashboard: clickable KPIs + live CRM stage board ===== */
 .stat-card--link{ cursor:pointer; text-align:left; font:inherit; transition:border-color var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease); }
@@ -538,3 +538,34 @@
   font-family:var(--font-sans); font-size:var(--fs-sm); font-weight:var(--fw-semibold); color:var(--text-muted); }
 .arrival-tab:hover{ background:var(--surface-hover); }
 .arrival-tab.is-active{ color:var(--accent-text); border-color:var(--accent-border); background:var(--accent-soft); }
+
+/* ---- Check-out tick (v1.6.1) ---- */
+.tick-btn{ background:var(--success); color:#fff; border-color:transparent; }
+.tick-btn:hover{ filter:brightness(1.06); }
+.tick-done{ display:inline-flex; align-items:center; color:var(--success); margin-right:7px; vertical-align:-3px; }
+.row--done td{ color:var(--text-muted); }
+.row--done strong{ color:var(--text-muted); font-weight:var(--fw-medium); }
+
+/* ---- Reports: ranked bars, day chart (v1.6.1) ---- */
+.bar-label{ overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:var(--fs-sm); color:var(--text); }
+.bar-val{ text-align:right; font-weight:var(--fw-semibold); color:var(--text-strong); font-size:var(--fs-sm); }
+.bar-pct{ text-align:right; font-size:var(--fs-2xs); color:var(--text-subtle); }
+.demo-h{ display:flex; align-items:baseline; justify-content:space-between; gap:8px;
+  font-size:var(--fs-2xs); text-transform:uppercase; letter-spacing:var(--tracking-eyebrow);
+  color:var(--text-subtle); font-weight:var(--fw-semibold); margin:var(--space-4) 0 var(--space-2); }
+.demo-group:first-of-type .demo-h{ margin-top:0; }
+.demo-n{ color:var(--text-muted); font-weight:var(--fw-semibold); letter-spacing:0; }
+
+.day-chart{ display:flex; align-items:flex-end; gap:10px; overflow-x:auto; padding:6px 2px 0; }
+.day-col{ flex:1 0 44px; min-width:44px; display:flex; flex-direction:column; align-items:center; gap:6px; }
+.day-bar-wrap{ width:100%; height:120px; display:flex; align-items:flex-end; }
+.day-bar{ width:100%; background:var(--accent-soft-2, var(--surface-sunken)); border:1px solid var(--accent-border);
+  border-radius:var(--radius-sm) var(--radius-sm) 2px 2px; display:flex; flex-direction:column; justify-content:flex-end; overflow:hidden; }
+.day-bar-done{ width:100%; background:var(--success); }
+.day-n{ font-size:var(--fs-sm); font-weight:var(--fw-semibold); color:var(--text-strong); }
+.day-label{ font-size:var(--fs-2xs); color:var(--text-subtle); white-space:nowrap; }
+.chart-key{ display:flex; gap:16px; margin-top:12px; padding-top:10px; border-top:var(--border-line); }
+.chart-key-item{ display:inline-flex; align-items:center; gap:6px; font-size:var(--fs-2xs); color:var(--text-muted); }
+.chart-swatch{ width:11px; height:11px; border-radius:3px; display:inline-block; }
+.chart-swatch--seen{ background:var(--accent-soft-2, var(--surface-sunken)); border:1px solid var(--accent-border); }
+.chart-swatch--done{ background:var(--success); }
