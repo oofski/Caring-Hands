@@ -1,4 +1,4 @@
-// Caring Hands — Cloud Sync Worker (v1.6.1)
+// Caring Hands — Cloud Sync Worker (v1.6.2)
 // =============================================================================
 // NO INSTALLS NEEDED. To deploy: create a Worker in the Cloudflare dashboard,
 // paste THIS ENTIRE FILE into its code editor, then:
@@ -15,7 +15,7 @@
 // See ./SYNC_CONTRACT.md for the exact API + schema this implements.
 
 const SERVICE = 'caring-hands-sync';
-const VERSION = '1.6.1';
+const VERSION = '1.6.2';
 const DEFAULT_LIMIT = 500;
 const MAX_LIMIT = 1000;
 
@@ -328,6 +328,21 @@ async function handleCheckinPost(eventUid, request, env) {
   if (!clean.gender) return json({ ok: false, error: esErr ? 'Por favor elija un género.' : 'Please choose a gender.' }, 400);
   if (!clean.demographics.city) return json({ ok: false, error: esErr ? 'Por favor ingrese su ciudad.' : 'Please enter your city.' }, 400);
   if (!clean.demographics.state) return json({ ok: false, error: esErr ? 'Por favor ingrese su estado.' : 'Please enter your state.' }, 400);
+  // An emergency contact is who the clinic calls if something goes wrong during
+  // a procedure, so it is not optional.
+  if (!clean.demographics.emergency_name) return json({ ok: false, error: esErr ? 'Por favor ingrese el nombre de un contacto de emergencia.' : 'Please enter an emergency contact name.' }, 400);
+  if (!clean.demographics.emergency_phone) return json({ ok: false, error: esErr ? 'Por favor ingrese el teléfono del contacto de emergencia.' : 'Please enter an emergency contact phone number.' }, 400);
+  // Every medical and dental history question must carry an answer. A blank is
+  // not "no" — the dentist reads these before deciding whether it is safe to
+  // treat, and an unanswered question has to be asked in person.
+  {
+    const answered = (v) => v === 'yes' || v === 'no';
+    const missingMed = FORM_MED_YESNO.map(([k]) => k).find((k) => !answered(clean.medical_history[k]));
+    const missingDent = FORM_DENTAL_YESNO.map(([k]) => k).find((k) => !answered(clean.dental_history[k]));
+    if (missingMed || missingDent) {
+      return json({ ok: false, error: esErr ? 'Por favor responda todas las preguntas del historial médico y dental.' : 'Please answer every medical and dental history question.' }, 400);
+    }
+  }
 
   const iso = nowIso();
   const lang = clean.language;
@@ -570,6 +585,8 @@ const I18N = {
     thankYou: 'Thank you, ', done: 'Your pre-registration and consent are complete. Please bring a photo ID — the front desk already has your information.',
     errName: 'Please enter your first and last name.', errDob: 'Please enter your date of birth.', errGender: 'Please choose a gender.',
     errCity: 'Please enter your city.', errState: 'Please enter your state.',
+    errEmName: 'Please enter an emergency contact name.', errEmPhone: 'Please enter an emergency contact phone number.',
+    errMedical: 'Please answer every medical and dental history question.',
     errConsent: 'Please read and agree to the consent to finish.', errSurgery: 'An extraction was selected — please read and agree to the Oral Surgery consent too.',
     errSign: 'Please sign the consent to finish.', errSignSurgery: 'Please sign the Oral Surgery consent.', errSigner: 'Please type your name for the signature.',
     netErr: 'Network error. Please try again.', genErr: 'Something went wrong. Please try again.',
@@ -595,6 +612,8 @@ const I18N = {
     thankYou: 'Gracias, ', done: 'Su pre-registro y consentimiento están completos. Por favor traiga una identificación con foto — la recepción ya tiene su información.',
     errName: 'Por favor ingrese su nombre y apellido.', errDob: 'Por favor ingrese su fecha de nacimiento.', errGender: 'Por favor elija un género.',
     errCity: 'Por favor ingrese su ciudad.', errState: 'Por favor ingrese su estado.',
+    errEmName: 'Por favor ingrese el nombre de un contacto de emergencia.', errEmPhone: 'Por favor ingrese el teléfono del contacto de emergencia.',
+    errMedical: 'Por favor responda todas las preguntas del historial médico y dental.',
     errConsent: 'Por favor lea y acepte el consentimiento para terminar.', errSurgery: 'Se seleccionó una extracción — por favor lea y acepte también el consentimiento de cirugía oral.',
     errSign: 'Por favor firme el consentimiento para terminar.', errSignSurgery: 'Por favor firme el consentimiento de cirugía oral.', errSigner: 'Por favor escriba su nombre para la firma.',
     netErr: 'Error de red. Por favor intente de nuevo.', genErr: 'Algo salió mal. Por favor intente de nuevo.',
@@ -655,12 +674,14 @@ function checkinFormPage(eventUid, eventName, lang) {
   const allergyChips = L.allergyList.map(([k, l]) => chip('allergy', k, l)).join('') + chip('allergy', 'none', L.none) + chip('allergy', 'other', L.otherOpt);
   const condChips = L.conditionList.map(([k, l]) => chip('condition', k, l)).join('') + chip('condition', 'none', L.none) + chip('condition', 'other', L.otherOpt);
   const visitOpts = L.visits.map(([k, l]) => '<label class="chip"><input type="radio" name="visit" value="' + htmlEscape(k) + '">' + htmlEscape(l) + '</label>').join('');
-  const ynRow = (id, label) => '<div class="yn"><span>' + htmlEscape(label) + '</span><select id="' + id + '"><option value="">' + htmlEscape(L.dash) + '</option><option value="yes">' + htmlEscape(L.yes) + '</option><option value="no">' + htmlEscape(L.no) + '</option></select></div>';
+  // Every history question is required: a blank is not the same as "no", and the
+  // dentist reads these before deciding whether it is safe to treat.
+  const ynRow = (id, label) => '<div class="yn"><span>' + htmlEscape(label) + ' <span class="req">*</span></span><select id="' + id + '"><option value="">' + htmlEscape(L.dash) + '</option><option value="yes">' + htmlEscape(L.yes) + '</option><option value="no">' + htmlEscape(L.no) + '</option></select></div>';
   const medYesNo = L.medYesNo.map(([k, l]) => ynRow(k, l)).join('');
   const dentalYesNo = L.dentalYesNo.map(([k, l]) => ynRow(k, l)).join('');
   const genConsent = '<h3>' + htmlEscape(L.generalTitle) + '</h3>' + (L.generalMode === 'ol' ? ('<ol>' + L.general.map((c) => '<li>' + htmlEscape(c) + '</li>').join('') + '</ol>') : L.general.map((c) => '<p>' + htmlEscape(c) + '</p>').join(''));
   const surConsent = '<h3>' + htmlEscape(L.surgeryTitle) + '</h3>' + L.surgeryText.map((c) => '<p>' + htmlEscape(c) + '</p>').join('');
-  const T = { errName: L.errName, errDob: L.errDob, errGender: L.errGender, errCity: L.errCity, errState: L.errState, errConsent: L.errConsent, errSurgery: L.errSurgery, errSign: L.errSign, errSignSurgery: L.errSignSurgery, errSigner: L.errSigner, submitting: L.submitting, submitLabel: L.submit, thankYou: L.thankYou, done: L.done, netErr: L.netErr, genErr: L.genErr };
+  const T = { errName: L.errName, errDob: L.errDob, errGender: L.errGender, errCity: L.errCity, errState: L.errState, errEmName: L.errEmName, errEmPhone: L.errEmPhone, errMedical: L.errMedical, errConsent: L.errConsent, errSurgery: L.errSurgery, errSign: L.errSign, errSignSurgery: L.errSignSurgery, errSigner: L.errSigner, submitting: L.submitting, submitLabel: L.submit, thankYou: L.thankYou, done: L.done, netErr: L.netErr, genErr: L.genErr };
 
   const inner =
     '<div class="hero"><div style="display:flex;justify-content:space-between;align-items:center"><div class="ey">Caring Hands · Pre-registration</div>' +
@@ -678,8 +699,8 @@ function checkinFormPage(eventUid, eventName, lang) {
     '<label>' + htmlEscape(L.address) + '</label><input type="text" id="address" autocomplete="street-address">' +
     '<div class="row"><div><label>' + htmlEscape(L.city) + ' <span class="req">*</span></label><input type="text" id="city" autocomplete="address-level2"></div>' +
     '<div><label>' + htmlEscape(L.state) + ' <span class="req">*</span></label><input type="text" id="state" autocomplete="address-level1"></div></div>' +
-    '<div class="row"><div><label>' + htmlEscape(L.emName) + '</label><input type="text" id="emergency_name"></div>' +
-    '<div><label>' + htmlEscape(L.emPhone) + '</label><input type="tel" id="emergency_phone" inputmode="numeric"></div></div>' +
+    '<div class="row"><div><label>' + htmlEscape(L.emName) + ' <span class="req">*</span></label><input type="text" id="emergency_name"></div>' +
+    '<div><label>' + htmlEscape(L.emPhone) + ' <span class="req">*</span></label><input type="tel" id="emergency_phone" inputmode="numeric"></div></div>' +
     '</div>' +
 
     '<div class="card"><h2>' + htmlEscape(L.need) + '</h2><div class="chips">' + visitOpts + '</div>' +
@@ -720,6 +741,8 @@ function checkinFormPage(eventUid, eventName, lang) {
 
     '<script>' +
     'var T=' + JSON.stringify(T) + ';var LANG=' + JSON.stringify(lang) + ';' +
+    'var MEDQ=' + JSON.stringify(L.medYesNo.map(([k]) => k)) + ';' +
+    'var DENTQ=' + JSON.stringify(L.dentalYesNo.map(([k]) => k)) + ';' +
     "function el(id){return document.getElementById(id);}function val(id){var e=el(id);return e?e.value:'';}" +
     "function chipwire(id){document.querySelectorAll('#'+id+' .chip input').forEach(function(i){i.addEventListener('change',function(){i.closest('.chip').classList.toggle('on',i.checked);});});}" +
     "chipwire('allergies');chipwire('conditions');" +
@@ -732,6 +755,13 @@ function checkinFormPage(eventUid, eventName, lang) {
     "var fn=val('first_name').trim(),ln=val('last_name').trim();if(!fn||!ln){err.textContent=T.errName;window.scrollTo(0,0);return;}" +
     "if(!val('dob')){err.textContent=T.errDob;return;}if(!val('gender')){err.textContent=T.errGender;return;}" +
     "if(!val('city')){err.textContent=T.errCity;return;}if(!val('state')){err.textContent=T.errState;return;}" +
+    "if(!val('emergency_name').trim()){err.textContent=T.errEmName;el('emergency_name').focus();return;}" +
+    "if(!val('emergency_phone').trim()){err.textContent=T.errEmPhone;el('emergency_phone').focus();return;}" +
+    // Every medical and dental history question must be answered — a blank is
+    // not the same as "no", and the dentist reads these before treating.
+    "var unanswered=null;" +
+    "MEDQ.concat(DENTQ).forEach(function(k){if(!unanswered&&!val(k))unanswered=k;});" +
+    "if(unanswered){err.textContent=T.errMedical;var e2=el(unanswered);if(e2){e2.scrollIntoView({block:'center'});e2.focus();}return;}" +
     "if(!el('cagree').checked){err.textContent=T.errConsent;return;}" +
     "if(!val('signer').trim()){err.textContent=T.errSigner;return;}" +
     "if(!gpad||!gpad.data()){err.textContent=T.errSign;el('gsig').scrollIntoView({block:'center'});return;}" +

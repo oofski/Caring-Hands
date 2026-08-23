@@ -50,16 +50,23 @@ jobs:
       - name: Publish downloadable release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.6.3-build.${{ github.run_number }}
-          name: Caring Hands v1.6.3 (build ${{ github.run_number }})
+          tag_name: v1.6.4-build.${{ github.run_number }}
+          name: Caring Hands v1.6.4 (build ${{ github.run_number }})
           prerelease: false
           make_latest: true
           body: |
-            ## Caring Hands Worldwide — Practice Management Software (v1.6.3)
+            ## Caring Hands Worldwide — Practice Management Software (v1.6.4)
 
             Offline-first dental clinic app for Windows. **Download the installer once — it auto-updates from here on.**
 
-            **New in v1.6.3 — every kind of deletion now sticks, everywhere**
+            **New in v1.6.4 — patient lists in A–Z order, and four things that must now be answered**
+            - **Every patient list is now alphabetical by surname** — **Arrivals, Vitals, Cleanings, Dentist, Check-Out and Records**. Staff read these lists to find a named person, so they now read like a register. Accents and capitals sort together, so *Álvarez* sits with *Alvarez*. *(The Vitals list previously grouped by work stage; the **Vitals** column still shows at a glance who still needs seeing.)*
+            - **A treatment note must name the dentist or hygienist who gave the care.** Previously the printed name was only required if you chose to lock the record — which is optional — so a visit could be marked complete with nobody's name on it. The name is now required to finish a visit, and it comes **pre-filled from whoever is signed in**, so in practice it costs a glance. Saving progress mid-treatment is not blocked.
+            - **Pre-registration now requires an emergency contact — name and phone.** That is who the clinic calls if something goes wrong during a procedure.
+            - **Pre-registration now requires an answer to every medical and dental history question.** A blank is not the same as "no", and the dentist reads these before deciding whether it is safe to treat. Each question is marked with a **\*** and the form will not submit until they are all answered — in English and Spanish.
+            - *The pre-registration changes need the clinic server refreshed (now v1.6.2) — the same one-time paste your admin has done before.*
+
+            **From v1.6.3 — every kind of deletion now sticks, everywhere**
             v1.6.2 stopped deleted *patients* coming back. A full audit found the same hole in every other kind of delete, plus a bug that quietly froze three queues. All fixed:
             - **Deleting an x-ray** now removes it from every computer and the cloud. Before, it vanished on one laptop and stayed on all the others — image and all.
             - **Removing a staff account, and "Start fresh for next event"**, now revoke access on **every** laptop. Before, a removed volunteer could still sign in on any other computer, and the accounts came back on a re-sync. Both dialogs said "this cannot be undone"; now that is true.
@@ -260,8 +267,8 @@ jobs:
 
             Includes everything from v1.0.2–1.1.1 (optional Cloud Sync, triage-free flow, per-event staff, Oregon consent, USB workflow, accountability, Russian, in-app auto-update).
 
-            - **Caring-Hands-Setup-1.6.3.exe** — installer (recommended; required for auto-update).
-            - **Caring-Hands-Portable-1.6.3.exe** — portable (no auto-update).
+            - **Caring-Hands-Setup-1.6.4.exe** — installer (recommended; required for auto-update).
+            - **Caring-Hands-Portable-1.6.4.exe** — portable (no auto-update).
 
             First sign-in: `admin / admin` — then create your staff accounts. All clinical data stays on the device unless you enable Cloud Sync.
           files: |

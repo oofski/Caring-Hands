@@ -3,6 +3,7 @@ import { t } from '../i18n.js';
 import { api } from '../api.js';
 import { icon } from '../icons.js';
 import { statusPill } from './dashboard.js';
+import { sortedByName } from '../patientSort.js';
 
 const fmtWhen = (ts) => { if (!ts) return '—'; const d = new Date(ts); return isNaN(d) ? String(ts) : d.toLocaleString(); };
 
@@ -29,8 +30,8 @@ export function renderCheckout(ctx, params = {}) {
   async function queue() {
     ctx.setDetail && ctx.setDetail(false);
     const patients = await api.listPatients({});
-    const ready = patients.filter((p) => p.status === 'completed');
-    const done = patients.filter((p) => p.status === 'dismissed');
+    const ready = sortedByName(patients.filter((p) => p.status === 'completed'));
+    const done = sortedByName(patients.filter((p) => p.status === 'dismissed'));
     const rowFor = (p) => {
       const isDone = p.status === 'dismissed';
       // One-tap tick: check a patient out straight from the list. Opening the

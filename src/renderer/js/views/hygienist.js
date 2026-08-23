@@ -8,6 +8,7 @@ import { patientHistoryPanel } from '../components/patientHistory.js';
 import { bloodThinnerText } from '../medFlags.js';
 import { store } from '../store.js';
 import { statusPill } from './dashboard.js';
+import { sortedByName } from '../patientSort.js';
 
 // Cleaning options a hygienist performs (mirrors the provider's cleaning set).
 const CLEANING_OPTS = [
@@ -35,7 +36,7 @@ export function renderHygienist(ctx, params = {}) {
     // B1/B2 QUEUE GATE: a patient only belongs in the cleaning queue once the EMT
     // has signed them off into a clinical queue (status 'triaged'/'in_treatment')
     // AND they were routed to the hygienist. Checked-in patients stay with the EMT.
-    const forCleaning = live.filter((p) => routedToHygienist(p) && ['triaged', 'in_treatment'].includes(p.status));
+    const forCleaning = sortedByName(live.filter((p) => routedToHygienist(p) && ['triaged', 'in_treatment'].includes(p.status)));
     const rows = forCleaning.map((p) => el('tr', { style: 'cursor:pointer', onClick: () => detail(p.id) }, [
       el('td', {}, [el('strong', {}, [`${p.last_name}, ${p.first_name}`])]),
       el('td', { class: 'num' }, [p.age != null ? String(p.age) : '—']),
@@ -138,8 +139,14 @@ export function renderHygienist(ctx, params = {}) {
     // the patient onward — stays editable), or 'lock' (optional read-only finalize).
     async function save(mode) {
       const payload = buildPayload();
+      // Same rule as the dentist: a cleaning record has to name the hygienist
+      // who did it, not just when the record is locked.
+      if ((mode === 'complete' || mode === 'lock') && !payload.provider_name) {
+        toast('Enter the hygienist’s printed name — a treatment note has to say who provided the care.', 'error');
+        hygName.focus();
+        return;
+      }
       if (mode === 'lock') {
-        if (!payload.provider_name) { toast('Printed name is required to lock the record.', 'error'); return; }
         if (!payload.provider_signature) { toast('Signature is required to lock the record.', 'error'); return; }
         const ok = await modal({ title: 'Lock this record?', body: 'Locking finalizes the record so it can no longer be edited. Optional — the patient moves to check-out without it. Continue?', confirmText: 'Sign off & lock', cancelText: 'Cancel' });
         if (!ok) return;

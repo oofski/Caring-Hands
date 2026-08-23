@@ -5,6 +5,7 @@ import { icon } from '../icons.js';
 import { patientHistoryPanel } from '../components/patientHistory.js';
 import { bloodThinnerStatus, bloodThinnerText, bpStatus, BP_SYS_MAX, BP_DIA_MAX } from '../medFlags.js';
 import { statusPill } from './dashboard.js';
+import { sortedByName } from '../patientSort.js';
 
 // Route metadata shared by the queue pills, the next-step card and the toasts.
 // 'both' is retained only so legacy records still render a sensible label — the
@@ -67,14 +68,9 @@ export function renderEmt(ctx, params = {}) {
   async function queue() {
     ctx.setDetail && ctx.setDetail(false);
     const patients = await api.listPatients({});
-    const live = patients.filter((p) => p.status !== 'dismissed');
-    // Work order: needs vitals first, then vitals done but not signed off, then the rest.
-    const rank = (p) => {
-      if (p.status === 'checked_in' && !p.has_vitals) return 0;
-      if (p.has_vitals && !p.emt_signed_off) return 1;
-      return 2;
-    };
-    live.sort((a, b) => rank(a) - rank(b));
+    // A–Z by surname, like every other patient list. The Vitals column still
+    // shows who needs seeing, so nothing is lost by not ordering by work stage.
+    const live = sortedByName(patients.filter((p) => p.status !== 'dismissed'));
     const rows = live.map((p) => el('tr', {
       style: 'cursor:pointer',
       onClick: () => detail(p.id),

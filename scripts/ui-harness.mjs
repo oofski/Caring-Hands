@@ -1567,6 +1567,74 @@ async function main() {
       'v1.6.3: an old deletion does not wipe a newer local edit');
   }
 
+  // ---- v1.6.4: every patient list A–Z; treatment notes name their clinician ----
+  {
+    currentUser = db.login('admin', 'admin');
+    const evA = db.createEvent(currentUser, { name: 'Alphabetical Test' });
+    db.setActiveEvent(currentUser, evA.id);
+    const consent = [{ type: 'general', signer_name: 'S', signature_png: 'data:image/png;base64,AAAA' }];
+    // Deliberately created out of order.
+    const make = (last, route, finish) => {
+      const p = db.createPatient(currentUser, {
+        first_name: 'Sort', last_name: last, dob: '1980-01-01', gender: 'female',
+        demographics: {}, medical_history: {}, dental_history: { visit_type: route === 'hygienist' ? 'cleaning' : 'filling' },
+        consents: consent,
+      });
+      db.saveVitals(currentUser, p.id, { bp_systolic: '120', bp_diastolic: '78', heart_rate: '70' });
+      db.routePatient(currentUser, p.id, route);
+      if (finish) db.saveTreatment(currentUser, p.id, { cleaning: { scaling: true }, provider_name: 'Dr X' }, true);
+      return p;
+    };
+    ['Zeller', 'Abbott', 'Mendez'].forEach((n) => make(n, 'hygienist'));
+    ['Yates', 'Baker'].forEach((n) => make(n, 'dentist'));
+    make('Quinn', 'dentist', true);
+    make('Carver', 'dentist', true);
+
+    const storeA = (await import('../src/renderer/js/store.js')).store; storeA.setUser(currentUser);
+    const ctxA = { navigate: () => {}, toast: () => {}, store: storeA, setDetail: () => {} };
+    const namesIn = (node) => Array.from(node.querySelectorAll('td strong, .arrival-row strong')).map((e) => e.textContent.split(',')[0]);
+    const isSorted = (arr) => arr.every((v, i) => i === 0 || arr[i - 1].localeCompare(v, undefined, { sensitivity: 'base' }) <= 0);
+
+    const views = [
+      ['emt.js', 'renderEmt', 'Vitals'],
+      ['hygienist.js', 'renderHygienist', 'Cleanings'],
+      ['provider.js', 'renderProvider', 'Dentist'],
+      ['checkout.js', 'renderCheckout', 'Check-Out'],
+      ['records.js', 'renderRecords', 'Records'],
+    ];
+    for (const [file, fn, label] of views) {
+      const mod = await import(`../src/renderer/js/views/${file}`);
+      const node = mod[fn](ctxA, {});
+      document.body.append(node);
+      for (let i = 0; i < 10; i++) await tick();
+      // A view may render several queues (the dentist shows its own list plus
+      // who is at the hygienist); each one is sorted on its own.
+      const groups = Array.from(node.querySelectorAll('tbody, .arrival-list'))
+        .map((g) => Array.from(g.querySelectorAll('strong')).map((e) => e.textContent.split(',')[0]))
+        .map((names) => names.filter((n) => /Zeller|Abbott|Mendez|Yates|Baker|Quinn|Carver/.test(n)))
+        .filter((names) => names.length > 1);
+      log(groups.length > 0 && groups.every(isSorted), `v1.6.4: the ${label} list is in A–Z order by surname`);
+    }
+
+    // A treatment note has to say who provided the care.
+    const dentP = db.listPatients({ eventId: evA.id }).find((p) => p.last_name === 'Baker');
+    const prov = (await import('../src/renderer/js/views/provider.js')).renderProvider(ctxA, { id: dentP.id });
+    document.body.append(prov);
+    for (let i = 0; i < 14; i++) await tick();
+    const nameInput = Array.from(prov.querySelectorAll('input')).find((i) => i.placeholder === 'Printed name');
+    log(!!nameInput && nameInput.value === currentUser.full_name,
+      'v1.6.4: the dentist\'s printed name is pre-filled from who is signed in');
+    nameInput.value = '';
+    nameInput.dispatchEvent(new window.Event('input', { bubbles: true }));
+    const completeBtn = Array.from(prov.querySelectorAll('button')).find((b) => /Mark visit complete/i.test(b.textContent));
+    if (completeBtn) {
+      completeBtn.click();
+      for (let i = 0; i < 8; i++) await tick();
+      log(db.listPatients({ eventId: evA.id }).find((p) => p.id === dentP.id).status !== 'completed',
+        'v1.6.4: a visit cannot be marked complete without the dentist\'s name');
+    } else log(false, 'v1.6.4: (setup) the dentist has a "Mark visit complete" action');
+  }
+
   await tick();
   if (errors.length) errors.forEach((e) => log(false, 'RUNTIME: ' + e));
   const failed = results.filter((r) => !r[0]).length;

@@ -5,6 +5,7 @@ import { icon } from '../icons.js';
 import { SignaturePad } from '../components/signature.js';
 import { Odontogram } from '../components/odontogram.js';
 import { patientHistoryCards, incompleteBanner } from '../components/patientHistory.js';
+import { sortedByName } from '../patientSort.js';
 import { store } from '../store.js';
 import { statusPill } from './dashboard.js';
 import { bloodThinnerStatus, bloodThinnerText, bpStatus } from '../medFlags.js';
@@ -33,8 +34,8 @@ export function renderProvider(ctx, params = {}) {
     // EMT routing: 'dentist' and 'both' belong here; route null = legacy rows
     // (pre-routing data) which default to the dentist. Patients routed only to
     // the hygienist wait in a collapsed list below — they may come back later.
-    const dentistQueue = ready.filter((p) => p.route === 'dentist' || p.route === 'both' || p.route == null);
-    const atHygienist = ready.filter((p) => p.route === 'hygienist');
+    const dentistQueue = sortedByName(ready.filter((p) => p.route === 'dentist' || p.route === 'both' || p.route == null));
+    const atHygienist = sortedByName(ready.filter((p) => p.route === 'hygienist'));
     const row = (p) => el('tr', {}, [
       el('td', {}, [el('strong', {}, [`${p.last_name}, ${p.first_name}`]),
         p.on_thinner ? el('span', { class: 'pill pill--danger', style: 'margin-left:8px' }, ['Blood thinner']) : null,
@@ -528,7 +529,9 @@ export function renderProvider(ctx, params = {}) {
     renderGallery();
 
     /* ---------- Sign-off ---------- */
-    const providerName = el('input', { class: 'input', placeholder: 'Printed name', value: tx.provider_name || '' });
+    // Pre-filled from whoever is signed in, so requiring it costs a glance
+    // rather than a re-type.
+    const providerName = el('input', { class: 'input', placeholder: 'Printed name', value: tx.provider_name || (store.user && store.user.full_name) || '' });
     if (locked) providerName.disabled = true;
     const sigPad = SignaturePad();
 
@@ -729,8 +732,15 @@ export function renderProvider(ctx, params = {}) {
         return;
       }
       const payload = collectTreatment();
+      // Every treatment note has to say who performed it — a record that leaves
+      // this station unattributed is not a clinical record. Required whenever the
+      // visit is finished or locked; a mid-treatment progress save is not blocked.
+      if ((mode === 'complete' || mode === 'lock') && !payload.provider_name) {
+        toast('Enter the dentist’s printed name — a treatment note has to say who provided the care.', 'error');
+        providerName.focus();
+        return;
+      }
       if (mode === 'lock') {
-        if (!payload.provider_name) { toast('Printed provider name is required to lock the record.', 'error'); return; }
         if (!payload.provider_signature) { toast('Provider signature is required to lock the record.', 'error'); return; }
         const ok = await modal({ title: 'Lock this record?', body: 'Locking finalizes this record so it can no longer be edited. This is optional — the patient moves to check-out without it. Continue?', confirmText: 'Sign off & lock', cancelText: 'Cancel' });
         if (!ok) return;

@@ -159,7 +159,7 @@ async function main() {
       h.data &&
       h.data.ok === true &&
       h.data.service === 'caring-hands-sync' &&
-      h.data.version === '1.6.1' &&
+      h.data.version === '1.6.2' &&
       h.data.seq === true &&
       typeof h.data.time === 'string'
   );
@@ -400,6 +400,15 @@ async function main() {
   );
 
   // --- Pre-registration (public /checkin) — event 'evt-1' was pushed above ---
+  // v1.6.2 requires an emergency contact and an answer to every history
+  // question, so every submission below carries them unless it is the one
+  // deliberately leaving something out.
+  const REQ = {
+    emergency_name: 'Kin Contact', emergency_phone: '5550001111',
+    under_treatment: 'no', hospitalized: 'no', tobacco: 'no', pregnancy: 'no',
+    gum_bleeding: 'no', sores: 'no', jaw_injury: 'no', grinding: 'no',
+    post_extraction_bleeding: 'no', ortho: 'no',
+  };
   async function getText(path) {
     const res = await worker.fetch(new Request('https://sync.example.com' + path, { method: 'GET' }), env, {});
     return { status: res.status, ctype: res.headers.get('content-type') || '', text: await res.text() };
@@ -413,7 +422,7 @@ async function main() {
 
   // Full check-in-parity submission WITH a signed general consent.
   const preReg = await call(env, 'POST', '/checkin/evt-1', {
-    body: {
+    body: { ...REQ,
       first_name: 'Pre', last_name: 'Reg', dob: '1990-01-02', gender: 'female', phone: '(555) 123-4567', language: 'es',
       address: '1 Main St', city: 'Sandy', state: 'OR', emergency_name: 'Kin', emergency_phone: '5550001111',
       reason: 'tooth hurts', visit_type: 'filling', allergies: ['penicillin', 'other'], allergies_other: 'shellfish',
@@ -443,41 +452,41 @@ async function main() {
     !!gc && gc.type === 'general' && gc.signer_name === 'Pre Reg' && gc.relationship === 'Self' && typeof gc.signature_png === 'string' && /^general-oregon-es/.test(gc.version) && gConsent.event_uid === 'evt-1');
 
   // Birthdate and gender are REQUIRED (Sandy Oregon clinic request).
-  const noDob = await call(env, 'POST', '/checkin/evt-1', { body: { first_name: 'No', last_name: 'Dob', gender: 'male', visit_type: 'cleaning', consent_agree: true } });
+  const noDob = await call(env, 'POST', '/checkin/evt-1', { body: { ...REQ, ...REQ, first_name: 'No', last_name: 'Dob', gender: 'male', visit_type: 'cleaning', consent_agree: true } });
   check('POST /checkin without a date of birth -> 400', noDob.status === 400 && /date of birth/i.test(noDob.data.error));
-  const noGender = await call(env, 'POST', '/checkin/evt-1', { body: { first_name: 'No', last_name: 'Gender', dob: '1990-01-01', visit_type: 'cleaning', consent_agree: true } });
+  const noGender = await call(env, 'POST', '/checkin/evt-1', { body: { ...REQ, ...REQ, first_name: 'No', last_name: 'Gender', dob: '1990-01-01', visit_type: 'cleaning', consent_agree: true } });
   check('POST /checkin without a gender -> 400', noGender.status === 400 && /gender/i.test(noGender.data.error));
   // City + state are REQUIRED too — grant-funded clinics report town of origin.
-  const noCity = await call(env, 'POST', '/checkin/evt-1', { body: { first_name: 'No', last_name: 'City', dob: '1990-01-01', gender: 'male', state: 'OR', visit_type: 'cleaning', consent_agree: true } });
+  const noCity = await call(env, 'POST', '/checkin/evt-1', { body: { ...REQ, ...REQ, first_name: 'No', last_name: 'City', dob: '1990-01-01', gender: 'male', state: 'OR', visit_type: 'cleaning', consent_agree: true } });
   check('POST /checkin without a city -> 400', noCity.status === 400 && /city/i.test(noCity.data.error));
-  const noState = await call(env, 'POST', '/checkin/evt-1', { body: { first_name: 'No', last_name: 'State', dob: '1990-01-01', gender: 'male', city: 'Sandy', visit_type: 'cleaning', consent_agree: true } });
+  const noState = await call(env, 'POST', '/checkin/evt-1', { body: { ...REQ, ...REQ, first_name: 'No', last_name: 'State', dob: '1990-01-01', gender: 'male', city: 'Sandy', visit_type: 'cleaning', consent_agree: true } });
   check('POST /checkin without a state -> 400', noState.status === 400 && /state/i.test(noState.data.error));
-  const noCityEs = await call(env, 'POST', '/checkin/evt-1', { body: { first_name: 'Sin', last_name: 'Ciudad', dob: '1990-01-01', gender: 'male', state: 'OR', language: 'es', consent_agree: true } });
+  const noCityEs = await call(env, 'POST', '/checkin/evt-1', { body: { ...REQ, ...REQ, first_name: 'Sin', last_name: 'Ciudad', dob: '1990-01-01', gender: 'male', state: 'OR', language: 'es', consent_agree: true } });
   check('POST /checkin (es) without a city -> Spanish 400', noCityEs.status === 400 && /ciudad/i.test(noCityEs.data.error));
 
   // A Spanish submission gets Spanish validation errors.
-  const noDobEs = await call(env, 'POST', '/checkin/evt-1', { body: { first_name: 'Sin', last_name: 'Fecha', gender: 'male', language: 'es', consent_agree: true } });
+  const noDobEs = await call(env, 'POST', '/checkin/evt-1', { body: { ...REQ, ...REQ, first_name: 'Sin', last_name: 'Fecha', gender: 'male', language: 'es', consent_agree: true } });
   check('POST /checkin (es) without a date of birth -> Spanish 400', noDobEs.status === 400 && /fecha de nacimiento/i.test(noDobEs.data.error));
 
   // General consent is REQUIRED — a submission without it is rejected.
-  const noConsent = await call(env, 'POST', '/checkin/evt-1', { body: { first_name: 'No', last_name: 'Consent', dob: '1990-01-01', gender: 'male', city: 'Sandy', state: 'OR', visit_type: 'cleaning' } });
+  const noConsent = await call(env, 'POST', '/checkin/evt-1', { body: { ...REQ, ...REQ, first_name: 'No', last_name: 'Consent', dob: '1990-01-01', gender: 'male', city: 'Sandy', state: 'OR', visit_type: 'cleaning' } });
   check('POST /checkin without agreeing to the consent -> 400', noConsent.status === 400 && /consent/i.test(noConsent.data.error));
 
   // v1.6.0: consent must be SIGNED, not just ticked. A pre-registration without
   // a signature would reach the clinic looking complete while the dentist still
   // has to stop and capture consent at the chair.
   const base = { first_name: 'Un', last_name: 'Signed', dob: '1990-01-01', gender: 'male', city: 'Sandy', state: 'OR', visit_type: 'cleaning' };
-  const noSig = await call(env, 'POST', '/checkin/evt-1', { body: { ...base, consent_agree: true, signer_name: 'Un Signed' } });
+  const noSig = await call(env, 'POST', '/checkin/evt-1', { body: { ...REQ, ...REQ, ...base, consent_agree: true, signer_name: 'Un Signed' } });
   check('POST /checkin agreed but NOT signed -> 400', noSig.status === 400 && /sign the consent/i.test(noSig.data.error));
-  const noSigner = await call(env, 'POST', '/checkin/evt-1', { body: { ...base, consent_agree: true, signature_png: 'data:image/png;base64,AAAA' } });
+  const noSigner = await call(env, 'POST', '/checkin/evt-1', { body: { ...REQ, ...REQ, ...base, consent_agree: true, signature_png: 'data:image/png;base64,AAAA' } });
   check('POST /checkin signed but no name typed -> 400', noSigner.status === 400 && /type your name/i.test(noSigner.data.error));
-  const noSigEs = await call(env, 'POST', '/checkin/evt-1', { body: { ...base, language: 'es', consent_agree: true, signer_name: 'Sin Firma' } });
+  const noSigEs = await call(env, 'POST', '/checkin/evt-1', { body: { ...REQ, ...REQ, ...base, language: 'es', consent_agree: true, signer_name: 'Sin Firma' } });
   check('POST /checkin (es) not signed -> Spanish 400', noSigEs.status === 400 && /firme el consentimiento/i.test(noSigEs.data.error));
 
   // An extraction ALSO needs the Oral Surgery consent signed — a general
   // signature alone is not enough.
   const exNoSurgerySig = await call(env, 'POST', '/checkin/evt-1', {
-    body: { ...base, last_name: 'Extraction', visit_type: 'extraction_pain', consent_agree: true, signer_name: 'Un Signed',
+    body: { ...REQ, ...base, last_name: 'Extraction', visit_type: 'extraction_pain', consent_agree: true, signer_name: 'Un Signed',
       signature_png: 'data:image/png;base64,AAAA', surgery_agree: true },
   });
   check('POST /checkin extraction agreed but surgery NOT signed -> 400',
@@ -485,7 +494,7 @@ async function main() {
 
   // A NON-extraction visit must NOT be asked for the surgery consent.
   const cleaningOk = await call(env, 'POST', '/checkin/evt-1', {
-    body: { ...base, last_name: 'Cleaning', consent_agree: true, signer_name: 'Un Signed', signature_png: 'data:image/png;base64,AAAA' },
+    body: { ...REQ, ...base, last_name: 'Cleaning', consent_agree: true, signer_name: 'Un Signed', signature_png: 'data:image/png;base64,AAAA' },
   });
   check('POST /checkin cleaning needs only the general consent -> 200', cleaningOk.status === 200 && cleaningOk.data.ok === true);
   const cleanRow = Array.from(env.DB._store.values()).find((r) => r.entity === 'patient' && JSON.parse(r.data).last_name === 'Cleaning');
@@ -502,9 +511,9 @@ async function main() {
     !/Signature \(optional\)/.test(sigForm.text));
 
   // An extraction visit also requires (and files) the Oral Surgery consent.
-  const noSurgery = await call(env, 'POST', '/checkin/evt-1', { body: { first_name: 'Ex', last_name: 'Tract', dob: '1990-01-01', gender: 'male', city: 'Sandy', state: 'OR', visit_type: 'extraction_pain', consent_agree: true, signer_name: 'Ex Tract', signature_png: 'data:image/png;base64,BBBB' } });
+  const noSurgery = await call(env, 'POST', '/checkin/evt-1', { body: { ...REQ, ...REQ, first_name: 'Ex', last_name: 'Tract', dob: '1990-01-01', gender: 'male', city: 'Sandy', state: 'OR', visit_type: 'extraction_pain', consent_agree: true, signer_name: 'Ex Tract', signature_png: 'data:image/png;base64,BBBB' } });
   check('POST /checkin extraction without surgery consent -> 400', noSurgery.status === 400 && /surgery/i.test(noSurgery.data.error));
-  const withSurgery = await call(env, 'POST', '/checkin/evt-1', { body: { first_name: 'Ex', last_name: 'Tract', dob: '1990-01-01', gender: 'male', city: 'Sandy', state: 'OR', visit_type: 'extraction_pain', consent_agree: true, surgery_agree: true, surgery_teeth: '14, 15', signer_name: 'Ex Tract', signature_png: 'data:image/png;base64,BBBB', surgery_signature_png: 'data:image/png;base64,CCCC' } });
+  const withSurgery = await call(env, 'POST', '/checkin/evt-1', { body: { ...REQ, ...REQ, first_name: 'Ex', last_name: 'Tract', dob: '1990-01-01', gender: 'male', city: 'Sandy', state: 'OR', visit_type: 'extraction_pain', consent_agree: true, surgery_agree: true, surgery_teeth: '14, 15', signer_name: 'Ex Tract', signature_png: 'data:image/png;base64,BBBB', surgery_signature_png: 'data:image/png;base64,CCCC' } });
   check('POST /checkin extraction WITH surgery consent -> 200', withSurgery.status === 200 && withSurgery.data.ok === true);
   const exPatient = Array.from(env.DB._store.values()).find((r) => r.entity === 'patient' && JSON.parse(r.data).last_name === 'Tract');
   const surgeryRow = Array.from(env.DB._store.values()).find((r) => r.entity === 'consent' && r.patient_uid === exPatient.uid && JSON.parse(r.data).type === 'oral_surgery');
@@ -512,10 +521,10 @@ async function main() {
   check('the Oral Surgery consent is filed with tooth numbers + signature',
     !!sc && sc.type === 'oral_surgery' && sc.tooth_numbers === '14, 15' && typeof sc.signature_png === 'string');
 
-  const noName = await call(env, 'POST', '/checkin/evt-1', { body: { first_name: '', last_name: '', consent_agree: true } });
+  const noName = await call(env, 'POST', '/checkin/evt-1', { body: { ...REQ, ...REQ, first_name: '', last_name: '', consent_agree: true } });
   check('POST /checkin with no name -> 400', noName.status === 400 && noName.data.ok === false);
 
-  const postBadEvent = await call(env, 'POST', '/checkin/does-not-exist', { body: { first_name: 'A', last_name: 'B', consent_agree: true } });
+  const postBadEvent = await call(env, 'POST', '/checkin/does-not-exist', { body: { ...REQ, ...REQ, first_name: 'A', last_name: 'B', consent_agree: true } });
   check('POST /checkin/<unknown> -> 404 (only real events accept submissions)', postBadEvent.status === 404 && postBadEvent.data.ok === false);
 
   // The GET form now carries the FULL option set + consent text.
@@ -566,7 +575,7 @@ async function main() {
     /\?lang=en/.test(esForm.text) && esForm.text.includes('English'));
   // A Spanish submission still round-trips (writes a checked-in patient + Spanish-versioned consent).
   const esSubmit = await call(env, 'POST', '/checkin/evt-1', {
-    body: { first_name: 'Ana', last_name: 'Ruiz', dob: '1988-05-05', gender: 'female', language: 'es', city: 'Sandy', state: 'OR',
+    body: { ...REQ, first_name: 'Ana', last_name: 'Ruiz', dob: '1988-05-05', gender: 'female', language: 'es', city: 'Sandy', state: 'OR',
       visit_type: 'cleaning', consent_agree: true, signer_name: 'Ana Ruiz', relationship: 'Self', signature_png: 'data:image/png;base64,DDDD' },
   });
   check('POST /checkin (es) full submission -> 200', esSubmit.status === 200 && esSubmit.data.ok === true);
@@ -628,6 +637,50 @@ async function main() {
     const legacy = await pullFrom('2026-07-30T17:01:00.000Z@old');
     check('v1.5.0: an older app\'s timestamp cursor is still served (rolling update)',
       legacy.data.mode === 'time' && String(legacy.data.cursor).includes('T') && namesIn(legacy).includes('Bianca'));
+  }
+
+  // --- v1.6.2: emergency contact + every history question are required ---
+  {
+    const full = {
+      ...REQ, first_name: 'All', last_name: 'Answers', dob: '1990-01-01', gender: 'female',
+      city: 'Sandy', state: 'OR', visit_type: 'cleaning', consent_agree: true,
+      signer_name: 'All Answers', signature_png: 'data:image/png;base64,AAAA',
+    };
+    const post = (body) => call(env, 'POST', '/checkin/evt-1', { body });
+
+    const okAll = await post(full);
+    check('POST /checkin with every answer -> 200', okAll.status === 200 && okAll.data.ok === true);
+
+    const noKin = await post({ ...full, emergency_name: '' });
+    check('POST /checkin without an emergency contact name -> 400',
+      noKin.status === 400 && /emergency contact name/i.test(noKin.data.error));
+    const noKinPhone = await post({ ...full, emergency_phone: '' });
+    check('POST /checkin without an emergency contact phone -> 400',
+      noKinPhone.status === 400 && /emergency contact phone/i.test(noKinPhone.data.error));
+    const noKinEs = await post({ ...full, language: 'es', emergency_name: '' });
+    check('POST /checkin (es) without an emergency contact -> Spanish 400',
+      noKinEs.status === 400 && /contacto de emergencia/i.test(noKinEs.data.error));
+
+    // A blank history answer is not "no" — it has to be asked.
+    const noMed = await post({ ...full, tobacco: '' });
+    check('POST /checkin with an unanswered medical question -> 400',
+      noMed.status === 400 && /every medical and dental history question/i.test(noMed.data.error));
+    const noDent = await post({ ...full, grinding: '' });
+    check('POST /checkin with an unanswered dental question -> 400',
+      noDent.status === 400 && /every medical and dental history question/i.test(noDent.data.error));
+    const noMedEs = await post({ ...full, language: 'es', hospitalized: '' });
+    check('POST /checkin (es) with an unanswered question -> Spanish 400',
+      noMedEs.status === 400 && /historial médico y dental/i.test(noMedEs.data.error));
+
+    // The form itself marks them required and blocks submit.
+    const f = await getText('/checkin/evt-1');
+    check('the form marks the emergency contact required',
+      /id="emergency_name"/.test(f.text) && /Emergency contact name <span class="req">\*<\/span>/.test(f.text) &&
+      f.text.includes("if(!val('emergency_name')"));
+    check('the form marks every history question required and blocks submit',
+      /Do you use tobacco\? <span class="req">\*<\/span>/.test(f.text) &&
+      /Do your gums bleed\? <span class="req">\*<\/span>/.test(f.text) &&
+      /var MEDQ=/.test(f.text) && /var DENTQ=/.test(f.text) && f.text.includes('T.errMedical'));
   }
 
   // --- v1.6.1: a deletion is sticky in the cloud ---

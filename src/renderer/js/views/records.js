@@ -7,6 +7,7 @@ import { store } from '../store.js';
 import { statusPill } from './dashboard.js';
 import { incompleteBanner } from '../components/patientHistory.js';
 import { bloodThinnerText, bpStatus } from '../medFlags.js';
+import { sortedByName } from '../patientSort.js';
 
 // Reconciled vitals + blood-thinner shown ON-SCREEN in the record, the same way
 // the EMT/dentist screens and the PDF do — so the record can't silently disagree
@@ -51,7 +52,7 @@ export function renderRecords(ctx, params = {}) {
 
     async function refresh() {
       const eventId = eventSel.value === 'all' ? 'all' : Number(eventSel.value);
-      const patients = await api.listPatients({ eventId, search: searchInput.value.trim() });
+      const patients = sortedByName(await api.listPatients({ eventId, search: searchInput.value.trim() }));
       clear(tbody);
       if (!patients.length) tbody.append(el('tr', {}, [el('td', { colspan: 6, class: 'empty' }, ['No matching records.'])]));
       patients.forEach((p) => tbody.append(el('tr', {}, [
