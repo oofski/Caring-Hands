@@ -20,7 +20,7 @@ const CHANNELS = [
   'pdf:preview', 'pdf:generate', 'pdf:print',
   'record:exportUsb',
   'backup:run', 'export:event', 'export:zip', 'export:clinic', 'import:clinic',
-  'event:finish', 'event:purge', 'reports:archived', 'reports:rebuild',
+  'event:finish', 'event:purge', 'reports:archived', 'reports:rebuild', 'reports:rollup',
   'app:version', 'update:check', 'update:install',
   'update:onlineAvailable', 'update:checkOnline', 'update:downloadOnline', 'update:installOnline',
   'app:openExternal',

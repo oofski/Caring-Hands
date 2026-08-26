@@ -50,16 +50,31 @@ jobs:
       - name: Publish downloadable release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.6.5-build.${{ github.run_number }}
-          name: Caring Hands v1.6.5 (build ${{ github.run_number }})
+          tag_name: v1.6.6-build.${{ github.run_number }}
+          name: Caring Hands v1.6.6 (build ${{ github.run_number }})
           prerelease: false
           make_latest: true
           body: |
-            ## Caring Hands Worldwide — Practice Management Software (v1.6.5)
+            ## Caring Hands Worldwide — Practice Management Software (v1.6.6)
 
             Offline-first dental clinic app for Windows. **Download the installer once — it auto-updates from here on.**
 
-            **New in v1.6.5 — IMPORTANT: exporting a clinic can no longer cost you its reporting figures**
+            **New in v1.6.6 — the rest of the missing-report story**
+            v1.6.5 stopped an export-and-delete from destroying a clinic's figures. Going back over it end to end turned up the bigger reason a finished clinic still read as gone — and several more ways the numbers could be wrong.
+            - **Fixed: "All events" counted every finished clinic as zero.** This is the default view of the Reports tab, and it added up **live patient records only**. The moment a clinic was finished or its data removed — exactly when its report matters — it stopped contributing anything to the roll-up, so the season total quietly shrank each time a clinic was closed out. Finished clinics' kept totals are now counted in, and the page names which clinics are contributing figures rather than records.
+            - **Fixed: the live report and the kept report counted differently.** The Reports tab and the totals saved at the end of a clinic used **two separate sets of counting rules**, so the same clinic could show one number on the day and a different one afterwards. There is now a single counting function behind both: an extraction row ticked "other" with no tooth is a note rather than a procedure, and cleaning notes alone are not a cleaning performed — on screen and in the kept totals alike.
+            - **Fixed: deleting an event threw its figures away.** Deleting a clinic outright is the one destructive action **not** gated behind an export, so it was the worst place to discard the totals. They are now kept, and still appear in the roll-up afterwards.
+            - **Fixed: removing a clinic's data left the clinic looking open.** The event stayed active, so the first new walk-in made it look live again — which hid the kept report and restarted the count from one. Removing the records now closes the clinic.
+            - **Fixed: the pre-registration link stayed open after "Finish clinic".** People could keep signing up online into a clinic that had already been closed and had its records removed. The link now shows a plain "this clinic has closed" page, in English and Spanish.
+            - **Fixed: finishing a clinic could record fewer patients than it saw.** The kept totals are counted from the records on **that** computer, so any check-in still sitting unsynced on another laptop was left out — and the patients were gone, so it could never be corrected. Finishing or removing a clinic's data now pulls everything in from the cloud first.
+            - **Fixed: two laptops finishing the same clinic offline left two sets of totals**, which double-counted in the roll-up. One report per clinic now, always.
+            - **Fixed: age bands moved when a report was rebuilt.** Ages are now counted as of the visit rather than as of today, so a report recounted months later matches the one the clinic saw.
+            - **Fixed: a clinic deleted on one laptop was silently never deleted on the others.** The deletion could not be applied while that laptop still held the patients, and the error was swallowed with nothing retrying it. Deletions now apply in the right order and are retried until they land.
+            - **Fixed: restoring a deleted clinic from a backup silently undid itself** on the next sync.
+            - **Also:** the Reports heading now names the clinic whose numbers are on screen (it used to show the *active* clinic's name over a different clinic's figures), and a clinic finished by v1.6.5 says plainly which breakdowns its kept totals cannot answer, with a pointer to rebuild it from the backup file.
+            - *This needs the clinic server refreshed (now v1.6.6) — the same one-time paste your admin has done before.*
+
+            **From v1.6.5 — IMPORTANT: exporting a clinic can no longer cost you its reporting figures**
             - **Fixed: deleting a clinic's patient data destroyed its reporting totals.** After an export, the **Delete this clinic's patient data** button removed the patients — and, unlike **Finish clinic**, kept **no figures at all**. The Reports tab then computed from an empty list and showed zeros, so the clinic's numbers looked deleted, because they were. **Every** path that removes patients now saves the de-identified totals first — patients seen, procedures, and the breakdowns by age, gender, language and city. The people can be removed; the numbers cannot.
             - **Fixed: Reports never showed the kept totals.** Even when **Finish clinic** had saved them correctly, nothing on the Reports page read them, so a finished clinic still displayed zeros. Selecting a past clinic now shows its kept report in full, with a clear note that the patient records were removed and these are figures only.
             - **New: rebuild a lost report from a backup.** Under **Admin → Backup & Export**, *Rebuild a report from backup* reads a `.chbak.json` export and **recounts that clinic's figures without restoring a single patient record**. If you exported before deleting, your numbers are recoverable — see below.
@@ -274,8 +289,8 @@ jobs:
 
             Includes everything from v1.0.2–1.1.1 (optional Cloud Sync, triage-free flow, per-event staff, Oregon consent, USB workflow, accountability, Russian, in-app auto-update).
 
-            - **Caring-Hands-Setup-1.6.5.exe** — installer (recommended; required for auto-update).
-            - **Caring-Hands-Portable-1.6.5.exe** — portable (no auto-update).
+            - **Caring-Hands-Setup-1.6.6.exe** — installer (recommended; required for auto-update).
+            - **Caring-Hands-Portable-1.6.6.exe** — portable (no auto-update).
 
             First sign-in: `admin / admin` — then create your staff accounts. All clinical data stays on the device unless you enable Cloud Sync.
           files: |

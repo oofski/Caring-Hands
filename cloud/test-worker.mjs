@@ -159,7 +159,7 @@ async function main() {
       h.data &&
       h.data.ok === true &&
       h.data.service === 'caring-hands-sync' &&
-      h.data.version === '1.6.2' &&
+      h.data.version === '1.6.6' &&
       h.data.seq === true &&
       typeof h.data.time === 'string'
   );
@@ -712,6 +712,39 @@ async function main() {
     rows = (await pull()).data.rows.filter((r) => r.uid === 'p-sticky');
     check('v1.6.1: a deliberate restore is allowed to bring the record back',
       revive.data.applied === 1 && rows[0].deleted === 0 && rows[0].data.last_name === 'Again');
+  }
+
+  // --- v1.6.6: finishing a clinic must close its public pre-registration link ---
+  {
+    const closedUid = 'evt-closed';
+    const openPush = await call(env, 'POST', '/v1/push', {
+      auth: CLINIC_KEY,
+      body: { device_id: 'd1', rows: [{ entity: 'event', uid: closedUid, event_uid: null,
+        updated_at: '2026-08-01T00:00:00.000Z', data: { name: 'Closing Clinic', active: 1 } }] },
+    });
+    const openGet = await worker.fetch(new Request('https://sync.example.com/checkin/' + closedUid), env, {});
+    check('v1.6.6: an open clinic still serves its pre-registration form',
+      openPush.data.applied === 1 && openGet.status === 200);
+
+    // "Finish clinic" in the app sets active = 0 and syncs the event row up.
+    await call(env, 'POST', '/v1/push', {
+      auth: CLINIC_KEY,
+      body: { device_id: 'd1', rows: [{ entity: 'event', uid: closedUid, event_uid: null,
+        updated_at: '2026-08-02T00:00:00.000Z', data: { name: 'Closing Clinic', active: 0 } }] },
+    });
+    const closedGet = await worker.fetch(new Request('https://sync.example.com/checkin/' + closedUid), env, {});
+    const closedText = await closedGet.text();
+    check('v1.6.6: a finished clinic no longer serves the pre-registration form',
+      closedGet.status === 410 && /has closed/i.test(closedText));
+
+    const closedPost = await call(env, 'POST', '/checkin/' + closedUid, {
+      body: { ...REQ, first_name: 'Too', last_name: 'Late', dob: '1990-01-02', gender: 'male',
+        city: 'Sandy', state: 'OR', visit_type: 'cleaning',
+        consent_general: true, consent_general_name: 'Too Late',
+        consent_general_signature: 'data:image/png;base64,AAAA' },
+    });
+    check('v1.6.6: a finished clinic refuses new pre-registrations',
+      closedPost.status === 410 && closedPost.data.ok === false && /closed/i.test(closedPost.data.error));
   }
 
   // --- summary ---

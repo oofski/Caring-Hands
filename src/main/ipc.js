@@ -86,6 +86,7 @@ const PERMS = {
   'event:finish': ['admin'],
   'event:purge': ['admin'],
   'reports:archived': ['admin', 'doctor'],
+  'reports:rollup': ['admin', 'doctor'],
   'reports:rebuild': ['admin'],
   'export:event': ['admin'],
   'audit:list': ['admin'],
@@ -191,9 +192,25 @@ function register(getMainWindow) {
     return { imported: true, ...db.importClinicBundle(currentUser, bundle) };
   });
 
-  handle('event:finish', ({ eventId } = {}) => db.finishEvent(currentUser, eventId));
-  handle('event:purge', ({ eventId } = {}) => db.purgeEventPatients(currentUser, eventId));
+  // Pull everything in before the records go. The kept totals are counted from
+  // what is on THIS computer, so finishing a clinic while another station still
+  // held unsynced check-ins used to record a number lower than the clinic
+  // actually saw — and the patients were gone, so it could never be corrected.
+  const syncBeforeRemoving = async () => {
+    try { if (cloud.status().enabled) await cloud.syncOnce(); } catch (_e) { /* offline: proceed with local totals */ }
+  };
+  handle('event:finish', async ({ eventId } = {}) => {
+    await syncBeforeRemoving();
+    return db.finishEvent(currentUser, eventId);
+  });
+  handle('event:purge', async ({ eventId } = {}) => {
+    await syncBeforeRemoving();
+    return db.purgeEventPatients(currentUser, eventId);
+  });
   handle('reports:archived', () => db.listEventReports());
+  // The Reports tab's numbers, for one event or all of them — live records and
+  // the kept totals of finished clinics counted the same way.
+  handle('reports:rollup', ({ eventId } = {}) => db.reportRollup(eventId));
 
   // Recovery: recompute an event's reporting totals from an exported backup
   // WITHOUT restoring any patients — for a clinic whose figures were lost.
@@ -432,8 +449,10 @@ function register(getMainWindow) {
     return { saved: true, path: res.filePath };
   });
 
-  handle('export:event', async () => {
-    const data = db.exportEventJson();
+  handle('export:event', async ({ eventId } = {}) => {
+    // Export the event the report is actually SHOWING, not whichever one happens
+    // to be active — those are different the moment an admin changes the scope.
+    const data = db.exportEventJson(eventId && eventId !== 'all' ? Number(eventId) : undefined);
     const stamp = new Date().toISOString().slice(0, 10);
     const safe = (data.event ? data.event.name : 'event').replace(/[^a-z0-9]+/gi, '-');
     const res = await dialog.showSaveDialog(getMainWindow(), {

@@ -11,7 +11,6 @@ const STATUS_META = {
   completed: ['Completed', 'var(--success)'],
   dismissed: ['Checked out', 'var(--text-subtle)'],
 };
-const dayKey = (iso) => (iso ? String(iso).slice(0, 10) : 'unknown');
 const fmtDay = (d) => { const dt = new Date(d + 'T00:00:00'); return isNaN(dt) ? d : dt.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }); };
 
 const LANG_LABEL = { en: 'English', es: 'Español', ru: 'Русский', fr: 'Français', pt: 'Português' };
@@ -26,18 +25,17 @@ function genderLabel(g) {
   if (s === 'other') return 'Other';
   return String(g).charAt(0).toUpperCase() + String(g).slice(1);
 }
-function cityLabel(d) {
-  if (!d) return 'Not recorded';
-  const c = String(d.city || '').trim(), s = String(d.state || '').trim();
-  if (!c && !s) return 'Not recorded';
-  return [c, s].filter(Boolean).join(', ');
+
+// The summary stores raw codes so it stays language-neutral on disk; the labels
+// are applied here, once, for every figure on the page — live or kept.
+function relabel(obj, fn) {
+  const out = {};
+  Object.entries(obj || {}).forEach(([k, v]) => { const label = fn(k); out[label] = (out[label] || 0) + v; });
+  return out;
 }
-function ageBucket(a) {
-  if (a == null || isNaN(a)) return 'Not recorded';
-  if (a < 18) return 'Under 18';
-  if (a < 35) return '18–34';
-  if (a < 55) return '35–54';
-  return '55+';
+function conditionLabels(obj) {
+  const map = Object.fromEntries(conditions().map((c) => [c.key, c.label]));
+  return relabel(obj, (k) => map[k] || String(k).replace(/[_-]+/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()));
 }
 
 export function renderReports(ctx) {
@@ -56,84 +54,56 @@ export function renderReports(ctx) {
   }
 
   async function load() {
-    const [active, events, archived] = await Promise.all([
-      api.activeEvent(), api.listEvents(),
-      api.archivedReports().catch(() => []),
-    ]);
-    const patients = await api.listPatients({ eventId: scope });
+    // Every figure on this page now comes from ONE counting function in the data
+    // layer, which counts live records and the de-identified totals kept for
+    // finished clinics the same way. Before this the page computed only from the
+    // live patient list, so a clinic that had been finished or purged — exactly
+    // the clinic whose report someone needs — contributed zero to "All events".
+    const [events, rollup] = await Promise.all([api.listEvents(), api.reportRollup(scope)]);
+    const sm = (rollup && rollup.summary) || {};
+    // Live patient rows, for the e-mail follow-up list only. A clinic whose
+    // records have been removed has none, and that card is simply not shown.
+    const patients = await api.listPatients({ eventId: scope }).catch(() => []);
 
-    // A clinic whose patient records have been removed still has its kept
-    // totals. Without this the page computed from an empty patient list and
-    // showed zeros, which read as the reporting data having been destroyed.
-    const archivedFor = (id) => (archived || []).find((r) => r.event_id === id) || null;
-    const kept = (scope !== 'all' && !patients.length) ? archivedFor(Number(scope)) : null;
-    if (kept) { clear(root); root.append(archivedView(kept, events, scopeSelFor(events), load)); return; }
-    const full = await Promise.all(patients.map((p) => api.getPatient(p.id)));
-
-    // ---- Totals + breakdowns (all real, computed from the records) ----
-    // A visit is FINISHED when the patient has been through and gone: status
-    // 'completed' (treatment done) or 'dismissed' (checked out and left). Counting
-    // only 'completed' made the ring read 0% for a clinic where everyone had been
-    // seen and sent home, because check-out moves them straight past 'completed'.
-    let fillings = 0, extractions = 0, cleanings = 0, xrays = 0, flagged = 0, finished = 0, withXray = 0;
-    let preSignups = 0, preFinished = 0, onSiteSignups = 0, onSiteFinished = 0, checkedOut = 0;
-    const isFinished = (p) => p.status === 'completed' || p.status === 'dismissed';
-    const days = {};
-    const ensure = (k) => (days[k] = days[k] || { date: k, seen: 0, completed: 0, fillings: 0, extractions: 0, cleanings: 0, treatments: 0 });
-    const gender = {}, age = {}, lang = {}, city = {};
-    const bump = (obj, k) => { obj[k] = (obj[k] || 0) + 1; };
-    full.forEach((p) => {
-      const tx = p.treatment || {};
-      const f = (tx.fillings || []).length, x = (tx.extractions || []).filter((e) => !e.other || e.tooth).length;
-      const c = Object.entries(tx.cleaning || {}).some(([k, v]) => v && k !== 'quad_detail' && k !== 'teeth') ? 1 : 0;
-      const nx = (p.xrays || []).length;
-      fillings += f; extractions += x; cleanings += c; xrays += nx;
-      if (nx) withXray += 1;
-      if (p.triage && (p.triage.flags || []).length) flagged += 1;
-      if (isFinished(p)) finished += 1;
-      if (p.status === 'dismissed') checkedOut += 1;
-      // Where the patient came from: the online link, or the front desk.
-      const pre = !!(p.demographics && p.demographics.preregistered);
-      if (pre) { preSignups += 1; if (p.status === 'dismissed') preFinished += 1; }
-      else { onSiteSignups += 1; if (p.status === 'dismissed') onSiteFinished += 1; }
-
-      bump(gender, genderLabel(p.gender));
-      bump(age, ageBucket(p.age));
-      bump(lang, langLabel(p.language));
-      bump(city, cityLabel(p.demographics));
-
-      const sd = ensure(dayKey(p.created_at)); sd.seen += 1;
-      const txDay = ensure(dayKey((tx.completed_at) || p.updated_at || p.created_at));
-      txDay.fillings += f; txDay.extractions += x; txDay.cleanings += c;
-      txDay.treatments += f + x + c;
-      if (isFinished(p)) txDay.completed += 1;
-    });
-    const dailyRows = Object.values(days).filter((d) => d.date !== 'unknown').sort((a, b) => a.date < b.date ? -1 : 1);
-
-    const byStatus = count(patients, (p) => p.status);
-    const total = patients.length;
+    const total = sm.patients_seen || 0;
+    const finished = sm.visits_completed || 0;
+    const checkedOut = sm.checked_out || 0;
+    const fillings = sm.fillings || 0, extractions = sm.extractions || 0;
+    const cleanings = sm.cleanings || 0, xrays = sm.xrays || 0;
+    const withXray = sm.patients_with_xray || 0, flagged = sm.flagged || 0;
     const completePct = total ? Math.round((finished / total) * 100) : 0;
     const inProgress = Math.max(0, total - finished);
     const outPct = total ? Math.round((checkedOut / total) * 100) : 0;
 
-    const condCounts = {};
-    full.forEach((p) => (p.medical_history.conditions || []).forEach((k) => { condCounts[k] = (condCounts[k] || 0) + 1; }));
-    const topConds = conditions().map((c) => ({ label: c.label, n: condCounts[c.key] || 0 })).filter((c) => c.n).sort((a, b) => b.n - a.n).slice(0, 8);
+    const gender = relabel(sm.by_gender, (k) => (k === 'Not recorded' ? k : genderLabel(k)));
+    const lang = relabel(sm.by_language, (k) => (k === 'Not recorded' ? k : langLabel(k)));
+    const age = sm.by_age || {};
+    const city = sm.by_city || {};
+    const byStatus = sm.by_status || {};
+    const condObj = conditionLabels(sm.conditions);
+    const dailyRows = (sm.days || []).filter((d) => d.date && d.date !== 'Not recorded');
 
+    const keptEvents = (rollup && rollup.kept_events) || [];
+    const liveEvents = (rollup && rollup.live_events) || [];
     const scopeSel = scopeSelFor(events);
+    const subtitle = rollup.all
+      ? 'All clinic events'
+      : [rollup.event ? rollup.event.name : (sm.event_name || 'Clinic'), rollup.event && rollup.event.location].filter(Boolean).join(' · ');
 
     clear(root);
     root.append(
       el('div', { class: 'view-head' }, [
-        el('div', {}, [el('h1', {}, ['Reports & analytics']), el('p', { class: 'view-sub' }, [scope === 'all' ? 'All clinic events' : (active ? active.name : '')])]),
+        el('div', {}, [el('h1', {}, ['Reports & analytics']), el('p', { class: 'view-sub' }, [subtitle])]),
         el('div', { class: 'view-head-actions' }, [
           scopeSel,
           el('button', { class: 'btn btn--ghost btn--sm', onClick: load }, [icon('refresh', { size: 15 }), 'Refresh']),
-          store.is('admin') ? el('button', { class: 'btn btn--primary btn--sm', onClick: async () => {
-            try { const r = await api.exportEvent(); if (r.saved) toast(`Exported ${r.count} record(s)`, 'success'); } catch (e) { toast(e.message, 'error'); }
+          store.is('admin') && patients.length ? el('button', { class: 'btn btn--primary btn--sm', onClick: async () => {
+            try { const r = await api.exportEvent(scope); if (r.saved) toast(`Exported ${r.count} record(s)`, 'success'); } catch (e) { toast(e.message, 'error'); }
           } }, [icon('download', { size: 15 }), 'Export JSON']) : null,
         ]),
       ]),
+
+      keptBanner(keptEvents, liveEvents, rollup.all),
 
       // ---- KPI cards ----
       el('div', { class: 'kpi-grid' }, [
@@ -157,8 +127,8 @@ export function renderReports(ctx) {
               legRow('var(--warning)', 'Still in the clinic', inProgress),
             ]),
           ]),
-          el('div', { class: 'card-sub-title' }, ['Patients by status']),
-          statusBar(byStatus, total),
+          Object.keys(byStatus).length ? el('div', { class: 'card-sub-title' }, ['Patients by status']) : null,
+          Object.keys(byStatus).length ? statusBar(byStatus, total) : null,
         ]),
         el('div', { class: 'card' }, [
           el('div', { class: 'card-title' }, [icon('users', { size: 15 }), 'Patient demographics']),
@@ -170,7 +140,14 @@ export function renderReports(ctx) {
       ]),
 
       // ---- Sign-ups vs check-outs, split by where they registered ----
-      signupCard({ total, checkedOut, outPct, preSignups, preFinished, onSiteSignups, onSiteFinished }),
+      signupCard({
+        total, checkedOut, outPct,
+        preSignups: sm.pre_signups || 0, preFinished: sm.pre_checked_out || 0,
+        onSiteSignups: sm.onsite_signups || 0, onSiteFinished: sm.onsite_checked_out || 0,
+        // Totals kept by an older version have no sign-up split. Say so rather
+        // than letting the missing figures read as a real 0%.
+        legacy: sm.legacy_parts || 0,
+      }),
 
       // ---- Procedures + conditions ----
       el('div', { class: 'dash-grid' }, [
@@ -180,13 +157,13 @@ export function renderReports(ctx) {
         ]),
         el('div', { class: 'card' }, [
           el('div', { class: 'card-title' }, [icon('clipboard', { size: 15 }), 'Most common conditions']),
-          topConds.length ? barList(Object.fromEntries(topConds.map((c) => [c.label, c.n]))) : el('p', { class: 'muted' }, ['No conditions recorded yet.']),
+          Object.keys(condObj).length ? barList(condObj, { limit: 8 }) : el('p', { class: 'muted' }, ['No conditions recorded yet.']),
           el('p', { class: 'awareness', style: 'margin-top:12px' }, [el('strong', {}, [String(flagged)]), ` of ${total} patient(s) flagged with a condition needing awareness.`]),
         ]),
       ]),
 
       // ---- Email visit summaries (patients who left an email) ----
-      emailCard(full),
+      patients.length ? emailCard(patients) : null,
 
       // ---- Daily breakdown ----
       el('div', { class: 'card' }, [
@@ -247,6 +224,9 @@ function signupCard(d) {
       el('strong', {}, [d.outPct + '%']),
       '. The rest are still in the clinic or did not complete their visit.',
     ]),
+    d.legacy ? el('p', { class: 'awareness', style: 'margin:0 0 var(--space-4)' }, [
+      `${d.legacy} finished clinic(s) kept their totals before this breakdown existed, so their patients are counted in the sign-ups but not in the check-outs below. Rebuild that clinic's report from its backup file (Backup & Export) to fill them in.`,
+    ]) : null,
     el('div', { class: 'signup-table' }, [
       row('Pre-registered online', d.preSignups, d.preFinished, `${share(d.preSignups)}% of all sign-ups`),
       row('Registered on site', d.onSiteSignups, d.onSiteFinished, `${share(d.onSiteSignups)}% of all sign-ups`),
@@ -263,73 +243,29 @@ function signupCard(d) {
   ]);
 }
 
-// The report for a clinic whose patient records have been removed. The people
+// Says, in plain words, where the numbers above come from when some or all of
+// them belong to a clinic whose patient records have been removed. The people
 // are gone; these de-identified totals were kept precisely so the clinic can
-// still answer a grant return, so they are shown in full rather than as zeros.
-function archivedView(rec, events, scopeSel, reload) {
-  const sm = rec.summary || {};
-  const finishedAt = rec.finished_at ? new Date(rec.finished_at).toLocaleString() : '—';
-  const bars = (title, obj, opts) => (obj && Object.keys(obj).length
-    ? el('div', { class: 'demo-group' }, [
-      el('div', { class: 'demo-h' }, [title, el('span', { class: 'demo-n mono' }, [String(Object.values(obj).reduce((a, b) => a + b, 0))])]),
-      barList(obj, opts),
-    ])
-    : null);
-  // The summary stores raw codes so it stays language-neutral on disk; label
-  // them here the same way the live report does.
-  const relabel = (obj, fn) => {
-    const out = {};
-    Object.entries(obj || {}).forEach(([k, v]) => { const label = fn(k); out[label] = (out[label] || 0) + v; });
-    return out;
-  };
-  const CONDITION_LABEL = Object.fromEntries(conditions().map((c) => [c.key, c.label]));
-  const condObj = relabel(sm.conditions, (k) => CONDITION_LABEL[k]
-    || String(k).replace(/[_-]+/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()));
-  const genderObj = relabel(sm.by_gender, (k) => (k === 'Not recorded' ? k : genderLabel(k)));
-  const langObj = relabel(sm.by_language, (k) => (k === 'Not recorded' ? k : langLabel(k)));
-  const dayObj = relabel(sm.by_day, (k) => (/^\d{4}-\d{2}-\d{2}$/.test(k) ? fmtDay(k) : k));
-
-  return el('div', {}, [
-    el('div', { class: 'view-head' }, [
-      el('div', {}, [
-        el('h1', {}, ['Reports & analytics']),
-        el('p', { class: 'view-sub' }, [sm.event_name || rec.event_name || 'Archived clinic', sm.event_location ? ' · ' + sm.event_location : '']),
-      ]),
-      el('div', { class: 'view-head-actions' }, [scopeSel, el('button', { class: 'btn btn--ghost btn--sm', onClick: reload }, [icon('refresh', { size: 15 }), 'Refresh'])]),
-    ]),
-    el('div', { class: 'banner banner--locked' }, [
-      icon('database', { size: 16 }),
-      el('span', {}, [
-        'This clinic’s patient records have been removed. These are the kept reporting totals — figures only, no patient information. Finished ',
-        finishedAt, rec.finished_by_name ? ' by ' + rec.finished_by_name : '', '.',
-      ]),
-    ]),
-    el('div', { class: 'kpi-grid' }, [
-      kpi('users', sm.patients_seen || 0, 'Patients seen', { accent: true }),
-      kpi('checkCircle', sm.visits_completed || 0, 'Visits finished', {
-        sub: sm.patients_seen ? Math.round(((sm.visits_completed || 0) / sm.patients_seen) * 100) + '% of ' + sm.patients_seen : null,
-      }),
-      kpi('xray', sm.xrays || 0, 'X-rays taken'),
-      kpi('tooth', sm.extractions || 0, 'Extractions'),
-      kpi('pen', sm.fillings || 0, 'Fillings'),
-      kpi('scan', sm.cleanings || 0, 'Cleanings'),
-    ]),
-    el('div', { class: 'dash-grid' }, [
-      el('div', { class: 'card' }, [
-        el('div', { class: 'card-title' }, [icon('users', { size: 15 }), 'Patient demographics']),
-        bars('By gender', genderObj, { sort: false }),
-        bars('By age', sm.by_age, { sort: false }),
-        bars('By language', langObj, { limit: 4 }),
-        bars('By city', sm.by_city, { limit: 6 }),
-      ]),
-      el('div', { class: 'card' }, [
-        el('div', { class: 'card-title' }, [icon('clipboard', { size: 15 }), 'Most common conditions']),
-        Object.keys(condObj).length ? barList(condObj, { limit: 8 }) : el('p', { class: 'muted' }, ['No conditions recorded.']),
-        el('div', { class: 'card-sub-title', style: 'margin-top:var(--space-4)' }, ['Patients by day']),
-        (dayObj && Object.keys(dayObj).length)
-          ? barList(dayObj, { sort: false })
-          : el('p', { class: 'muted' }, ['No daily breakdown kept.']),
-      ]),
+// still answer a grant return, so they are counted in rather than shown as zeros.
+function keptBanner(kept, live, isAll) {
+  if (!kept || !kept.length) return null;
+  const names = kept.map((k) => k.name).filter(Boolean);
+  const seen = kept.reduce((n, k) => n + (Number(k.patients_seen) || 0), 0);
+  // One clinic, looked at on its own: speak about that clinic. A roll-up: say
+  // which clinics contribute figures rather than records, so nobody reads
+  // "this clinic" as meaning the one that is still open.
+  const one = !isAll && kept.length === 1 ? kept[0] : null;
+  const when = one && one.finished_at ? new Date(one.finished_at).toLocaleString() : null;
+  const lead = kept.length === 1
+    ? `${names[0] || 'One finished clinic'} has had its patient records removed.`
+    : `${kept.length} finished clinics — ${names.join(', ')} — have had their patient records removed.`;
+  return el('div', { class: 'banner banner--locked' }, [
+    icon('database', { size: 16 }),
+    el('span', {}, [
+      one
+        ? 'This clinic’s patient records have been removed. These are the kept reporting totals — figures only, no patient information.'
+        : `${lead} ${kept.length === 1 ? 'Its' : 'Their'} kept totals (${seen} patient(s)) are counted in the figures below${live && live.length ? ', alongside the records of the clinics still open' : ''}. Figures only, no patient information.`,
+      one && when ? ` Finished ${when}${one.finished_by_name ? ' by ' + one.finished_by_name : ''}.` : '',
     ]),
   ]);
 }
@@ -407,11 +343,6 @@ function dailyTable(rows) {
   ]);
 }
 
-function count(arr, fn) {
-  const out = {};
-  arr.forEach((x) => { const k = fn(x) || 'Unknown'; out[k] = (out[k] || 0) + 1; });
-  return out;
-}
 // Ranked bars. Biggest first, because the question a clinic asks of any of
 // these lists is "which is the most" — and each row carries its share of the
 // total, which is what a grant return actually asks for.

@@ -13,7 +13,10 @@ require.cache[ep] = { id: ep, filename: ep, loaded: true, exports: { BrowserWind
 const db = require('../src/main/db.js');
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'uih-'));
-db.init(tmp);
+const DB_PATH = db.init(tmp);
+// A second handle on the same file, for the handful of checks that have to
+// forge history (back-date a visit) or read a column the API does not expose.
+const rawDb = () => new (require('better-sqlite3'))(DB_PATH);
 
 // ---- jsdom env ----
 const dom = new JSDOM('<!doctype html><html><body><div id="app"></div></body></html>', { url: 'http://localhost/', pretendToBeVisual: true });
@@ -61,6 +64,7 @@ const PERMS = {
   'xrayFolderConfig': ['admin', 'doctor'], 'xrayFolderChoose': ['admin', 'doctor'], 'xrayFolderLock': ['admin', 'doctor'], 'xrayFolderDelete': ['admin', 'doctor'], 'xrayDeleteFile': ['admin', 'doctor'],
   'pdfPreview': ['admin', 'doctor'], 'pdfGenerate': ['admin', 'doctor'], 'pdfPrint': ['admin', 'doctor'],
   'recordExportUsb': ['admin', 'doctor'], 'backupRun': ['admin'], 'exportEvent': ['admin'], 'auditList': ['admin'],
+  'reportsArchived': ['admin', 'doctor'], 'reportsRollup': ['admin', 'doctor'],
 };
 // patientsCreate is intentionally UNGATED (kiosk + any role); statsDashboard needs a user.
 function guard(name) {
@@ -131,6 +135,8 @@ window.api = {
   auditList: okWrap((l) => db.listAudit(l), 'auditList'),
   // v1.6.5: the kept totals a purged clinic leaves behind.
   reportsArchived: okWrap(() => db.listEventReports(), 'reportsArchived'),
+  // v1.6.6: the Reports tab's numbers — live records AND kept totals, counted once.
+  reportsRollup: okWrap(({ eventId } = {}) => db.reportRollup(eventId), 'reportsRollup'),
   pdfPreview: async () => ({ ok: true, data: 'data:application/pdf;base64,' }),
   pdfGenerate: async () => ({ ok: true, data: { saved: false } }),
   pdfPrint: async () => ({ ok: true, data: { printed: true } }),
@@ -1706,6 +1712,192 @@ async function main() {
       'v1.6.5: rebuilding the report does NOT restore the patient records');
     log(db.listEventReports().filter((r) => r.event_id === evR.id).length === 1,
       'v1.6.5: rebuilding twice refreshes the report rather than duplicating it');
+  }
+
+  // ---- v1.6.6: the report data that "got removed" — the rest of the story ----
+  {
+    currentUser = db.login('admin', 'admin');
+
+    // 1. "All events" is the DEFAULT view of the Reports tab. It computed from
+    //    the live patient list alone, so every finished clinic counted as zero —
+    //    the roll-up a grant return is read off silently lost them.
+    const rollAll = db.reportRollup('all');
+    const liveNow = db.listPatients({ eventId: 'all' }).length;
+    const keptSeen = rollAll.kept_events.reduce((n, k) => n + (Number(k.patients_seen) || 0), 0);
+    log(rollAll.kept_events.some((k) => /Report Loss Test/.test(k.name || '')),
+      'v1.6.6: "All events" knows about the clinics whose records were removed');
+    log(keptSeen > 0 && rollAll.summary.patients_seen === liveNow + keptSeen,
+      'v1.6.6: "All events" adds the kept totals to the live ones (was: finished clinics counted 0)');
+
+    // 2. The live tab and the kept totals must count the same way. An extraction
+    //    row ticked "other" with no tooth is a note, not a procedure.
+    const evC = db.createEvent(currentUser, { name: 'Counting Rules', location: 'Sandy' });
+    db.setActiveEvent(currentUser, evC.id);
+    const pc = db.createPatient(currentUser, {
+      first_name: 'Count', last_name: 'Rules', dob: '1990-05-05', gender: 'male',
+      demographics: { city: 'Sandy', state: 'OR' }, medical_history: {}, dental_history: { visit_type: 'extraction_pain' },
+      consents: [{ type: 'general', signer_name: 'C', signature_png: 'data:image/png;base64,AAAA' }],
+    });
+    db.saveVitals(currentUser, pc.id, { bp_systolic: '120', heart_rate: '70' });
+    db.routePatient(currentUser, pc.id, 'dentist');
+    db.saveTreatment(currentUser, pc.id, {
+      extractions: [{ tooth: '30' }, { other: true }],
+      cleaning: { quad_detail: 'UR', teeth: '1,2' },
+      provider_name: 'D',
+    }, true);
+    const liveC = db.reportRollup(evC.id).summary;
+    log(liveC.extractions === 1, 'v1.6.6: an "other" extraction with no tooth is not counted as a procedure');
+    log(liveC.cleanings === 0, 'v1.6.6: cleaning notes alone do not count as a cleaning performed');
+    db.dismissPatient(currentUser, pc.id);
+    const bundleC = db.exportClinicBundle(evC.id);
+    db.purgeEventPatients(currentUser, evC.id);
+    const keptC = db.listEventReports().find((r) => r.event_id === evC.id).summary;
+    log(keptC.extractions === liveC.extractions && keptC.cleanings === liveC.cleanings,
+      'v1.6.6: the kept totals count exactly what the live tab counted');
+
+    // 3. A purged clinic is CLOSED. Leaving it active made the next walk-in
+    //    restart the count and hid the kept report behind a "live" event.
+    const evAfter = db.listEvents().find((e) => e.id === evC.id);
+    log(evAfter && !evAfter.active, 'v1.6.6: removing a clinic\'s records closes the clinic');
+
+    // 4. A rebuilt report agrees with the one the clinic saw on the day.
+    const reb = db.rebuildSummaryFromBundle(currentUser, bundleC);
+    log(reb.summary.extractions === liveC.extractions && reb.summary.patients_seen === liveC.patients_seen,
+      'v1.6.6: a report rebuilt from the backup matches the original figures');
+
+    // 5. Deleting an event outright is the one destructive action NOT gated
+    //    behind an export — its figures must survive it, and still be readable.
+    const evD = db.createEvent(currentUser, { name: 'Deleted Outright', location: 'Boring' });
+    db.setActiveEvent(currentUser, evD.id);
+    for (const last of ['Uno', 'Dos']) {
+      const p = db.createPatient(currentUser, {
+        first_name: 'Del', last_name: last, dob: '1985-03-03', gender: 'female',
+        demographics: { city: 'Boring', state: 'OR' }, medical_history: {}, dental_history: { visit_type: 'cleaning' },
+        consents: [{ type: 'general', signer_name: 'D', signature_png: 'data:image/png;base64,AAAA' }],
+      });
+      db.saveVitals(currentUser, p.id, { bp_systolic: '118', heart_rate: '68' });
+      db.routePatient(currentUser, p.id, 'hygienist');
+      db.saveTreatment(currentUser, p.id, { cleaning: { scaling: true }, provider_name: 'H' }, true);
+      db.dismissPatient(currentUser, p.id);
+    }
+    db.deleteEvent(currentUser, evD.id, { force: true });
+    const keptD = db.listEventReports().find((r) => r.event_id === evD.id);
+    log(!!keptD && keptD.summary.patients_seen === 2,
+      'v1.6.6: deleting an event keeps its de-identified totals');
+    const rollAfterDelete = db.reportRollup('all');
+    log(rollAfterDelete.kept_events.some((k) => k.id === evD.id && k.event_deleted),
+      'v1.6.6: a deleted clinic\'s figures still appear in "All events"');
+
+    // 6. One report row per event, whatever happens. Two stations finishing the
+    //    same clinic offline used to leave two rows and double the roll-up.
+    db.captureEventSummary(currentUser, evC.id);
+    db.captureEventSummary(currentUser, evC.id);
+    log(db.listEventReports().filter((r) => r.event_id === evC.id).length === 1,
+      'v1.6.6: an event can only ever have one report row');
+
+    // 7. Age is counted AS OF THE VISIT, so rebuilding a report years later does
+    //    not move someone into a different age band.
+    const evAge = db.createEvent(currentUser, { name: 'Age Bands', location: 'Sandy' });
+    db.setActiveEvent(currentUser, evAge.id);
+    const teen = db.createPatient(currentUser, {
+      first_name: 'Almost', last_name: 'Adult', dob: '2009-01-01', gender: 'male',
+      demographics: { city: 'Sandy', state: 'OR' }, medical_history: {}, dental_history: { visit_type: 'cleaning' },
+      consents: [{ type: 'general', signer_name: 'A', signature_png: 'data:image/png;base64,AAAA' }],
+    });
+    { const h = rawDb(); h.prepare('UPDATE patients SET created_at = ? WHERE id = ?').run('2020-06-01T10:00:00.000Z', teen.id); h.close(); }
+    const ageSum = db.reportRollup(evAge.id).summary;
+    log((ageSum.by_age['Under 18'] || 0) === 1,
+      'v1.6.6: age is counted as of the visit, not as of today');
+
+    // 8. And the tab itself — its DEFAULT view — must show those numbers.
+    const storeA = (await import('../src/renderer/js/store.js')).store; storeA.setUser(currentUser);
+    const ctxA = { navigate: () => {}, toast: () => {}, store: storeA, setDetail: () => {} };
+    const av = (await import('../src/renderer/js/views/reports.js')).renderReports(ctxA);
+    document.body.append(av);
+    for (let i = 0; i < 14; i++) await tick();
+    const expected = db.reportRollup('all').summary.patients_seen;
+    const seenKpi = Array.from(av.querySelectorAll('.kpi')).find((k) => /Patients seen/.test(k.textContent));
+    log(!!seenKpi && seenKpi.textContent.startsWith(String(expected)) && expected > 0,
+      'v1.6.6: the Reports tab opens on a total that includes the finished clinics');
+    log(/records have been removed|records removed/i.test(av.textContent),
+      'v1.6.6: it says plainly which figures come from clinics whose records are gone');
+    // The heading followed the ACTIVE event even when another was selected.
+    const selA = av.querySelector('select');
+    const optA = Array.from(selA.options).find((o) => /Age Bands/.test(o.textContent));
+    selA.value = optA.value; selA.dispatchEvent(new window.Event('change', { bubbles: true }));
+    for (let i = 0; i < 14; i++) await tick();
+    log(/Age Bands/.test(av.querySelector('.view-sub').textContent),
+      'v1.6.6: the heading names the clinic whose numbers are on screen');
+    av.remove();
+
+    // 9. A report kept by the PREVIOUS version holds only the headline counts.
+    //    It must still contribute them — and the page has to say what is missing
+    //    rather than printing a check-out rate of 0% as though it were measured.
+    {
+      const h = rawDb();
+      const rec = h.prepare('SELECT * FROM event_reports WHERE event_id = ?').get(evC.id);
+      const oldSummary = JSON.parse(rec.summary);
+      ['checked_out', 'flagged', 'patients_with_xray', 'pre_signups', 'pre_checked_out',
+        'onsite_signups', 'onsite_checked_out', 'by_status', 'days'].forEach((k) => { delete oldSummary[k]; });
+      h.prepare('UPDATE event_reports SET summary = ? WHERE id = ?').run(JSON.stringify(oldSummary), rec.id);
+      h.close();
+      const legacyRoll = db.reportRollup(evC.id).summary;
+      log(legacyRoll.patients_seen === oldSummary.patients_seen && legacyRoll.legacy_parts === 1,
+        'v1.6.6: totals kept by the previous version still count, and are marked as incomplete');
+
+      const lv = (await import('../src/renderer/js/views/reports.js')).renderReports(ctxA);
+      document.body.append(lv);
+      for (let i = 0; i < 14; i++) await tick();
+      const selL = lv.querySelector('select');
+      const optL = Array.from(selL.options).find((o) => /Counting Rules/.test(o.textContent));
+      selL.value = optL.value; selL.dispatchEvent(new window.Event('change', { bubbles: true }));
+      for (let i = 0; i < 14; i++) await tick();
+      log(/before this breakdown existed/i.test(lv.textContent),
+        'v1.6.6: the page says which figures an older kept report cannot answer');
+      lv.remove();
+    }
+  }
+
+  // ---- v1.6.6: a deletion that could not be applied is retried, not lost ----
+  {
+    currentUser = db.login('admin', 'admin');
+    const evX = db.createEvent(currentUser, { name: 'FK Order Clinic', location: 'Sandy' });
+    db.setActiveEvent(currentUser, evX.id);
+    const px = db.createPatient(currentUser, {
+      first_name: 'Fk', last_name: 'Order', dob: '1970-02-02', gender: 'male',
+      demographics: {}, medical_history: {}, dental_history: { visit_type: 'cleaning' },
+      consents: [{ type: 'general', signer_name: 'F', signature_png: 'data:image/png;base64,AAAA' }],
+    });
+    db.collectSyncRows(); // hands out the uids the cloud keys rows by
+    const hx = rawDb();
+    const evUid = hx.prepare('SELECT uid FROM events WHERE id = ?').get(evX.id).uid;
+    const pxUid = hx.prepare('SELECT uid FROM patients WHERE id = ?').get(px.id).uid;
+    const stillHere = (table, id) => !!hx.prepare(`SELECT id FROM ${table} WHERE id = ?`).get(id);
+    const later = new Date(Date.now() + 60000).toISOString();
+
+    // Another station deleted the whole clinic. The event tombstone alone cannot
+    // be applied while this station still holds the patients — that used to be
+    // swallowed as a silent skip and never retried, so the clinic lived on here.
+    const evOnly = db.applyRemoteRows([{ entity: 'event', uid: evUid, deleted: true, updated_at: later }]);
+    log(stillHere('events', evX.id) && evOnly.deferredRows.length === 1,
+      'v1.6.6: an event deletion that its patients block is handed back for retry, not dropped');
+
+    // With the patient's tombstone in the same batch, deletions apply
+    // children-first and the whole clinic goes.
+    const both = db.applyRemoteRows([
+      { entity: 'event', uid: evUid, deleted: true, updated_at: later },
+      { entity: 'patient', uid: pxUid, event_uid: evUid, deleted: true, updated_at: later },
+    ]);
+    log(!stillHere('events', evX.id) && both.deleted === 2,
+      'v1.6.6: a clinic deleted on another station is removed here too');
+
+    // And a stray child for a clinic that was deleted here is dropped rather
+    // than parked in the retry buffer for ever.
+    const stray = db.applyRemoteRows([{ entity: 'patient', uid: 'stray-' + pxUid, event_uid: evUid,
+      updated_at: later, data: { first_name: 'Stray', last_name: 'Child' } }]);
+    log(stray.deferredRows.length === 0,
+      'v1.6.6: a record whose clinic was deleted here is not retried for ever');
+    hx.close();
   }
 
   await tick();

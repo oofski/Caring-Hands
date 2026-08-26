@@ -80,13 +80,14 @@ export const api = {
   exportRecordUsb: (patientId) => call('recordExportUsb', { patientId }),
 
   backup: () => call('backupRun'),
-  exportEvent: () => call('exportEvent'),
+  exportEvent: (eventId) => call('exportEvent', { eventId }),
   exportZip: () => call('exportZip'),
   exportClinic: (eventId) => call('exportClinic', { eventId }),
   importClinic: () => call('importClinic'),
   finishEvent: (eventId) => call('eventFinish', { eventId }),
   purgeEvent: (eventId) => call('eventPurge', { eventId }),
   archivedReports: () => call('reportsArchived'),
+  reportRollup: (eventId) => call('reportsRollup', { eventId }),
   rebuildReport: () => call('reportsRebuild'),
 
   appVersion: () => call('appVersion'),

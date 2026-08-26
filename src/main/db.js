@@ -234,6 +234,13 @@ function migrate() {
     finished_by_name TEXT, created_at TEXT, updated_at TEXT,
     synced_rev TEXT, content_rev TEXT)`);
   db.exec('CREATE INDEX IF NOT EXISTS idx_reports_event ON event_reports(event_id)');
+  // One report per event. Without this two stations finishing offline each
+  // create a row, the roll-up double-counts, and refreshing only updates one.
+  try {
+    db.exec(`DELETE FROM event_reports WHERE id NOT IN
+             (SELECT MAX(id) FROM event_reports GROUP BY event_id)`);
+    db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_reports_event_unique ON event_reports(event_id)');
+  } catch (_e) { /* index already present */ }
   addColumn('triage', 'triaged_by_name', 'TEXT');
   addColumn('triage', 'vitals_by_name', 'TEXT');
   addColumn('triage', 'routed_by_name', 'TEXT');
@@ -697,11 +704,13 @@ function deleteEvent(actor, id, { force } = {}) {
   // The local cascade has no cloud counterpart, so every row has to be
   // tombstoned by hand or the whole clinic survives on the other stations.
   ensureUids();
+  // Keep the de-identified totals even here. Deleting an event is the one
+  // destructive action NOT gated behind an export, so silently discarding the
+  // clinic's figures with it is the worst possible default.
+  if (count > 0) captureEventSummary(actor, id);
   const tx = db.transaction(() => {
     for (const p of db.prepare('SELECT id FROM patients WHERE event_id = ?').all(id)) tombstonePatient(p.id);
     recordTombstone(e.uid, 'event', null);
-    // event_reports has no FK to events, so its rows would be orphaned locally.
-    db.prepare('DELETE FROM event_reports WHERE event_id = ?').run(id);
     db.prepare('DELETE FROM patients WHERE event_id = ?').run(id);
     db.prepare('DELETE FROM events WHERE id = ?').run(id);
   });
@@ -1722,6 +1731,10 @@ function importClinicBundle(actor, bundle) {
   // A restored record must not be re-deleted by its own tombstone on the next
   // sync — and the cloud copy must be re-published, so clear the sent marker.
   const uids = [];
+  // The EVENT first. Restoring a clinic that had been deleted outright rebuilt
+  // its patients but left the event's own tombstone standing, so the next sync
+  // deleted the whole clinic again — the restore silently undid itself.
+  if (b.event && b.event.uid) uids.push(b.event.uid);
   for (const p of (b.patients || [])) if (p.uid) uids.push(p.uid);
   for (const t of ['triage', 'treatments', 'consents', 'xrays']) {
     for (const r of (b[t] || [])) if (r.uid) uids.push(r.uid);
@@ -1747,27 +1760,72 @@ function importClinicBundle(actor, bundle) {
 // The de-identified counting, over whatever rows it is given. Shared by the
 // live database and by a rebuild from an exported backup, so a recovered report
 // can never disagree with the one the clinic saw on the day.
-function summarize(event, patients, treatmentOf, xrayCountOf) {
+// THE counting rules. Everything that reports a number — the live Reports tab,
+// the totals kept when a clinic is finished, a report rebuilt from a backup —
+// goes through these, so a clinic can never be shown two different answers to
+// the same question depending on which screen it is read from.
+const countFillings = (t) => (t ? safeJson(t.fillings, []).length : 0);
+// An extraction row with 'other' ticked and no tooth number is a note, not a
+// procedure — the live tab has always excluded those, so the kept totals must too.
+const countExtractions = (t) => (t ? safeJson(t.extractions, []).filter((e) => !e.other || e.tooth).length : 0);
+// A cleaning counts once per patient, and only if something was actually
+// recorded — 'quad_detail' and 'teeth' are notes attached to a cleaning, not
+// evidence that one happened.
+const didCleaning = (t) => {
+  if (!t) return false;
+  const cl = safeJson(t.cleaning, {}) || {};
+  return Object.entries(cl).some(([k, v]) => v && k !== 'quad_detail' && k !== 'teeth');
+};
+// Through the clinic and gone: treatment finished, or checked out and left.
+const isFinishedStatus = (s) => s === 'completed' || s === 'dismissed';
+
+function summarize(event, patients, treatmentOf, xrayCountOf, triageOf) {
   const bump = (o, k) => { const key = k || 'Not recorded'; o[key] = (o[key] || 0) + 1; };
   const ageBand = (a) => (a == null ? 'Not recorded' : a < 18 ? 'Under 18' : a < 35 ? '18–34' : a < 55 ? '35–54' : '55+');
-  const by_gender = {}, by_age = {}, by_language = {}, by_city = {}, by_day = {}, conditions = {}, visit_types = {};
+  // Age AS OF THE VISIT. Using today's date would move boundary-crossers every
+  // time a report is rebuilt, so the same clinic would report different bands.
+  const ageAtVisit = (p) => {
+    if (!p.dob) return null;
+    const born = new Date(p.dob), seen = new Date(p.created_at || Date.now());
+    if (isNaN(born) || isNaN(seen)) return p.age == null ? null : p.age;
+    return Math.floor((seen.getTime() - born.getTime()) / (365.25 * 24 * 3600 * 1000));
+  };
+  const dayOf = (iso) => (String(iso || '').slice(0, 10) || 'Not recorded');
+  const by_gender = {}, by_age = {}, by_language = {}, by_city = {}, by_day = {}, by_status = {};
+  const conditions = {}, visit_types = {}, days = {};
+  const dayRow = (k) => (days[k] = days[k] || { date: k, seen: 0, completed: 0, fillings: 0, extractions: 0, cleanings: 0, treatments: 0 });
   let extractions = 0, fillings = 0, cleanings = 0, xrays = 0, completed = 0;
+  let checked_out = 0, flagged = 0, patients_with_xray = 0;
+  let pre_signups = 0, pre_checked_out = 0, onsite_signups = 0, onsite_checked_out = 0;
   for (const p of patients) {
     const d = p.demographics || {}, m = p.medical_history || {}, dh = p.dental_history || {};
-    bump(by_gender, p.gender); bump(by_age, ageBand(p.age)); bump(by_language, p.language);
+    bump(by_gender, p.gender); bump(by_age, ageBand(ageAtVisit(p))); bump(by_language, p.language);
     bump(by_city, d.city ? (d.city + (d.state ? ', ' + d.state : '')) : 'Not recorded');
-    bump(by_day, String(p.created_at || '').slice(0, 10) || 'Not recorded');
+    bump(by_day, dayOf(p.created_at));
+    bump(by_status, p.status);
     bump(visit_types, dh.visit_type);
     (m.conditions || []).forEach((c) => bump(conditions, c));
-    if (p.status === 'completed' || p.status === 'dismissed') completed++;
+    const finished = isFinishedStatus(p.status);
+    if (finished) completed++;
+    if (p.status === 'dismissed') checked_out++;
+    // Where the patient came from: the online link, or the front desk.
+    if (d.preregistered) { pre_signups++; if (p.status === 'dismissed') pre_checked_out++; }
+    else { onsite_signups++; if (p.status === 'dismissed') onsite_checked_out++; }
+    const tri = triageOf ? triageOf(p) : null;
+    if (tri && safeJson(tri.flags, []).length) flagged++;
     const t = treatmentOf(p);
-    if (t) {
-      extractions += safeJson(t.extractions, []).length;
-      fillings += safeJson(t.fillings, []).length;
-      const cl = safeJson(t.cleaning, {});
-      if (cl && Object.keys(cl).length) cleanings++;
-    }
-    xrays += xrayCountOf(p);
+    const f = countFillings(t), x = countExtractions(t), c = didCleaning(t) ? 1 : 0;
+    extractions += x; fillings += f; cleanings += c;
+    const nx = xrayCountOf(p);
+    xrays += nx;
+    if (nx) patients_with_xray++;
+
+    const seenDay = dayRow(dayOf(p.created_at));
+    seenDay.seen++;
+    const txDay = dayRow(dayOf((t && t.completed_at) || p.updated_at || p.created_at));
+    txDay.fillings += f; txDay.extractions += x; txDay.cleanings += c;
+    txDay.treatments += f + x + c;
+    if (finished) txDay.completed++;
   }
   return {
     event_name: event ? event.name : null,
@@ -1775,9 +1833,14 @@ function summarize(event, patients, treatmentOf, xrayCountOf) {
     event_start: event ? event.start_date : null,
     patients_seen: patients.length,
     visits_completed: completed,
+    checked_out,
+    flagged,
+    patients_with_xray,
+    pre_signups, pre_checked_out, onsite_signups, onsite_checked_out,
     extractions, fillings, cleanings, xrays,
-    by_gender, by_age, by_language, by_city, by_day, visit_types,
+    by_gender, by_age, by_language, by_city, by_day, by_status, visit_types,
     conditions,
+    days: Object.values(days).filter((d) => d.date !== 'Not recorded').sort((a, b) => (a.date < b.date ? -1 : 1)),
     generated_at: now(),
   };
 }
@@ -1790,7 +1853,111 @@ function buildEventSummary(eventId) {
     event, patients,
     (p) => db.prepare('SELECT * FROM treatments WHERE patient_id = ?').get(p.id),
     (p) => db.prepare('SELECT COUNT(*) AS n FROM xrays WHERE patient_id = ?').get(p.id).n,
+    (p) => db.prepare('SELECT flags FROM triage WHERE patient_id = ?').get(p.id),
   );
+}
+
+// Add two summaries together. Counters sum, breakdown maps merge key-by-key,
+// day rows merge by date. Fields a summary predates are simply absent and count
+// as zero, so a report kept by an older version still contributes its totals.
+function mergeSummaries(list) {
+  const NUM = ['patients_seen', 'visits_completed', 'checked_out', 'flagged', 'patients_with_xray',
+    'pre_signups', 'pre_checked_out', 'onsite_signups', 'onsite_checked_out',
+    'extractions', 'fillings', 'cleanings', 'xrays'];
+  const MAPS = ['by_gender', 'by_age', 'by_language', 'by_city', 'by_day', 'by_status', 'visit_types', 'conditions'];
+  const out = { generated_at: now() };
+  NUM.forEach((k) => { out[k] = 0; });
+  MAPS.forEach((k) => { out[k] = {}; });
+  const days = {};
+  // Totals kept by an older version hold only the headline counts. Coercing
+  // their missing fields to 0 is right for the sum, but the page must be able to
+  // SAY so — a check-out rate of "0%" that really means "not recorded then" is
+  // worse than no figure at all.
+  let legacy = 0;
+  for (const s of list) {
+    if (!s) continue;
+    if (s.checked_out === undefined) legacy++;
+    NUM.forEach((k) => { out[k] += Number(s[k]) || 0; });
+    MAPS.forEach((k) => {
+      Object.entries(s[k] || {}).forEach(([kk, v]) => { out[k][kk] = (out[k][kk] || 0) + (Number(v) || 0); });
+    });
+    (s.days || []).forEach((d) => {
+      const row = (days[d.date] = days[d.date] || { date: d.date, seen: 0, completed: 0, fillings: 0, extractions: 0, cleanings: 0, treatments: 0 });
+      ['seen', 'completed', 'fillings', 'extractions', 'cleanings', 'treatments'].forEach((k) => { row[k] += Number(d[k]) || 0; });
+    });
+  }
+  out.days = Object.values(days).sort((a, b) => (a.date < b.date ? -1 : 1));
+  out.legacy_parts = legacy;
+  return out;
+}
+
+// The numbers behind the Reports tab, for one event or for all of them.
+//
+// The bug this exists to kill: the tab computed from the live patient list
+// alone, so the moment a clinic was finished or purged — which is exactly when
+// its report matters — it contributed ZERO to "All events". Here every event
+// with patients is counted from its records, and every event without them
+// contributes the de-identified totals kept when its records were removed.
+function reportRollup(scope) {
+  const all = scope == null || scope === 'all' || scope === '';
+  const events = db.prepare('SELECT * FROM events ORDER BY id').all();
+  const keptBy = new Map(listEventReports().map((r) => [r.event_id, r]));
+  const wanted = all ? events : events.filter((e) => e.id === Number(scope));
+  const parts = [], live_events = [], kept_events = [];
+  // A report whose EVENT row is gone (the clinic was deleted outright) still
+  // counts. Walking events alone would have hidden exactly the figures that the
+  // deletion was supposed to leave behind.
+  const known = new Set(events.map((e) => e.id));
+  for (const [evId, rec] of keptBy) {
+    if (known.has(evId)) continue;
+    if (!all && Number(scope) !== evId) continue;
+    const sm = rec.summary || {};
+    parts.push(sm);
+    kept_events.push({
+      id: evId, name: rec.event_name || sm.event_name || 'Deleted clinic', location: sm.event_location || null,
+      finished_at: rec.finished_at, finished_by_name: rec.finished_by_name,
+      patients_seen: rec.patients_seen || 0, event_deleted: true,
+    });
+  }
+  for (const ev of wanted) {
+    const n = db.prepare('SELECT COUNT(*) AS n FROM patients WHERE event_id = ?').get(ev.id).n;
+    if (n > 0) {
+      // Records are still here: count them, which also refreshes anything a
+      // stale kept summary would have got wrong.
+      parts.push(buildEventSummary(ev.id));
+      live_events.push({ id: ev.id, name: ev.name, location: ev.location });
+    } else if (keptBy.has(ev.id)) {
+      const rec = keptBy.get(ev.id);
+      parts.push(rec.summary || {});
+      kept_events.push({
+        id: ev.id, name: ev.name || (rec.summary && rec.summary.event_name), location: ev.location,
+        finished_at: rec.finished_at, finished_by_name: rec.finished_by_name,
+        patients_seen: rec.patients_seen || 0,
+      });
+    }
+  }
+  const summary = mergeSummaries(parts);
+  const single = !all ? (wanted[0] || null) : null;
+  const orphan = !all && !single && kept_events.length === 1 ? kept_events[0] : null;
+  if (single) {
+    summary.event_name = single.name;
+    summary.event_location = single.location;
+    summary.event_start = single.start_date;
+  } else if (orphan) {
+    summary.event_name = orphan.name;
+    summary.event_location = orphan.location;
+  }
+  return {
+    scope: all ? 'all' : Number(scope),
+    all,
+    event: single
+      ? { id: single.id, name: single.name, location: single.location }
+      : (orphan ? { id: orphan.id, name: orphan.name, location: orphan.location, deleted: true } : null),
+    live_events,
+    kept_events,
+    source: live_events.length && kept_events.length ? 'mixed' : (kept_events.length ? 'kept' : 'live'),
+    summary,
+  };
 }
 
 // Store (or refresh) an event's kept totals. Called before ANY path that removes
@@ -1820,10 +1987,11 @@ function rebuildSummaryFromBundle(actor, bundle) {
   if (b.format !== BUNDLE_FORMAT) throw new Error('That is not a Caring Hands clinic backup file.');
   if (!b.event || !Array.isArray(b.patients)) throw new Error('This backup file is incomplete or damaged.');
   const txBy = new Map((b.treatments || []).map((r) => [r.patient_id, r]));
+  const triBy = new Map((b.triage || []).map((r) => [r.patient_id, r]));
   const xrayCount = {};
   (b.xrays || []).forEach((x) => { xrayCount[x.patient_id] = (xrayCount[x.patient_id] || 0) + 1; });
   const patients = b.patients.map((p) => rowToPatient({ ...p }));
-  const summary = summarize(b.event, patients, (p) => txBy.get(p.id), (p) => xrayCount[p.id] || 0);
+  const summary = summarize(b.event, patients, (p) => txBy.get(p.id), (p) => xrayCount[p.id] || 0, (p) => triBy.get(p.id));
 
   // Attach to the matching local event if there is one; otherwise recreate the
   // event shell (name/date only) so the report has somewhere to live.
@@ -1892,6 +2060,11 @@ function purgeEventPatients(actor, eventId) {
   });
   tx();
   persistStamp();
+  // A clinic whose records have been taken off the machines is over. Leaving it
+  // active meant the first new walk-in made the event look live again, which hid
+  // the kept report and restarted the count from one.
+  db.prepare('UPDATE events SET active = 0 WHERE id = ?').run(evId);
+  resolveActiveEvent();
   audit(actor, 'purge', 'event', evId, `${patients.length} patient record(s) removed`);
   return { ok: true, removed: patients.length, event_uid: ev.uid || null };
 }
@@ -2089,7 +2262,16 @@ function markSynced(mark) {
 // Apply remote envelopes into the local database (LWW), remapping parent uids to
 // local ids and marking applied rows clean so they are never echoed back.
 function applyRemoteRows(remoteRows) {
-  const list = (remoteRows || []).slice().sort((a, b) => APPLY_ORDER.indexOf(a.entity) - APPLY_ORDER.indexOf(b.entity));
+  // Order matters twice over, in OPPOSITE directions. Creations go parents
+  // first, so a child always finds its parent. DELETIONS have to go children
+  // first: 'patients.event_id' has no ON DELETE CASCADE, so deleting an event
+  // while its patients are still here raises a foreign-key error. That error was
+  // caught as a plain skip, which also rolled back the local tombstone — so a
+  // clinic deleted on one laptop was silently never deleted on the others, and
+  // nothing ever retried it.
+  const DELETE_ORDER = APPLY_ORDER.slice().reverse();
+  const rank = (r) => (r.deleted ? DELETE_ORDER.indexOf(r.entity) : APPLY_ORDER.indexOf(r.entity) + 100);
+  const list = (remoteRows || []).slice().sort((a, b) => rank(a) - rank(b));
   let applied = 0, skipped = 0, deferred = 0, deleted = 0;
   const deferredRows = [];
   const applyOne = (env) => {
@@ -2103,8 +2285,16 @@ function applyRemoteRows(remoteRows) {
       // with a big unpushed backlog has recent local edits wiped by an older
       // deletion it is only now catching up on.
       if (hit && hit.updated_at && env.updated_at && String(hit.updated_at) >= String(env.updated_at)) { skipped++; return; }
-      if (hit) { db.prepare(`DELETE FROM ${table} WHERE id = ?`).run(hit.id); deleted++; }
-      else skipped++;
+      if (hit) {
+        try { db.prepare(`DELETE FROM ${table} WHERE id = ?`).run(hit.id); deleted++; }
+        catch (e) {
+          // Still has children here (their tombstones are in a later page).
+          // Hand it back so the cursor holds and the next pull retries it,
+          // instead of losing the deletion to a swallowed error.
+          if (/FOREIGN KEY/i.test(e.message || '')) { deferred++; deferredRows.push(env); return; }
+          throw e;
+        }
+      } else skipped++;
       // Remember the deletion locally too. Without this the record is gone now
       // but any station still holding an old copy re-creates it on the next
       // sync — the patient reappears and the deletion looks like it never took.
@@ -2131,14 +2321,19 @@ function applyRemoteRows(remoteRows) {
     const data = {};
     for (const col of SYNC_COLS[entity]) data[col] = env.data[col] === undefined ? null : env.data[col];
     const rowSig = sig(data);
-    // Resolve parent local id.
+    // Resolve parent local id. A child whose parent has not arrived yet is
+    // parked and retried; but a child whose parent was deliberately DELETED here
+    // has no home and never will, so parking it forever only crowds out the
+    // orphans that are genuinely still waiting.
+    const parentGone = (uid) => !!(uid && db.prepare('SELECT 1 FROM tombstones WHERE uid = ?').get(uid));
+    const noParent = (uid) => { if (parentGone(uid)) { skipped++; return 'skip'; } deferred++; deferredRows.push(env); return 'defer'; };
     let parentCol = null, parentId = null;
-    if (entity === 'patient' || entity === 'report') { parentCol = 'event_id'; parentId = localIdByUid('events', env.event_uid); if (!parentId) { deferred++; deferredRows.push(env); return; } }
+    if (entity === 'patient' || entity === 'report') { parentCol = 'event_id'; parentId = localIdByUid('events', env.event_uid); if (!parentId) { noParent(env.event_uid); return; } }
     else if (entity === 'user') {
       // A staff account is parented to an event (NULL for a global admin). Defer a
       // scoped account whose event hasn't synced here yet; a NULL parent is fine.
       parentCol = 'event_id';
-      if (env.event_uid) { parentId = localIdByUid('events', env.event_uid); if (!parentId) { deferred++; deferredRows.push(env); return; } }
+      if (env.event_uid) { parentId = localIdByUid('events', env.event_uid); if (!parentId) { noParent(env.event_uid); return; } }
       else parentId = null;
       // UNIQUE(username) guard: if a DIFFERENT local row already owns this username
       // (every device seeds its own 'admin'; two admins could also create the same
@@ -2151,7 +2346,7 @@ function applyRemoteRows(remoteRows) {
       }
     }
     else if (entity !== 'event') {
-      parentCol = 'patient_id'; parentId = localIdByUid('patients', env.patient_uid); if (!parentId) { deferred++; deferredRows.push(env); return; }
+      parentCol = 'patient_id'; parentId = localIdByUid('patients', env.patient_uid); if (!parentId) { noParent(env.patient_uid); return; }
       // Guard the UNIQUE(patient_id) tables (triage/treatments): if a row already
       // exists for this patient under a DIFFERENT uid, adopt it instead of a
       // colliding INSERT (can't happen in the normal single-check-in flow, but
@@ -2285,6 +2480,7 @@ module.exports = {
   dashboardStats, listAudit, audit,
   backupTo, exportEventJson,
   exportClinicBundle, importClinicBundle, buildEventSummary, captureEventSummary, rebuildSummaryFromBundle,
+  mergeSummaries, reportRollup,
   purgeEventPatients, finishEvent, listEventReports,
   getSetting, setSetting,
   // v1.1.0 cloud sync
