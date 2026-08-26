@@ -44,9 +44,30 @@ export function renderReports(ctx) {
   const root = el('div', { class: 'view' });
   let scope = 'all';
 
+  function scopeSelFor(events) {
+    const sel = el('select', { class: 'input select input--sm', onChange: (e) => { scope = e.target.value === 'all' ? 'all' : Number(e.target.value); load(); } });
+    sel.append(el('option', { value: 'all' }, ['All events']));
+    (events || []).forEach((ev) => {
+      const o = el('option', { value: String(ev.id) }, [ev.name]);
+      if (scope !== 'all' && Number(scope) === ev.id) o.selected = true;
+      sel.append(o);
+    });
+    return sel;
+  }
+
   async function load() {
-    const [active, events] = await Promise.all([api.activeEvent(), api.listEvents()]);
+    const [active, events, archived] = await Promise.all([
+      api.activeEvent(), api.listEvents(),
+      api.archivedReports().catch(() => []),
+    ]);
     const patients = await api.listPatients({ eventId: scope });
+
+    // A clinic whose patient records have been removed still has its kept
+    // totals. Without this the page computed from an empty patient list and
+    // showed zeros, which read as the reporting data having been destroyed.
+    const archivedFor = (id) => (archived || []).find((r) => r.event_id === id) || null;
+    const kept = (scope !== 'all' && !patients.length) ? archivedFor(Number(scope)) : null;
+    if (kept) { clear(root); root.append(archivedView(kept, events, scopeSelFor(events), load)); return; }
     const full = await Promise.all(patients.map((p) => api.getPatient(p.id)));
 
     // ---- Totals + breakdowns (all real, computed from the records) ----
@@ -99,10 +120,7 @@ export function renderReports(ctx) {
     full.forEach((p) => (p.medical_history.conditions || []).forEach((k) => { condCounts[k] = (condCounts[k] || 0) + 1; }));
     const topConds = conditions().map((c) => ({ label: c.label, n: condCounts[c.key] || 0 })).filter((c) => c.n).sort((a, b) => b.n - a.n).slice(0, 8);
 
-    // Scope selector
-    const scopeSel = el('select', { class: 'input select input--sm', onChange: (e) => { scope = e.target.value === 'all' ? 'all' : Number(e.target.value); load(); } });
-    scopeSel.append(el('option', { value: 'all' }, ['All events']));
-    events.forEach((ev) => { const o = el('option', { value: String(ev.id) }, [ev.name]); if (scope !== 'all' && Number(scope) === ev.id) o.selected = true; scopeSel.append(o); });
+    const scopeSel = scopeSelFor(events);
 
     clear(root);
     root.append(
@@ -240,6 +258,77 @@ function signupCard(d) {
           el('span', { class: 'bar-track' }, [el('span', { class: 'bar-fill', style: `width:${Math.max(2, d.outPct)}%` })]),
           el('span', { class: 'mono signup-pct' }, [d.outPct + '%']),
         ]),
+      ]),
+    ]),
+  ]);
+}
+
+// The report for a clinic whose patient records have been removed. The people
+// are gone; these de-identified totals were kept precisely so the clinic can
+// still answer a grant return, so they are shown in full rather than as zeros.
+function archivedView(rec, events, scopeSel, reload) {
+  const sm = rec.summary || {};
+  const finishedAt = rec.finished_at ? new Date(rec.finished_at).toLocaleString() : '—';
+  const bars = (title, obj, opts) => (obj && Object.keys(obj).length
+    ? el('div', { class: 'demo-group' }, [
+      el('div', { class: 'demo-h' }, [title, el('span', { class: 'demo-n mono' }, [String(Object.values(obj).reduce((a, b) => a + b, 0))])]),
+      barList(obj, opts),
+    ])
+    : null);
+  // The summary stores raw codes so it stays language-neutral on disk; label
+  // them here the same way the live report does.
+  const relabel = (obj, fn) => {
+    const out = {};
+    Object.entries(obj || {}).forEach(([k, v]) => { const label = fn(k); out[label] = (out[label] || 0) + v; });
+    return out;
+  };
+  const CONDITION_LABEL = Object.fromEntries(conditions().map((c) => [c.key, c.label]));
+  const condObj = relabel(sm.conditions, (k) => CONDITION_LABEL[k]
+    || String(k).replace(/[_-]+/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()));
+  const genderObj = relabel(sm.by_gender, (k) => (k === 'Not recorded' ? k : genderLabel(k)));
+  const langObj = relabel(sm.by_language, (k) => (k === 'Not recorded' ? k : langLabel(k)));
+  const dayObj = relabel(sm.by_day, (k) => (/^\d{4}-\d{2}-\d{2}$/.test(k) ? fmtDay(k) : k));
+
+  return el('div', {}, [
+    el('div', { class: 'view-head' }, [
+      el('div', {}, [
+        el('h1', {}, ['Reports & analytics']),
+        el('p', { class: 'view-sub' }, [sm.event_name || rec.event_name || 'Archived clinic', sm.event_location ? ' · ' + sm.event_location : '']),
+      ]),
+      el('div', { class: 'view-head-actions' }, [scopeSel, el('button', { class: 'btn btn--ghost btn--sm', onClick: reload }, [icon('refresh', { size: 15 }), 'Refresh'])]),
+    ]),
+    el('div', { class: 'banner banner--locked' }, [
+      icon('database', { size: 16 }),
+      el('span', {}, [
+        'This clinic’s patient records have been removed. These are the kept reporting totals — figures only, no patient information. Finished ',
+        finishedAt, rec.finished_by_name ? ' by ' + rec.finished_by_name : '', '.',
+      ]),
+    ]),
+    el('div', { class: 'kpi-grid' }, [
+      kpi('users', sm.patients_seen || 0, 'Patients seen', { accent: true }),
+      kpi('checkCircle', sm.visits_completed || 0, 'Visits finished', {
+        sub: sm.patients_seen ? Math.round(((sm.visits_completed || 0) / sm.patients_seen) * 100) + '% of ' + sm.patients_seen : null,
+      }),
+      kpi('xray', sm.xrays || 0, 'X-rays taken'),
+      kpi('tooth', sm.extractions || 0, 'Extractions'),
+      kpi('pen', sm.fillings || 0, 'Fillings'),
+      kpi('scan', sm.cleanings || 0, 'Cleanings'),
+    ]),
+    el('div', { class: 'dash-grid' }, [
+      el('div', { class: 'card' }, [
+        el('div', { class: 'card-title' }, [icon('users', { size: 15 }), 'Patient demographics']),
+        bars('By gender', genderObj, { sort: false }),
+        bars('By age', sm.by_age, { sort: false }),
+        bars('By language', langObj, { limit: 4 }),
+        bars('By city', sm.by_city, { limit: 6 }),
+      ]),
+      el('div', { class: 'card' }, [
+        el('div', { class: 'card-title' }, [icon('clipboard', { size: 15 }), 'Most common conditions']),
+        Object.keys(condObj).length ? barList(condObj, { limit: 8 }) : el('p', { class: 'muted' }, ['No conditions recorded.']),
+        el('div', { class: 'card-sub-title', style: 'margin-top:var(--space-4)' }, ['Patients by day']),
+        (dayObj && Object.keys(dayObj).length)
+          ? barList(dayObj, { sort: false })
+          : el('p', { class: 'muted' }, ['No daily breakdown kept.']),
       ]),
     ]),
   ]);

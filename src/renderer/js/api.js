@@ -87,6 +87,7 @@ export const api = {
   finishEvent: (eventId) => call('eventFinish', { eventId }),
   purgeEvent: (eventId) => call('eventPurge', { eventId }),
   archivedReports: () => call('reportsArchived'),
+  rebuildReport: () => call('reportsRebuild'),
 
   appVersion: () => call('appVersion'),
   checkUpdate: (opts) => call('updateCheck', opts || {}),

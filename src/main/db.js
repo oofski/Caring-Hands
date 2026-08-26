@@ -1744,10 +1744,10 @@ function importClinicBundle(actor, bundle) {
 // The de-identified figures a finished clinic leaves behind. Everything here is
 // a count or a band — there is no row that belongs to a person, so it can sit on
 // the server indefinitely without holding patient information.
-function buildEventSummary(eventId) {
-  const evId = eventId || Number(getSetting('active_event_id'));
-  const event = db.prepare('SELECT * FROM events WHERE id = ?').get(evId);
-  const patients = db.prepare('SELECT * FROM patients WHERE event_id = ?').all(evId).map(rowToPatient);
+// The de-identified counting, over whatever rows it is given. Shared by the
+// live database and by a rebuild from an exported backup, so a recovered report
+// can never disagree with the one the clinic saw on the day.
+function summarize(event, patients, treatmentOf, xrayCountOf) {
   const bump = (o, k) => { const key = k || 'Not recorded'; o[key] = (o[key] || 0) + 1; };
   const ageBand = (a) => (a == null ? 'Not recorded' : a < 18 ? 'Under 18' : a < 35 ? '18–34' : a < 55 ? '35–54' : '55+');
   const by_gender = {}, by_age = {}, by_language = {}, by_city = {}, by_day = {}, conditions = {}, visit_types = {};
@@ -1760,14 +1760,14 @@ function buildEventSummary(eventId) {
     bump(visit_types, dh.visit_type);
     (m.conditions || []).forEach((c) => bump(conditions, c));
     if (p.status === 'completed' || p.status === 'dismissed') completed++;
-    const t = db.prepare('SELECT * FROM treatments WHERE patient_id = ?').get(p.id);
+    const t = treatmentOf(p);
     if (t) {
       extractions += safeJson(t.extractions, []).length;
       fillings += safeJson(t.fillings, []).length;
       const cl = safeJson(t.cleaning, {});
       if (cl && Object.keys(cl).length) cleanings++;
     }
-    xrays += db.prepare('SELECT COUNT(*) AS n FROM xrays WHERE patient_id = ?').get(p.id).n;
+    xrays += xrayCountOf(p);
   }
   return {
     event_name: event ? event.name : null,
@@ -1782,6 +1782,76 @@ function buildEventSummary(eventId) {
   };
 }
 
+function buildEventSummary(eventId) {
+  const evId = eventId || Number(getSetting('active_event_id'));
+  const event = db.prepare('SELECT * FROM events WHERE id = ?').get(evId);
+  const patients = db.prepare('SELECT * FROM patients WHERE event_id = ?').all(evId).map(rowToPatient);
+  return summarize(
+    event, patients,
+    (p) => db.prepare('SELECT * FROM treatments WHERE patient_id = ?').get(p.id),
+    (p) => db.prepare('SELECT COUNT(*) AS n FROM xrays WHERE patient_id = ?').get(p.id).n,
+  );
+}
+
+// Store (or refresh) an event's kept totals. Called before ANY path that removes
+// patients, so the numbers a clinic reports on can never be destroyed by a
+// deletion — only the people can.
+function captureEventSummary(actor, eventId) {
+  const evId = eventId || Number(getSetting('active_event_id'));
+  const summary = buildEventSummary(evId);
+  const existing = db.prepare('SELECT id FROM event_reports WHERE event_id = ?').get(evId);
+  if (existing) {
+    db.prepare('UPDATE event_reports SET summary=?, patients_seen=?, finished_at=?, finished_by_name=?, updated_at=?, synced_rev=NULL, content_rev=NULL WHERE id=?')
+      .run(JSON.stringify(summary), summary.patients_seen, now(), (actor && actor.full_name) || null, now(), existing.id);
+  } else {
+    db.prepare(`INSERT INTO event_reports (uid, event_id, summary, patients_seen, finished_at, finished_by_name, created_at, updated_at)
+                VALUES (?,?,?,?,?,?,?,?)`)
+      .run(crypto.randomUUID(), evId, JSON.stringify(summary), summary.patients_seen, now(),
+        (actor && actor.full_name) || null, now(), now());
+  }
+  return summary;
+}
+
+// Rebuild an event's totals from an exported backup, WITHOUT restoring any
+// patients. This is the recovery path for a clinic that purged before the
+// totals were being captured: the numbers come back, the people do not.
+function rebuildSummaryFromBundle(actor, bundle) {
+  const b = bundle || {};
+  if (b.format !== BUNDLE_FORMAT) throw new Error('That is not a Caring Hands clinic backup file.');
+  if (!b.event || !Array.isArray(b.patients)) throw new Error('This backup file is incomplete or damaged.');
+  const txBy = new Map((b.treatments || []).map((r) => [r.patient_id, r]));
+  const xrayCount = {};
+  (b.xrays || []).forEach((x) => { xrayCount[x.patient_id] = (xrayCount[x.patient_id] || 0) + 1; });
+  const patients = b.patients.map((p) => rowToPatient({ ...p }));
+  const summary = summarize(b.event, patients, (p) => txBy.get(p.id), (p) => xrayCount[p.id] || 0);
+
+  // Attach to the matching local event if there is one; otherwise recreate the
+  // event shell (name/date only) so the report has somewhere to live.
+  let ev = b.event.uid ? db.prepare('SELECT * FROM events WHERE uid = ?').get(b.event.uid) : null;
+  if (!ev) ev = db.prepare('SELECT * FROM events WHERE name = ? AND created_at = ?').get(b.event.name, b.event.created_at);
+  let eventId;
+  if (ev) eventId = ev.id;
+  else {
+    eventId = db.prepare(
+      `INSERT INTO events (uid, name, location, start_date, end_date, languages, active, created_at, selected_at)
+       VALUES (?,?,?,?,?,?,0,?,NULL)`
+    ).run(b.event.uid || crypto.randomUUID(), b.event.name, b.event.location || '', b.event.start_date || today(),
+      b.event.end_date || '', b.event.languages || 'en,es', b.event.created_at || now()).lastInsertRowid;
+  }
+  const existing = db.prepare('SELECT id FROM event_reports WHERE event_id = ?').get(eventId);
+  if (existing) {
+    db.prepare('UPDATE event_reports SET summary=?, patients_seen=?, finished_at=?, finished_by_name=?, updated_at=?, synced_rev=NULL, content_rev=NULL WHERE id=?')
+      .run(JSON.stringify(summary), summary.patients_seen, now(), (actor && actor.full_name) || null, now(), existing.id);
+  } else {
+    db.prepare(`INSERT INTO event_reports (uid, event_id, summary, patients_seen, finished_at, finished_by_name, created_at, updated_at)
+                VALUES (?,?,?,?,?,?,?,?)`)
+      .run(crypto.randomUUID(), eventId, JSON.stringify(summary), summary.patients_seen, now(),
+        (actor && actor.full_name) || null, now(), now());
+  }
+  audit(actor, 'rebuild_report', 'event', eventId, `${summary.patients_seen} patient(s) recounted from a backup`);
+  return { ok: true, event_id: eventId, event_name: summary.event_name, summary };
+}
+
 // Remove every patient record for an event from THIS device and, via tombstones,
 // from the cloud and every other station. Irreversible by design — the caller is
 // expected to have exported a backup first, which the UI enforces.
@@ -1789,6 +1859,10 @@ function purgeEventPatients(actor, eventId) {
   const evId = eventId || Number(getSetting('active_event_id'));
   const ev = db.prepare('SELECT * FROM events WHERE id = ?').get(evId);
   if (!ev) throw new Error('Event not found.');
+  // ALWAYS keep the de-identified totals before the people go. Previously only
+  // "Finish clinic" did this, so the Delete button — the one that unlocks right
+  // after an export — destroyed the clinic's reporting figures outright.
+  captureEventSummary(actor, evId);
   ensureUids(); // nothing can be tombstoned that has no uid yet
   const patients = db.prepare('SELECT id, uid FROM patients WHERE event_id = ?').all(evId);
   const tomb = db.prepare(
@@ -1827,17 +1901,7 @@ function finishEvent(actor, eventId) {
   const evId = eventId || Number(getSetting('active_event_id'));
   const ev = db.prepare('SELECT * FROM events WHERE id = ?').get(evId);
   if (!ev) throw new Error('Event not found.');
-  const summary = buildEventSummary(evId);
-  const existing = db.prepare('SELECT id FROM event_reports WHERE event_id = ?').get(evId);
-  if (existing) {
-    db.prepare('UPDATE event_reports SET summary=?, patients_seen=?, finished_at=?, finished_by_name=?, updated_at=?, synced_rev=NULL, content_rev=NULL WHERE id=?')
-      .run(JSON.stringify(summary), summary.patients_seen, now(), (actor && actor.full_name) || null, now(), existing.id);
-  } else {
-    db.prepare(`INSERT INTO event_reports (uid, event_id, summary, patients_seen, finished_at, finished_by_name, created_at, updated_at)
-                VALUES (?,?,?,?,?,?,?,?)`)
-      .run(crypto.randomUUID(), evId, JSON.stringify(summary), summary.patients_seen, now(),
-        (actor && actor.full_name) || null, now(), now());
-  }
+  const summary = captureEventSummary(actor, evId);
   const purged = purgeEventPatients(actor, evId);
   db.prepare('UPDATE events SET active = 0 WHERE id = ?').run(evId);
   resolveActiveEvent();
@@ -2220,7 +2284,8 @@ module.exports = {
   addXray, updateXrayTooth, getXray, listXrays, deleteXray,
   dashboardStats, listAudit, audit,
   backupTo, exportEventJson,
-  exportClinicBundle, importClinicBundle, buildEventSummary, purgeEventPatients, finishEvent, listEventReports,
+  exportClinicBundle, importClinicBundle, buildEventSummary, captureEventSummary, rebuildSummaryFromBundle,
+  purgeEventPatients, finishEvent, listEventReports,
   getSetting, setSetting,
   // v1.1.0 cloud sync
   collectSyncRows, applyRemoteRows, markSynced, getSyncMeta, setSyncMeta, ensureDeviceId,

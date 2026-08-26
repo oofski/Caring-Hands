@@ -86,6 +86,7 @@ const PERMS = {
   'event:finish': ['admin'],
   'event:purge': ['admin'],
   'reports:archived': ['admin', 'doctor'],
+  'reports:rebuild': ['admin'],
   'export:event': ['admin'],
   'audit:list': ['admin'],
   'cloud:config': ['admin'],
@@ -193,6 +194,21 @@ function register(getMainWindow) {
   handle('event:finish', ({ eventId } = {}) => db.finishEvent(currentUser, eventId));
   handle('event:purge', ({ eventId } = {}) => db.purgeEventPatients(currentUser, eventId));
   handle('reports:archived', () => db.listEventReports());
+
+  // Recovery: recompute an event's reporting totals from an exported backup
+  // WITHOUT restoring any patients — for a clinic whose figures were lost.
+  handle('reports:rebuild', async () => {
+    const res = await dialog.showOpenDialog({
+      title: 'Choose the clinic backup file to rebuild a report from',
+      properties: ['openFile'],
+      filters: [{ name: 'Caring Hands backup', extensions: ['json'] }],
+    });
+    if (res.canceled || !res.filePaths || !res.filePaths[0]) return { rebuilt: false };
+    let bundle;
+    try { bundle = JSON.parse(fs.readFileSync(res.filePaths[0], 'utf8')); }
+    catch (_e) { throw new Error('That file could not be read. Choose the .chbak.json file saved with the export.'); }
+    return { rebuilt: true, ...db.rebuildSummaryFromBundle(currentUser, bundle) };
+  });
 
   /* ---- Front-desk arrivals (v1.5.24) ---- */
   handle('patients:arrivalCheck', (id) => db.arrivalReadiness(id));

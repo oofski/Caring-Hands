@@ -477,6 +477,17 @@ export function renderAdmin(ctx, params = {}) {
               if (r.imported) { toast(`Restored ${r.patients} patient record(s) (${r.updated} updated).`, 'success'); paint(); }
             } catch (e) { toast(e.message, 'error'); }
           } }, [icon('refresh', { size: 16 }), 'Restore a clinic from backup']),
+          // Recovery for a clinic whose figures were lost: recount from a backup
+          // WITHOUT bringing any patient records back onto this computer.
+          el('button', { class: 'btn btn--ghost', title: 'Recount an old clinic’s figures from its backup file, without restoring any patient records', onClick: async () => {
+            try {
+              const r = await api.rebuildReport();
+              if (r.rebuilt) {
+                toast(`Report rebuilt for “${r.event_name}” — ${r.summary.patients_seen} patient(s) recounted. No patient records were restored.`, 'success');
+                paint();
+              }
+            } catch (e) { toast(e.message, 'error'); }
+          } }, [icon('reports', { size: 16 }), 'Rebuild a report from backup']),
           purgeBtn,
         ]),
         exportHint,

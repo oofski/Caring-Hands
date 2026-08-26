@@ -50,16 +50,23 @@ jobs:
       - name: Publish downloadable release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.6.4-build.${{ github.run_number }}
-          name: Caring Hands v1.6.4 (build ${{ github.run_number }})
+          tag_name: v1.6.5-build.${{ github.run_number }}
+          name: Caring Hands v1.6.5 (build ${{ github.run_number }})
           prerelease: false
           make_latest: true
           body: |
-            ## Caring Hands Worldwide — Practice Management Software (v1.6.4)
+            ## Caring Hands Worldwide — Practice Management Software (v1.6.5)
 
             Offline-first dental clinic app for Windows. **Download the installer once — it auto-updates from here on.**
 
-            **New in v1.6.4 — patient lists in A–Z order, and four things that must now be answered**
+            **New in v1.6.5 — IMPORTANT: exporting a clinic can no longer cost you its reporting figures**
+            - **Fixed: deleting a clinic's patient data destroyed its reporting totals.** After an export, the **Delete this clinic's patient data** button removed the patients — and, unlike **Finish clinic**, kept **no figures at all**. The Reports tab then computed from an empty list and showed zeros, so the clinic's numbers looked deleted, because they were. **Every** path that removes patients now saves the de-identified totals first — patients seen, procedures, and the breakdowns by age, gender, language and city. The people can be removed; the numbers cannot.
+            - **Fixed: Reports never showed the kept totals.** Even when **Finish clinic** had saved them correctly, nothing on the Reports page read them, so a finished clinic still displayed zeros. Selecting a past clinic now shows its kept report in full, with a clear note that the patient records were removed and these are figures only.
+            - **New: rebuild a lost report from a backup.** Under **Admin → Backup & Export**, *Rebuild a report from backup* reads a `.chbak.json` export and **recounts that clinic's figures without restoring a single patient record**. If you exported before deleting, your numbers are recoverable — see below.
+
+            **If a clinic already lost its figures:** open **Admin → Backup & Export → Rebuild a report from backup** and choose that clinic's `.chbak.json` file (saved beside the Excel workbook when you exported). The totals come back; no patient records are restored. If that file is gone, the figures cannot be recovered — the spreadsheet alone is enough to recount by hand, but the app cannot do it for you.
+
+            **From v1.6.4 — patient lists in A–Z order, and four things that must now be answered**
             - **Every patient list is now alphabetical by surname** — **Arrivals, Vitals, Cleanings, Dentist, Check-Out and Records**. Staff read these lists to find a named person, so they now read like a register. Accents and capitals sort together, so *Álvarez* sits with *Alvarez*. *(The Vitals list previously grouped by work stage; the **Vitals** column still shows at a glance who still needs seeing.)*
             - **A treatment note must name the dentist or hygienist who gave the care.** Previously the printed name was only required if you chose to lock the record — which is optional — so a visit could be marked complete with nobody's name on it. The name is now required to finish a visit, and it comes **pre-filled from whoever is signed in**, so in practice it costs a glance. Saving progress mid-treatment is not blocked.
             - **Pre-registration now requires an emergency contact — name and phone.** That is who the clinic calls if something goes wrong during a procedure.
@@ -267,8 +274,8 @@ jobs:
 
             Includes everything from v1.0.2–1.1.1 (optional Cloud Sync, triage-free flow, per-event staff, Oregon consent, USB workflow, accountability, Russian, in-app auto-update).
 
-            - **Caring-Hands-Setup-1.6.4.exe** — installer (recommended; required for auto-update).
-            - **Caring-Hands-Portable-1.6.4.exe** — portable (no auto-update).
+            - **Caring-Hands-Setup-1.6.5.exe** — installer (recommended; required for auto-update).
+            - **Caring-Hands-Portable-1.6.5.exe** — portable (no auto-update).
 
             First sign-in: `admin / admin` — then create your staff accounts. All clinical data stays on the device unless you enable Cloud Sync.
           files: |

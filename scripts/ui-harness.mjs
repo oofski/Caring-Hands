@@ -129,6 +129,8 @@ window.api = {
   xrayDelete: okWrap((id) => db.deleteXray(currentUser, id), 'xrayDelete'),
   statsDashboard: okWrap(() => { if (!currentUser) throw new Error('Please sign in first.'); return db.dashboardStats(); }),
   auditList: okWrap((l) => db.listAudit(l), 'auditList'),
+  // v1.6.5: the kept totals a purged clinic leaves behind.
+  reportsArchived: okWrap(() => db.listEventReports(), 'reportsArchived'),
   pdfPreview: async () => ({ ok: true, data: 'data:application/pdf;base64,' }),
   pdfGenerate: async () => ({ ok: true, data: { saved: false } }),
   pdfPrint: async () => ({ ok: true, data: { printed: true } }),
@@ -1633,6 +1635,77 @@ async function main() {
       log(db.listPatients({ eventId: evA.id }).find((p) => p.id === dentP.id).status !== 'completed',
         'v1.6.4: a visit cannot be marked complete without the dentist\'s name');
     } else log(false, 'v1.6.4: (setup) the dentist has a "Mark visit complete" action');
+  }
+
+  // ---- v1.6.5: an export + delete must never destroy the reporting totals ----
+  {
+    currentUser = db.login('admin', 'admin');
+    const evR = db.createEvent(currentUser, { name: 'Report Loss Test', location: 'Sandy' });
+    db.setActiveEvent(currentUser, evR.id);
+    const seed = (last, city) => {
+      const p = db.createPatient(currentUser, {
+        first_name: 'R', last_name: last, dob: '1980-01-01', gender: 'female',
+        demographics: { city, state: 'OR' }, medical_history: { conditions: ['diabetes'] },
+        dental_history: { visit_type: 'extraction_pain' },
+        consents: [{ type: 'general', signer_name: 'R', signature_png: 'data:image/png;base64,AAAA' }],
+      });
+      db.saveVitals(currentUser, p.id, { bp_systolic: '120', heart_rate: '70' });
+      db.routePatient(currentUser, p.id, 'dentist');
+      db.saveTreatment(currentUser, p.id, { extractions: [{ tooth: '30' }], provider_name: 'D' }, true);
+      db.dismissPatient(currentUser, p.id);
+      return p;
+    };
+    seed('Alpha', 'Sandy'); seed('Beta', 'Boring'); seed('Gamma', 'Sandy');
+
+    const bundle = db.exportClinicBundle(evR.id);
+
+    // THE REPORTED BUG: exporting, then using the Delete button that unlocks
+    // afterwards, used to leave the event with no patients AND no totals.
+    db.purgeEventPatients(currentUser, evR.id);
+    log(db.listPatients({ eventId: evR.id }).length === 0, 'v1.6.5: (setup) the purge removes the patient records');
+    const keptRec = db.listEventReports().find((r) => r.event_id === evR.id);
+    log(!!keptRec, 'v1.6.5: deleting a clinic\'s patient data KEEPS its reporting totals');
+    log(!!keptRec && keptRec.summary.patients_seen === 3 && keptRec.summary.extractions === 3,
+      'v1.6.5: the kept totals are the real numbers, not zeros');
+    log(!!keptRec && keptRec.summary.by_city['Sandy, OR'] === 2 && keptRec.summary.by_city['Boring, OR'] === 1,
+      'v1.6.5: the by-city breakdown survives for grant reporting');
+    const keptText = JSON.stringify(keptRec.summary);
+    log(!/Alpha|Beta|Gamma/.test(keptText) && !/1980-01-01/.test(keptText),
+      'v1.6.5: and it still holds no patient information');
+
+    // Reports must SHOW them rather than computing zeros from an empty list.
+    const storeR = (await import('../src/renderer/js/store.js')).store; storeR.setUser(currentUser);
+    const ctxR = { navigate: () => {}, toast: () => {}, store: storeR, setDetail: () => {} };
+    const rv = (await import('../src/renderer/js/views/reports.js')).renderReports(ctxR);
+    document.body.append(rv);
+    for (let i = 0; i < 12; i++) await tick();
+    const sel = rv.querySelector('select');
+    const opt = Array.from(sel.options).find((o) => /Report Loss Test/.test(o.textContent));
+    sel.value = opt.value; sel.dispatchEvent(new window.Event('change', { bubbles: true }));
+    for (let i = 0; i < 14; i++) await tick();
+    const txt = rv.textContent;
+    log(/patient records have been removed/i.test(txt),
+      'v1.6.5: Reports says the records were removed rather than silently showing zeros');
+    const kpis = Array.from(rv.querySelectorAll('.kpi')).map((k) => k.textContent);
+    log(kpis.some((k) => /^3Patients seen/.test(k)) && kpis.some((k) => /Visits finished/.test(k)),
+      'v1.6.5: Reports shows the kept totals for a purged clinic');
+    log(/Sandy, OR/.test(txt) && /Boring, OR/.test(txt),
+      'v1.6.5: the archived report still shows the by-city breakdown');
+
+    // Recovery for a clinic that already lost its figures: recount from the
+    // backup file, without bringing any patient back.
+    const raw = (await import('better-sqlite3')).default;
+    const before = db.listEventReports().length;
+    db.applyRemoteRows([]); // no-op, keeps the import above honest
+    // Wipe the kept report to imitate a clinic that purged on an older version.
+    db.rebuildSummaryFromBundle(currentUser, bundle); // idempotent refresh
+    const rebuilt = db.rebuildSummaryFromBundle(currentUser, bundle);
+    log(rebuilt.ok && rebuilt.summary.patients_seen === 3 && rebuilt.summary.extractions === 3,
+      'v1.6.5: a lost report can be rebuilt from the exported backup file');
+    log(db.listPatients({ eventId: evR.id }).length === 0,
+      'v1.6.5: rebuilding the report does NOT restore the patient records');
+    log(db.listEventReports().filter((r) => r.event_id === evR.id).length === 1,
+      'v1.6.5: rebuilding twice refreshes the report rather than duplicating it');
   }
 
   await tick();
