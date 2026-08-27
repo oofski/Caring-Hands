@@ -32,6 +32,10 @@ const PERMS = {
   'users:update': ['admin'],
   'users:delete': ['admin'],
   'users:clearEventStaff': ['admin'],
+  'staff:directory': ['admin'],
+  'staff:add': ['admin'],
+  'staff:forget': ['admin'],
+  'staff:resetClinicPassword': ['admin'],
   'events:create': ['admin'],
   'events:update': ['admin'],
   'events:setActive': ['admin'],
@@ -150,6 +154,13 @@ function register(getMainWindow) {
   handle('users:update', ({ id, ...rest }) => db.updateUser(currentUser, id, rest));
   handle('users:delete', (id) => db.deleteUser(currentUser, id));
   handle('users:clearEventStaff', (eventId) => db.clearEventStaff(currentUser, eventId));
+
+  // v1.6.7: the standing list of everyone who has ever worked a clinic, so the
+  // next clinic's team is picked off a list rather than re-typed.
+  handle('staff:directory', ({ eventId } = {}) => db.listStaffDirectory(eventId));
+  handle('staff:add', (payload) => db.addStaffFromDirectory(currentUser, payload || {}));
+  handle('staff:forget', ({ id } = {}) => db.forgetStaff(currentUser, id));
+  handle('staff:resetClinicPassword', ({ username } = {}) => db.resetClinicAccountPassword(currentUser, username));
 
   // v1.1.0 cloud sync
   handle('cloud:config', (payload) => cloud.applyConfig(payload || {}));

@@ -65,6 +65,7 @@ const PERMS = {
   'pdfPreview': ['admin', 'doctor'], 'pdfGenerate': ['admin', 'doctor'], 'pdfPrint': ['admin', 'doctor'],
   'recordExportUsb': ['admin', 'doctor'], 'backupRun': ['admin'], 'exportEvent': ['admin'], 'auditList': ['admin'],
   'reportsArchived': ['admin', 'doctor'], 'reportsRollup': ['admin', 'doctor'],
+  'staffDirectory': ['admin'], 'staffAdd': ['admin'], 'staffForget': ['admin'], 'staffResetClinicPassword': ['admin'],
 };
 // patientsCreate is intentionally UNGATED (kiosk + any role); statsDashboard needs a user.
 function guard(name) {
@@ -135,6 +136,11 @@ window.api = {
   auditList: okWrap((l) => db.listAudit(l), 'auditList'),
   // v1.6.5: the kept totals a purged clinic leaves behind.
   reportsArchived: okWrap(() => db.listEventReports(), 'reportsArchived'),
+  // v1.6.7: the standing list of everyone who has ever worked a clinic.
+  staffDirectory: okWrap(({ eventId } = {}) => db.listStaffDirectory(eventId), 'staffDirectory'),
+  staffAdd: okWrap((p) => db.addStaffFromDirectory(currentUser, p || {}), 'staffAdd'),
+  staffForget: okWrap(({ id } = {}) => db.forgetStaff(currentUser, id), 'staffForget'),
+  staffResetClinicPassword: okWrap(({ username } = {}) => db.resetClinicAccountPassword(currentUser, username), 'staffResetClinicPassword'),
   // v1.6.6: the Reports tab's numbers — live records AND kept totals, counted once.
   reportsRollup: okWrap(({ eventId } = {}) => db.reportRollup(eventId), 'reportsRollup'),
   pdfPreview: async () => ({ ok: true, data: 'data:application/pdf;base64,' }),
@@ -1898,6 +1904,157 @@ async function main() {
     log(stray.deferredRows.length === 0,
       'v1.6.6: a record whose clinic was deleted here is not retried for ever');
     hx.close();
+  }
+
+  // ---- v1.6.7: the standing staff list, and the two shared desk logins ----
+  {
+    currentUser = db.login('admin', 'admin');
+
+    // 1. Every clinic needs a front desk and a check-out table. Both are set up
+    //    automatically, with the same login at every clinic.
+    log(!!db.login('registration', 'welcome123'), 'v1.6.7: the shared registration login works out of the box');
+    log(!!db.login('checkout', 'welcome123'), 'v1.6.7: the shared check-out login works out of the box');
+    currentUser = db.login('admin', 'admin');
+
+    // 2. They are GLOBAL, so "Start fresh for next event" cannot sweep them away
+    //    and leave the next clinic without a front desk.
+    const desks = db.listUsers().filter((u) => u.username === 'registration' || u.username === 'checkout');
+    log(desks.length === 2 && desks.every((u) => u.event_id == null),
+      'v1.6.7: the shared desk logins belong to no single clinic');
+
+    const evS = db.createEvent(currentUser, { name: 'Staff List Clinic', location: 'Sandy' });
+    db.setActiveEvent(currentUser, evS.id);
+
+    // 3. Anyone given an account joins the standing list.
+    const vol = db.createUser(currentUser, { username: 'achen', full_name: 'Amara Chen', role: 'hygienist', password: 'hyg-pass-1' });
+    const volB = db.createUser(currentUser, { username: 'bosei', full_name: 'Bao Osei', role: 'emt', password: 'emt-pass-1' });
+    let dir = db.listStaffDirectory(evS.id);
+    log(dir.some((p) => p.username === 'achen' && p.on_event),
+      'v1.6.7: adding a staff member puts them on the standing list');
+
+    // 4. A–Z by surname, the way a register reads.
+    const names = db.listStaffDirectory(evS.id).map((p) => p.full_name);
+    const sorted = names.slice().sort((a, b) => {
+      const k = (n) => { const w = n.trim().split(/\s+/); return (w.length > 1 ? w[w.length - 1] : w[0]).toLowerCase(); };
+      return k(a).localeCompare(k(b));
+    });
+    log(JSON.stringify(names) === JSON.stringify(sorted), 'v1.6.7: the staff list is in A–Z order by surname');
+
+    // 5. THE POINT: ending the clinic destroys the accounts but not the people.
+    db.clearEventStaff(currentUser, evS.id);
+    log(!db.listUsers().some((u) => u.username === 'achen'),
+      'v1.6.7: (setup) starting fresh removes the clinic accounts');
+    log(db.listUsers().some((u) => u.username === 'registration'),
+      'v1.6.7: starting fresh does NOT remove the shared desk logins');
+    dir = db.listStaffDirectory(evS.id);
+    log(dir.some((p) => p.username === 'achen') && dir.some((p) => p.username === 'bosei'),
+      'v1.6.7: the people stay on the standing list after their accounts are cleared');
+    log(dir.find((p) => p.username === 'achen').on_event === false,
+      'v1.6.7: and the list knows they are not on this clinic any more');
+    log(!dir.some((p) => p.username === 'admin' || p.username === 'registration' || p.username === 'checkout'),
+      'v1.6.7: the shared station logins are not listed as people');
+
+    // 6. Adding them back is one click, and their old password still works.
+    const evT = db.createEvent(currentUser, { name: 'Next Season Clinic', location: 'Sandy' });
+    db.setActiveEvent(currentUser, evT.id);
+    const entry = db.listStaffDirectory(evT.id).find((p) => p.username === 'achen');
+    const back = db.addStaffFromDirectory(currentUser, { id: entry.id });
+    log(back.username === 'achen' && back.role === 'hygienist' && back.event_id === evT.id,
+      'v1.6.7: a returning volunteer is added to the new clinic from the list');
+    log(!!db.login('achen', 'hyg-pass-1'),
+      'v1.6.7: and signs in with the password they already had — nothing re-typed');
+    currentUser = db.login('admin', 'admin');
+
+    // 7. The role is a choice, not a repeat of last time.
+    const entryB = db.listStaffDirectory(evT.id).find((p) => p.username === 'bosei');
+    const reRole = db.addStaffFromDirectory(currentUser, { id: entryB.id, role: 'checkout' });
+    log(reRole.role === 'checkout', 'v1.6.7: someone can be added back in a different role');
+    log(db.listStaffDirectory(evT.id).find((p) => p.username === 'bosei').role === 'checkout',
+      'v1.6.7: the list remembers the role they last worked');
+
+    // 8. Adding someone twice says so plainly instead of failing on a database
+    //    constraint the admin cannot read.
+    let dupErr = '';
+    try { db.addStaffFromDirectory(currentUser, { id: entry.id }); } catch (e) { dupErr = e.message; }
+    log(/already on this clinic/i.test(dupErr), 'v1.6.7: adding someone twice explains why, in plain words');
+
+    // 9. Leaving for good takes them off the list — and that travels, so they do
+    //    not reappear from another laptop on the next sync.
+    const before = db.listStaffDirectory(evT.id).length;
+    db.forgetStaff(currentUser, entryB.id);
+    log(db.listStaffDirectory(evT.id).length === before - 1 && !db.listStaffDirectory(evT.id).some((p) => p.username === 'bosei'),
+      'v1.6.7: someone can be taken off the standing list for good');
+    log(db.listUsers().some((u) => u.username === 'bosei'),
+      'v1.6.7: removing them from the list leaves the account they hold right now alone');
+    {
+      const h = rawDb();
+      const tombed = h.prepare("SELECT COUNT(*) AS n FROM tombstones WHERE entity = 'staffdir'").get().n;
+      h.close();
+      log(tombed >= 1, 'v1.6.7: the removal travels to the other laptops');
+    }
+
+    // 10. A new clinic puts a deleted desk login back rather than leaving the
+    //     front desk unable to sign in on the morning.
+    const reg = db.listUsers().find((u) => u.username === 'registration');
+    db.deleteUser(currentUser, reg.id);
+    log(!db.listUsers().some((u) => u.username === 'registration'), 'v1.6.7: (setup) the registration login was removed');
+    db.createEvent(currentUser, { name: 'Desk Restore Clinic', location: 'Sandy' });
+    log(!!db.login('registration', 'welcome123'),
+      'v1.6.7: creating a clinic puts the shared desk logins back automatically');
+    currentUser = db.login('admin', 'admin');
+
+    // 11. A changed desk password is NOT silently reset by the next clinic —
+    //     but there is a one-click way back to the default.
+    const regRow = db.listUsers().find((u) => u.username === 'registration');
+    db.updateUser(currentUser, regRow.id, { password: 'desk-changed-1' });
+    db.createEvent(currentUser, { name: 'Password Keeps Clinic', location: 'Sandy' });
+    log(!!db.login('registration', 'desk-changed-1') && !db.login('registration', 'welcome123'),
+      'v1.6.7: a deliberately changed desk password survives the next clinic');
+    currentUser = db.login('admin', 'admin');
+    const rst = db.resetClinicAccountPassword(currentUser, 'registration');
+    log(rst.password === 'welcome123' && !!db.login('registration', 'welcome123'),
+      'v1.6.7: and one click puts it back to the shared default');
+    currentUser = db.login('admin', 'admin');
+
+    // 12. The Staff & roles page shows the list and adds from it.
+    db.setActiveEvent(currentUser, evT.id);
+    const storeS = (await import('../src/renderer/js/store.js')).store; storeS.setUser(currentUser);
+    const ctxS = { navigate: () => {}, toast: () => {}, store: storeS, setDetail: () => {} };
+    const sv = (await import('../src/renderer/js/views/admin.js')).renderAdmin(ctxS, { section: 'staff' });
+    document.body.append(sv);
+    for (let i = 0; i < 16; i++) await tick();
+    log(/Staff directory/i.test(sv.textContent) && /Amara Chen/.test(sv.textContent),
+      'v1.6.7: Staff & roles shows the standing staff list');
+    log(/Shared clinic logins/i.test(sv.textContent) && /registration/.test(sv.textContent),
+      'v1.6.7: and explains the two shared desk logins');
+    sv.remove();
+
+    // 13. The list is shared between the clinic's laptops like everything else.
+    const batch = db.collectSyncRows(400);
+    log(batch.rows.some((r) => r.entity === 'staffdir' && r.data.username === 'achen' && r.event_uid == null),
+      'v1.6.7: the staff list is pushed to the other laptops (and belongs to no clinic)');
+
+    // A laptop that built its own row for the same person must adopt ours rather
+    // than colliding on the unique username for ever.
+    const later7 = new Date(Date.now() + 120000).toISOString();
+    const adopt = db.applyRemoteRows([{
+      entity: 'staffdir', uid: 'remote-uid-achen', updated_at: later7,
+      data: { username: 'achen', full_name: 'Amara Chen-Okafor', role: 'doctor', salt: 's', hash: 'h',
+        last_event_name: 'Elsewhere', last_used_at: later7, times_served: 4, created_at: later7 },
+    }]);
+    log(adopt.applied === 1 && adopt.deferredRows.length === 0,
+      'v1.6.7: a copy of the same person from another laptop merges instead of colliding');
+    log(db.listStaffDirectory(evT.id).filter((p) => p.username === 'achen').length === 1,
+      'v1.6.7: which leaves one entry per person, not two');
+
+    // Someone added on another laptop arrives here with no parent to wait for.
+    const arrive = db.applyRemoteRows([{
+      entity: 'staffdir', uid: 'remote-uid-newperson', updated_at: later7,
+      data: { username: 'dnovak', full_name: 'Dana Novak', role: 'doctor', salt: 's', hash: 'h',
+        last_event_name: 'Belize 2025', last_used_at: later7, times_served: 1, created_at: later7 },
+    }]);
+    log(arrive.applied === 1 && db.listStaffDirectory(evT.id).some((p) => p.username === 'dnovak'),
+      'v1.6.7: someone added on another laptop shows up in the list here');
   }
 
   await tick();

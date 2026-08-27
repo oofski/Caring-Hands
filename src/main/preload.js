@@ -6,6 +6,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 const CHANNELS = [
   'auth:login', 'auth:logout', 'auth:current',
   'users:list', 'users:create', 'users:update', 'users:delete', 'users:clearEventStaff',
+  'staff:directory', 'staff:add', 'staff:forget', 'staff:resetClinicPassword',
   'events:list', 'events:active', 'events:create', 'events:update',
   'events:setActive', 'events:setState', 'events:delete',
   'patients:create', 'patients:newVisit', 'patients:update', 'patients:delete', 'patients:get', 'patients:list',

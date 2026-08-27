@@ -30,6 +30,10 @@ function init(userDataDir) {
 
   migrate();
   seed();
+  // The standing list of volunteers, and the two shared desk logins every
+  // clinic needs. Both are idempotent, so an upgrade picks them up on first run.
+  backfillStaffDirectory();
+  ensureClinicAccounts(null);
   return dbPath;
 }
 
@@ -241,6 +245,19 @@ function migrate() {
              (SELECT MAX(id) FROM event_reports GROUP BY event_id)`);
     db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_reports_event_unique ON event_reports(event_id)');
   } catch (_e) { /* index already present */ }
+  // v1.6.7: the people who have ever worked a Caring Hands clinic. A staff
+  // ACCOUNT is scoped to one clinic and is deliberately destroyed when the
+  // clinic ends ("Start fresh"); this is the standing list of the volunteers
+  // themselves, so the next clinic is a pick from a list rather than re-typing
+  // everyone. It holds no patient data — a name, a username, the role they last
+  // worked, and their password so their login keeps working year to year.
+  db.exec(`CREATE TABLE IF NOT EXISTS staff_directory (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, uid TEXT,
+    username TEXT NOT NULL UNIQUE, full_name TEXT NOT NULL, role TEXT NOT NULL,
+    salt TEXT, hash TEXT,
+    last_event_name TEXT, last_used_at TEXT, times_served INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL, updated_at TEXT, synced_rev TEXT, content_rev TEXT)`);
+  db.exec('CREATE INDEX IF NOT EXISTS idx_staffdir_name ON staff_directory(full_name)');
   addColumn('triage', 'triaged_by_name', 'TEXT');
   addColumn('triage', 'vitals_by_name', 'TEXT');
   addColumn('triage', 'routed_by_name', 'TEXT');
@@ -535,6 +552,9 @@ function createUser(actor, { username, full_name, role, password, event_id }) {
     `INSERT INTO users (username, full_name, role, salt, hash, active, created_at, event_id)
      VALUES (?,?,?,?,?,1,?,?)`
   ).run(u, full_name, role, salt, hash, now(), eid);
+  // Anyone who is ever given an account joins the standing staff list, so the
+  // next clinic can add them back with one click instead of re-typing them.
+  rememberStaff(db.prepare('SELECT * FROM users WHERE id = ?').get(info.lastInsertRowid));
   audit(actor, 'create', 'user', info.lastInsertRowid, `${u} (${role})`);
   return publicUser(db.prepare('SELECT * FROM users WHERE id = ?').get(info.lastInsertRowid));
 }
@@ -579,6 +599,9 @@ function updateUser(actor, id, { full_name, role, active, password }) {
     vals.push(id);
     db.prepare(`UPDATE users SET ${fields.join(', ')} WHERE id = ?`).run(...vals);
   }
+  // Keep the standing list in step, so a renamed volunteer or a changed
+  // password is what comes back when they are added to the next clinic.
+  rememberStaff(db.prepare('SELECT * FROM users WHERE id = ?').get(id));
   audit(actor, 'update', 'user', id, full_name || row.full_name);
   return publicUser(db.prepare('SELECT * FROM users WHERE id = ?').get(id));
 }
@@ -630,6 +653,220 @@ function deleteUser(actor, id) {
 }
 
 /* ------------------------------------------------------------------ */
+/*  v1.6.7 — Staff directory                                           */
+/*                                                                     */
+/*  A staff ACCOUNT belongs to one clinic and is destroyed when that    */
+/*  clinic ends. The people do not. This is the standing list of        */
+/*  everyone who has ever been given an account, so setting up the next */
+/*  clinic is picking names off a list instead of re-typing the team    */
+/*  and inventing new passwords for volunteers who already have one.    */
+/* ------------------------------------------------------------------ */
+
+// The two shared desk logins. Deliberately the SAME username and password at
+// every clinic: the front desk and the check-out table are shared stations that
+// a rotating group of volunteers sits down at, and a per-person account there
+// only ever meant the laptop stayed logged in as whoever opened it.
+const CLINIC_ACCOUNTS = [
+  { username: 'registration', full_name: 'Front Desk (Registration)', role: 'registration' },
+  { username: 'checkout', full_name: 'Check-Out Desk', role: 'checkout' },
+];
+const CLINIC_ACCOUNT_PASSWORD = 'welcome123';
+
+// Make sure both shared desk logins exist and can be signed into. Runs on
+// startup and again every time a clinic is created, so a new clinic never has
+// to have them set up by hand.
+//
+// They are GLOBAL (event_id NULL) on purpose: the username has to be unique
+// across the whole database, and the whole point is that it is the same login
+// at every clinic. That also keeps "Start fresh for next event" — which sweeps
+// event-scoped staff — from deleting the desks out from under the next clinic.
+//
+// An account that already exists is left alone apart from being re-enabled. If
+// an admin has changed one of these passwords, silently resetting it on the
+// next clinic would quietly undo a deliberate decision; there is a "Reset to
+// the default password" button in Staff & roles for when that is what is wanted.
+function ensureClinicAccounts(actor) {
+  const out = { created: [], reactivated: [] };
+  for (const spec of CLINIC_ACCOUNTS) {
+    const row = db.prepare('SELECT * FROM users WHERE username = ?').get(spec.username);
+    if (!row) {
+      const { salt, hash } = hashPassword(CLINIC_ACCOUNT_PASSWORD);
+      const info = db.prepare(
+        `INSERT INTO users (username, full_name, role, salt, hash, active, created_at, event_id)
+         VALUES (?,?,?,?,?,1,?,NULL)`
+      ).run(spec.username, spec.full_name, spec.role, salt, hash, now());
+      audit(actor, 'create', 'user', info.lastInsertRowid, `${spec.username} (${spec.role}) — shared clinic login`);
+      out.created.push(spec.username);
+    } else if (!row.active) {
+      db.prepare('UPDATE users SET active = 1 WHERE id = ?').run(row.id);
+      audit(actor, 'update', 'user', row.id, `${spec.username} re-enabled for a new clinic`);
+      out.reactivated.push(spec.username);
+    }
+  }
+  return out;
+}
+
+// Is this one of the shared desk logins? Used by the UI to explain them, and by
+// the password reset below.
+function isClinicAccount(username) {
+  return CLINIC_ACCOUNTS.some((c) => c.username === String(username || '').toLowerCase());
+}
+
+// Logins that are STATIONS rather than people, so they never belong in a
+// directory of volunteers: the two shared desks, plus the bootstrap 'admin'
+// account every install starts with. (Excluded from the directory only — the
+// bootstrap admin is emphatically NOT resettable to the shared desk password.)
+function isStationAccount(username) {
+  const u = String(username || '').toLowerCase();
+  return u === 'admin' || isClinicAccount(u);
+}
+
+function resetClinicAccountPassword(actor, username) {
+  if (!isClinicAccount(username)) throw new Error('That is not a shared clinic login.');
+  const row = db.prepare('SELECT * FROM users WHERE username = ?').get(String(username).toLowerCase());
+  if (!row) throw new Error('That account does not exist yet.');
+  const { salt, hash } = hashPassword(CLINIC_ACCOUNT_PASSWORD);
+  db.prepare('UPDATE users SET salt = ?, hash = ?, active = 1 WHERE id = ?').run(salt, hash, row.id);
+  audit(actor, 'update', 'user', row.id, `${row.username} password reset to the default`);
+  return { ok: true, username: row.username, password: CLINIC_ACCOUNT_PASSWORD };
+}
+
+// Record (or refresh) a person in the standing list. Called whenever a staff
+// account is created or edited, so "anyone who is ever added" is on the list
+// without anybody having to maintain it.
+function rememberStaff(row, eventName) {
+  if (!row || !row.username) return null;
+  if (isStationAccount(row.username)) return null; // a station, not a person
+  const existing = db.prepare('SELECT * FROM staff_directory WHERE username = ?').get(row.username);
+  const evName = eventName || (() => {
+    const e = row.event_id ? db.prepare('SELECT name FROM events WHERE id = ?').get(row.event_id) : null;
+    return e ? e.name : null;
+  })();
+  if (existing) {
+    db.prepare(`UPDATE staff_directory SET full_name = ?, role = ?, salt = ?, hash = ?,
+                last_event_name = COALESCE(?, last_event_name), last_used_at = ?,
+                synced_rev = NULL, content_rev = NULL WHERE id = ?`)
+      .run(row.full_name, row.role, row.salt, row.hash, evName, now(), existing.id);
+    return existing.id;
+  }
+  const info = db.prepare(
+    `INSERT INTO staff_directory (uid, username, full_name, role, salt, hash, last_event_name, last_used_at, times_served, created_at)
+     VALUES (?,?,?,?,?,?,?,?,1,?)`
+  ).run(crypto.randomUUID(), row.username, row.full_name, row.role, row.salt, row.hash, evName, now(), now());
+  return info.lastInsertRowid;
+}
+
+// Seed the list from the accounts already on this computer, so upgrading does
+// not start with an empty directory and lose everyone who is already set up.
+function backfillStaffDirectory() {
+  // A station login that an earlier run recorded as a person is dropped again.
+  for (const r of db.prepare('SELECT id, username FROM staff_directory').all()) {
+    if (isStationAccount(r.username)) db.prepare('DELETE FROM staff_directory WHERE id = ?').run(r.id);
+  }
+  const known = new Set(db.prepare('SELECT username FROM staff_directory').all().map((r) => r.username));
+  for (const u of db.prepare('SELECT * FROM users').all()) {
+    if (known.has(u.username) || isStationAccount(u.username)) continue;
+    rememberStaff(u);
+  }
+}
+
+// The standing list, A–Z by surname, each entry saying whether that person
+// already has an account on the clinic being set up.
+function listStaffDirectory(eventId) {
+  const evId = eventId || Number(getSetting('active_event_id')) || null;
+  const accounts = db.prepare('SELECT id, username, role, active, event_id FROM users').all();
+  const byName = new Map(accounts.map((a) => [a.username, a]));
+  return db.prepare('SELECT * FROM staff_directory').all()
+    .map((r) => {
+      const acct = byName.get(r.username) || null;
+      return {
+        id: r.id,
+        username: r.username,
+        full_name: r.full_name,
+        role: r.role,
+        last_event_name: r.last_event_name || null,
+        last_used_at: r.last_used_at || null,
+        times_served: r.times_served || 0,
+        has_password: !!(r.salt && r.hash),
+        // On the clinic being set up right now?
+        on_event: !!(acct && evId && acct.event_id === evId),
+        // Where their account lives, if they have one — the difference between
+        // "already here", "an administrator, everywhere" and "on another
+        // clinic", which are three quite different things to be told.
+        account_scope: !acct ? null
+          : (evId && acct.event_id === evId) ? 'this_event'
+            : (acct.event_id == null ? 'global' : 'other_event'),
+        taken_elsewhere: !!(acct && !(evId && acct.event_id === evId)),
+        account_id: acct ? acct.id : null,
+      };
+    })
+    .sort(byStaffName);
+}
+
+// Surname first, the way a register reads. Falls back to the whole name when
+// there is only one word.
+function byStaffName(a, b) {
+  const key = (r) => {
+    const parts = String(r.full_name || '').trim().split(/\s+/);
+    const last = parts.length > 1 ? parts[parts.length - 1] : parts[0] || '';
+    return (last + ' ' + parts.slice(0, -1).join(' ')).trim().toLowerCase();
+  };
+  return key(a).localeCompare(key(b), undefined, { sensitivity: 'base' });
+}
+
+// Give someone from the standing list an account on this clinic. Their existing
+// password is carried over so a returning volunteer signs in exactly as before;
+// passing a password sets a new one.
+function addStaffFromDirectory(actor, { id, role, event_id, password } = {}) {
+  const entry = db.prepare('SELECT * FROM staff_directory WHERE id = ?').get(id);
+  if (!entry) throw new Error('That person is no longer in the staff list.');
+  const useRole = role || entry.role;
+  if (!ROLES.includes(useRole)) throw new Error('Invalid role.');
+  // Same rule as creating an account by hand: administrators are global, every
+  // other role belongs to the clinic being set up.
+  const evId = useRole === 'admin'
+    ? null
+    : (event_id != null ? Number(event_id) : Number(getSetting('active_event_id')) || null);
+  if (!evId && useRole !== 'admin') throw new Error('Set a clinic active first, then add staff to it.');
+
+  const clash = db.prepare('SELECT * FROM users WHERE username = ?').get(entry.username);
+  if (clash) {
+    if (evId && clash.event_id === evId) throw new Error(`${entry.full_name} is already on this clinic.`);
+    if (!evId && clash.event_id == null) throw new Error(`${entry.full_name} already has an account.`);
+    throw new Error(`The username “${entry.username}” is in use by another account. Edit that account instead, or add ${entry.full_name} with a different username.`);
+  }
+  let salt = entry.salt, hash = entry.hash;
+  if (password) ({ salt, hash } = hashPassword(password));
+  if (!salt || !hash) throw new Error(`${entry.full_name} has no saved password — set one when adding them.`);
+
+  const info = db.prepare(
+    `INSERT INTO users (username, full_name, role, salt, hash, active, created_at, event_id)
+     VALUES (?,?,?,?,?,1,?,?)`
+  ).run(entry.username, entry.full_name, useRole, salt, hash, now(), evId);
+  const ev = evId ? db.prepare('SELECT name FROM events WHERE id = ?').get(evId) : null;
+  db.prepare(`UPDATE staff_directory SET role = ?, salt = ?, hash = ?, last_event_name = ?,
+              last_used_at = ?, times_served = times_served + 1, synced_rev = NULL, content_rev = NULL
+              WHERE id = ?`)
+    .run(useRole, salt, hash, ev ? ev.name : null, now(), entry.id);
+  audit(actor, 'create', 'user', info.lastInsertRowid, `${entry.username} (${useRole}) added from the staff list`);
+  return publicUser(db.prepare('SELECT * FROM users WHERE id = ?').get(info.lastInsertRowid));
+}
+
+// Take someone off the standing list for good — they have left the organisation.
+// Their account, if they have one on the current clinic, is untouched; removing
+// that is the separate, deliberate delete on the team table.
+function forgetStaff(actor, id) {
+  const entry = db.prepare('SELECT * FROM staff_directory WHERE id = ?').get(id);
+  if (!entry) throw new Error('That person is no longer in the staff list.');
+  ensureUids();
+  const fresh = db.prepare('SELECT * FROM staff_directory WHERE id = ?').get(id);
+  if (fresh && fresh.uid) recordTombstone(fresh.uid, 'staffdir', null);
+  db.prepare('DELETE FROM staff_directory WHERE id = ?').run(id);
+  audit(actor, 'delete', 'user', null, `${entry.full_name} removed from the staff list`);
+  return { deleted: true };
+}
+
+/* ------------------------------------------------------------------ */
 /*  Events                                                             */
 /* ------------------------------------------------------------------ */
 
@@ -653,6 +890,10 @@ function createEvent(actor, { name, location, start_date, end_date, languages })
     `INSERT INTO events (name, location, start_date, end_date, languages, active, created_at)
      VALUES (?,?,?,?,?,1,?)`
   ).run(name, location || '', start_date || today(), end_date || '', languages || 'en,es', now());
+  // Every clinic needs a front desk and a check-out table on day one. Both are
+  // shared stations with the same login at every clinic, so they are set up
+  // here rather than left to be remembered on the morning.
+  ensureClinicAccounts(actor);
   audit(actor, 'create', 'event', info.lastInsertRowid, name);
   return db.prepare('SELECT * FROM events WHERE id = ?').get(info.lastInsertRowid);
 }
@@ -2106,16 +2347,22 @@ function exportEventJson(eventId) {
 /*  fields are hashed) so no write path had to change.                 */
 /* ================================================================== */
 
-const ENTITY_TABLE = { event: 'events', user: 'users', report: 'event_reports', patient: 'patients', triage: 'triage', treatment: 'treatments', consent: 'consents', xray: 'xrays' };
+const ENTITY_TABLE = { event: 'events', staffdir: 'staff_directory', user: 'users', report: 'event_reports', patient: 'patients', triage: 'triage', treatment: 'treatments', consent: 'consents', xray: 'xrays' };
 // 'user' is applied right after 'event' (a scoped staff account is parented to an
 // event, exactly like a patient) and before patients.
-const APPLY_ORDER = ['event', 'user', 'report', 'patient', 'triage', 'treatment', 'consent', 'xray'];
+// 'staffdir' has no parent at all (it is the clinic's standing list of people,
+// not a row belonging to any one clinic), so it sits beside 'event'.
+const APPLY_ORDER = ['event', 'staffdir', 'user', 'report', 'patient', 'triage', 'treatment', 'consent', 'xray'];
 // Syncable payload columns per entity (fixed order -> stable content hash).
 const SYNC_COLS = {
   event: ['name', 'location', 'start_date', 'end_date', 'languages', 'active', 'created_at', 'selected_at'],
   // Staff account. salt+hash travel so the account can sign in on every laptop;
   // event scoping travels via event_uid (the parent), NULL for global admins.
   user: ['username', 'full_name', 'role', 'salt', 'hash', 'active', 'created_at'],
+  // v1.6.7: a person who has worked a clinic. Parentless — it outlives every
+  // event. salt+hash travel for the same reason they do on an account: so a
+  // returning volunteer's login works on whichever laptop adds them back.
+  staffdir: ['username', 'full_name', 'role', 'salt', 'hash', 'last_event_name', 'last_used_at', 'times_served', 'created_at'],
   patient: ['language', 'first_name', 'last_name', 'dob', 'gender', 'phone', 'email', 'demographics', 'medical_history', 'dental_history', 'status', 'created_at', 'dismissed_at', 'dismissed_by_name', 'arrived_at', 'arrived_by_name'],
   triage: ['complaint', 'flags', 'checklist', 'teeth', 'teeth_notes', 'notes', 'xray_count', 'xray_station', 'assigned_to', 'status', 'triage_signature', 'triage_signer_name', 'triaged_at', 'bp_systolic', 'bp_diastolic', 'heart_rate', 'vitals_at', 'blood_thinner', 'blood_thinner_detail', 'route', 'routed_at', 'emt_review', 'emt_signed_off', 'bp_rechecks', 'triaged_by_name', 'vitals_by_name', 'routed_by_name'],
   treatment: ['fillings', 'extractions', 'cleaning', 'anesthetic', 'other_procedures', 'clinical_notes', 'provider_name', 'provider_signature', 'locked', 'completed_at', 'completed_by_name'],
@@ -2221,7 +2468,7 @@ function collectSyncRows(max = 400) {
         // Patients and (event-scoped) staff both hang off an event; a global admin
         // has event_id NULL -> event_uid NULL (no parent, never deferred on apply).
         event_uid: (entity === 'patient' || entity === 'user' || entity === 'report') ? uidOf('events', row.event_id) : null,
-        patient_uid: (entity !== 'event' && entity !== 'patient' && entity !== 'user' && entity !== 'report') ? uidOf('patients', row.patient_id) : null,
+        patient_uid: (entity !== 'event' && entity !== 'staffdir' && entity !== 'patient' && entity !== 'user' && entity !== 'report') ? uidOf('patients', row.patient_id) : null,
         deleted: 0, updated_at: updatedAt, data,
       });
       mark.push({ table, id: row.id, sig: s, undelete: reviving ? row.uid : null });
@@ -2343,6 +2590,16 @@ function applyRemoteRows(remoteRows) {
         const uname = env.data && env.data.username;
         const dupe = uname ? db.prepare('SELECT id FROM users WHERE username = ?').get(uname) : null;
         if (dupe) { db.prepare('UPDATE users SET uid = ? WHERE id = ?').run(env.uid, dupe.id); return applyOne(env); }
+      }
+    }
+    else if (entity === 'staffdir') {
+      // Parentless. Every laptop builds its own directory row for the same
+      // person from its own accounts, so two uids can name one username; adopt
+      // the local row rather than colliding with UNIQUE(username) for ever.
+      if (!existing) {
+        const uname = env.data && env.data.username;
+        const dupe = uname ? db.prepare('SELECT id FROM staff_directory WHERE username = ?').get(uname) : null;
+        if (dupe) { db.prepare('UPDATE staff_directory SET uid = ? WHERE id = ?').run(env.uid, dupe.id); return applyOne(env); }
       }
     }
     else if (entity !== 'event') {
@@ -2470,6 +2727,8 @@ function close() {
 module.exports = {
   init, close,
   login, listUsers, createUser, updateUser, deleteUser, clearEventStaff,
+  listStaffDirectory, addStaffFromDirectory, forgetStaff,
+  ensureClinicAccounts, resetClinicAccountPassword, isClinicAccount, CLINIC_ACCOUNT_PASSWORD,
   listEvents, createEvent, updateEvent, setActiveEvent, setEventActive, deleteEvent, getActiveEvent,
   createPatient, startVisitFromExisting, updatePatient, deletePatient, getPatient, listPatients, searchAllPatients, patientHistory,
   listIncompletePatients, deleteIncompletePatients,

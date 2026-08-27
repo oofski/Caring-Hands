@@ -50,16 +50,26 @@ jobs:
       - name: Publish downloadable release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.6.6-build.${{ github.run_number }}
-          name: Caring Hands v1.6.6 (build ${{ github.run_number }})
+          tag_name: v1.6.7-build.${{ github.run_number }}
+          name: Caring Hands v1.6.7 (build ${{ github.run_number }})
           prerelease: false
           make_latest: true
           body: |
-            ## Caring Hands Worldwide — Practice Management Software (v1.6.6)
+            ## Caring Hands Worldwide — Practice Management Software (v1.6.7)
 
             Offline-first dental clinic app for Windows. **Download the installer once — it auto-updates from here on.**
 
-            **New in v1.6.6 — the rest of the missing-report story**
+            **New in v1.6.7 — setting up a clinic's team is picking names off a list**
+            - **New: a staff directory.** A staff account belongs to one clinic and is deliberately destroyed when that clinic ends — but the *people* are not. Everyone who has ever been given an account now appears on a standing list under **Admin → Staff & roles**, in A–Z order by surname. Setting up the next clinic is clicking **Add to this clinic** beside each name, or picking them from the new *“Has this person worked a clinic before?”* dropdown at the top of **Add staff**.
+            - **A returning volunteer keeps the login they already had.** Their username and password come back with them, so nobody has to invent a new password on the morning of a clinic or explain to a returning hygienist why last year's login stopped working. You can still set a new password when adding them, and the role is a fresh choice each time — someone who ran the front desk last year can be put on x-rays this year.
+            - **The list is shared across the clinic's laptops**, like everything else, so a volunteer added on one computer is there to pick on all of them.
+            - **Someone who has left** can be taken off the list for good with the bin button beside their name. That removal travels too, so they do not reappear from another laptop on the next sync. Removing someone from the list leaves any account they hold on the current clinic alone — deleting that is still the separate, deliberate action on the team table.
+            - **New: the front desk and check-out logins are set up automatically.** Every clinic you create now has a **registration** and a **checkout** account ready to sign in with, both using the shared default password **welcome123**. They are the same username and password at every clinic, they are never swept away by **Start fresh for next event**, and they have their own **Shared clinic logins** card so it is obvious what they are for.
+            - **If you change one of those passwords, a new clinic will not reset it.** A deliberate change is left alone; there is a **Reset to default** button for when you do want the shared password back.
+            - *Because these are shared station logins, keep them to the desk — anything that needs a name against it (a treatment note, a check-out) should be done from a personal account.*
+            - *No clinic-server update is needed for this release — the server is still v1.6.6.*
+
+            **From v1.6.6 — the rest of the missing-report story**
             v1.6.5 stopped an export-and-delete from destroying a clinic's figures. Going back over it end to end turned up the bigger reason a finished clinic still read as gone — and several more ways the numbers could be wrong.
             - **Fixed: "All events" counted every finished clinic as zero.** This is the default view of the Reports tab, and it added up **live patient records only**. The moment a clinic was finished or its data removed — exactly when its report matters — it stopped contributing anything to the roll-up, so the season total quietly shrank each time a clinic was closed out. Finished clinics' kept totals are now counted in, and the page names which clinics are contributing figures rather than records.
             - **Fixed: the live report and the kept report counted differently.** The Reports tab and the totals saved at the end of a clinic used **two separate sets of counting rules**, so the same clinic could show one number on the day and a different one afterwards. There is now a single counting function behind both: an extraction row ticked "other" with no tooth is a note rather than a procedure, and cleaning notes alone are not a cleaning performed — on screen and in the kept totals alike.
@@ -289,8 +299,8 @@ jobs:
 
             Includes everything from v1.0.2–1.1.1 (optional Cloud Sync, triage-free flow, per-event staff, Oregon consent, USB workflow, accountability, Russian, in-app auto-update).
 
-            - **Caring-Hands-Setup-1.6.6.exe** — installer (recommended; required for auto-update).
-            - **Caring-Hands-Portable-1.6.6.exe** — portable (no auto-update).
+            - **Caring-Hands-Setup-1.6.7.exe** — installer (recommended; required for auto-update).
+            - **Caring-Hands-Portable-1.6.7.exe** — portable (no auto-update).
 
             First sign-in: `admin / admin` — then create your staff accounts. All clinical data stays on the device unless you enable Cloud Sync.
           files: |

@@ -8,6 +8,15 @@ import { icon } from '../icons.js';
 // Cloud tab can drop the previous listener before adding a new one (no stacking).
 let cloudUnsub = null;
 
+// The roles a new account can be given, in the order a patient meets them.
+// v1.0.9 retired the Triage station, so 'triage' is offered ONLY when editing an
+// account that already has it — saving that user must never silently re-role them.
+const roleOptions = () => [
+  ['registration', t('roles.registration')], ['emt', t('roles.emt')],
+  ['hygienist', t('roles.hygienist')], ['doctor', t('roles.doctor')],
+  ['checkout', t('roles.checkout')], ['admin', t('roles.admin')],
+];
+
 // Each of these is reached from its own sidebar item (Staff & roles, Events,
 // Languages, Cloud, Backup & Export, Audit log). renderAdmin(ctx, {section})
 // renders JUST that section as a standalone page — no tab bar. Titles/subtitles
@@ -50,10 +59,17 @@ export function renderAdmin(ctx, params = {}) {
 
   /* ---- Staff ---- */
   async function staffTab(body) {
-    const [users, active] = await Promise.all([api.listUsers(), api.activeEvent()]);
+    const [users, active, directory] = await Promise.all([
+      api.listUsers(), api.activeEvent(),
+      api.staffDirectory().catch(() => []),
+    ]);
+    // The two shared desk logins are stations, not people — they get their own
+    // card so nobody has to work out why "checkout" is a global account.
+    const isDesk = (u) => u.username === 'registration' || u.username === 'checkout';
+    const desks = users.filter(isDesk);
     // Global administrators live outside any single event; everyone else is
     // scoped to the event they were created for.
-    const globals = users.filter((u) => u.role === 'admin' || u.event_id == null);
+    const globals = users.filter((u) => !isDesk(u) && (u.role === 'admin' || u.event_id == null));
     const eventStaff = active ? users.filter((u) => u.event_id === active.id && u.role !== 'admin') : [];
 
     clear(body);
@@ -121,6 +137,151 @@ export function renderAdmin(ctx, params = {}) {
       );
     }
     body.append(staffCard);
+
+    // --- Staff directory: everyone who has ever worked a clinic -------------
+    // A staff ACCOUNT is destroyed when its clinic ends. The people are not, so
+    // this is the standing list — setting up the next clinic is picking names
+    // off it rather than re-typing the team and inventing passwords for
+    // volunteers who already have one.
+    const dirCard = el('div', { class: 'card' });
+    dirCard.append(
+      el('div', { class: 'card-head-row' }, [
+        el('h3', { class: 'card-title' }, [icon('users', { size: 15 }), 'Staff directory']),
+        el('span', { class: 'pill pill--neutral' }, [`${directory.length} ${directory.length === 1 ? 'person' : 'people'}`]),
+      ]),
+      el('p', { class: 'view-sub', style: 'margin:0 0 var(--space-4);' }, [
+        'Everyone who has ever been given an account. Adding someone here to a clinic keeps the username and password they already had, so a returning volunteer signs in exactly as before.',
+      ]),
+    );
+    if (!directory.length) {
+      dirCard.append(el('div', { class: 'data-table-wrap' }, [
+        el('div', { class: 'empty' }, ['Nobody yet — everyone you add to a clinic is listed here from then on.']),
+      ]));
+    } else {
+      dirCard.append(el('div', { class: 'data-table-wrap' }, [
+        el('table', { class: 'data-table' }, [
+          el('thead', {}, [el('tr', {}, ['Name', 'Username', 'Role for this clinic', 'Last worked', ''].map((h) => el('th', {}, [h])))]),
+          el('tbody', {}, directory.map((p) => dirRow(p))),
+        ]),
+      ]));
+    }
+    body.append(dirCard);
+
+    function dirRow(p) {
+      const addable = !!active && !p.account_scope;
+      // The role they last worked is the default, but a volunteer who ran the
+      // front desk last year may be on x-rays this year — so it is a choice.
+      // Only where it IS a choice: elsewhere it is just what they are doing.
+      let roleCell;
+      let roleSel = null;
+      if (addable) {
+        roleSel = el('select', { class: 'input select input--sm' });
+        roleOptions().forEach(([v, l]) => {
+          const op = el('option', { value: v }, [l]);
+          if (p.role === v) op.selected = true;
+          roleSel.append(op);
+        });
+        roleCell = roleSel;
+      } else {
+        roleCell = el('span', { class: 'pill pill--blue' }, [t(`roles.${p.role}`)]);
+      }
+      let action;
+      if (p.account_scope === 'this_event') {
+        action = el('span', { class: 'pill pill--success' }, [el('span', { class: 'pill-dot' }), 'On this clinic']);
+      } else if (p.account_scope === 'global') {
+        action = el('span', { class: 'pill pill--purple' }, [icon('globe', { size: 12 }), 'Administrator']);
+      } else if (p.account_scope === 'other_event') {
+        action = el('span', { class: 'pill pill--neutral', title: `${p.full_name} still has an account on another clinic. Remove it there, or edit that account.` }, ['On another clinic']);
+      } else {
+        action = el('button', {
+          class: 'btn btn--primary btn--sm', disabled: !active,
+          title: active ? `Add ${p.full_name} to ${active.name}` : 'Set a clinic active first',
+          onClick: async () => {
+            try {
+              await api.addStaffFromDirectory({ id: p.id, role: roleSel ? roleSel.value : p.role });
+              toast(`${p.full_name} added to ${active.name}.`, 'success');
+              paint();
+            } catch (e) { toast(e.message, 'error'); }
+          },
+        }, [icon('plus', { size: 14 }), 'Add to this clinic']);
+      }
+      return el('tr', {}, [
+        el('td', {}, [el('strong', {}, [p.full_name])]),
+        el('td', {}, [p.username]),
+        el('td', {}, [roleCell]),
+        el('td', {}, [el('span', { class: 'subtle small' }, [p.last_event_name || '—'])]),
+        el('td', {}, [el('div', { class: 'inline-row', style: 'margin:0; justify-content:flex-end;' }, [
+          action,
+          el('button', {
+            class: 'btn btn--ghost btn--sm', title: `Remove ${p.full_name} from the staff directory`,
+            onClick: () => forget(p),
+          }, [icon('trash', { size: 14 })]),
+        ])]),
+      ]);
+    }
+
+    async function forget(p) {
+      const ok = await modal({
+        title: 'Remove from the staff directory?',
+        body: `Take <b>${p.full_name}</b> off the standing staff list? They will no longer appear when you set up a clinic. Any account they have on a clinic right now is left alone — delete that separately if you need to.`,
+        confirmText: 'Remove from directory', cancelText: 'Cancel', danger: true,
+      });
+      if (!ok) return;
+      try { await api.forgetStaff(p.id); toast(`${p.full_name} removed from the staff directory.`, 'success'); paint(); }
+      catch (e) { toast(e.message, 'error'); }
+    }
+
+    // --- Shared clinic logins ----------------------------------------------
+    // The front desk and the check-out table are shared stations that a rotating
+    // group sits down at. Same username and password at every clinic, set up
+    // automatically, so nobody has to remember to create them on the morning.
+    const deskCard = el('div', { class: 'card' });
+    deskCard.append(
+      el('div', { class: 'card-head-row' }, [
+        el('h3', { class: 'card-title' }, [icon('globe', { size: 15 }), 'Shared clinic logins']),
+      ]),
+      el('p', { class: 'view-sub', style: 'margin:0 0 var(--space-4);' }, [
+        'The front desk and check-out stations. These two are created automatically for every clinic and are never removed by ',
+        el('strong', { style: 'color:var(--text-strong);' }, ['Start fresh for next event']),
+        ' — the same login works at every clinic. Because they are shared, keep them to the desk and use a personal account for anything a name needs to sit against.',
+      ]),
+    );
+    if (!desks.length) {
+      deskCard.append(el('div', { class: 'data-table-wrap' }, [el('div', { class: 'empty' }, ['Not set up yet — create a clinic event and they appear here.'])]));
+    } else {
+      deskCard.append(el('div', { class: 'data-table-wrap' }, [
+        el('table', { class: 'data-table' }, [
+          el('thead', {}, [el('tr', {}, ['Station', 'Username', 'Role', 'Status', ''].map((h) => el('th', {}, [h])))]),
+          el('tbody', {}, desks.map((u) => el('tr', {}, [
+            el('td', {}, [el('strong', {}, [u.full_name])]),
+            el('td', {}, [el('span', { class: 'mono' }, [u.username])]),
+            el('td', {}, [el('span', { class: 'pill pill--blue' }, [t(`roles.${u.role}`)])]),
+            el('td', {}, [u.active
+              ? el('span', { class: 'pill pill--success' }, [el('span', { class: 'pill-dot' }), 'Active'])
+              : el('span', { class: 'pill pill--neutral' }, ['Disabled'])]),
+            el('td', {}, [el('div', { class: 'inline-row', style: 'margin:0; justify-content:flex-end;' }, [
+              el('button', { class: 'btn btn--ghost btn--sm', onClick: () => editUser(u, active) }, [icon('pen', { size: 14 }), 'Change password']),
+              el('button', { class: 'btn btn--ghost btn--sm', onClick: () => resetDesk(u) }, [icon('refresh', { size: 14 }), 'Reset to default']),
+            ])]),
+          ]))),
+        ]),
+      ]));
+    }
+    body.append(deskCard);
+
+    async function resetDesk(u) {
+      const ok = await modal({
+        title: `Reset ${u.full_name}?`,
+        body: `Set the password for <b>${u.username}</b> back to the shared default and make sure the account is enabled. Anyone who knows the default can then sign in at that station.`,
+        confirmText: 'Reset password', cancelText: 'Cancel',
+      });
+      if (!ok) return;
+      try {
+        const r = await api.resetClinicPassword(u.username);
+        toast(`${u.username} reset — password is “${r.password}”.`, 'success');
+        paint();
+      } catch (e) { toast(e.message, 'error'); }
+    }
 
     // --- Global administrators card ----------------------------------------
     const adminCard = el('div', { class: 'card' });
@@ -216,10 +377,7 @@ export function renderAdmin(ctx, params = {}) {
     const name = el('input', { class: 'input', value: u && u.full_name ? u.full_name : '', placeholder: 'Full name' });
     const uname = el('input', { class: 'input', value: u && u.username ? u.username : '', placeholder: 'Username', disabled: !isNew });
     const role = el('select', { class: 'input select' });
-    // v1.0.9: the Triage station is gone, so 'triage' is not offered for new
-    // staff. It stays listed ONLY when editing an existing legacy triage
-    // account, so saving that user never silently changes their role.
-    const roleOpts = [['registration', t('roles.registration')], ['emt', t('roles.emt')], ['hygienist', t('roles.hygienist')], ['doctor', t('roles.doctor')], ['checkout', t('roles.checkout')], ['admin', t('roles.admin')]];
+    const roleOpts = roleOptions();
     if (u && u.role === 'triage') roleOpts.unshift(['triage', t('roles.triage')]);
     roleOpts.forEach(([v, l]) => {
       const op = el('option', { value: v }, [l]);
@@ -229,12 +387,48 @@ export function renderAdmin(ctx, params = {}) {
     if (forceAdmin) role.disabled = true;
     const pass = el('input', { class: 'input', type: 'password', placeholder: isNew ? 'Password' : 'New password (leave blank to keep)' });
 
-    const fields = [
+    const fields = [];
+
+    // Pick a returning volunteer off the standing list instead of re-typing
+    // them. Choosing someone fills the form in and keeps the password they
+    // already have, so a name that has worked before is two clicks.
+    let picked = null;
+    const passHint = el('div', { class: 'subtle small', style: 'margin-top:4px' }, []);
+    if (isNew && !forceAdmin) {
+      const dir = (await api.staffDirectory().catch(() => []))
+        .filter((p) => !p.account_scope);
+      if (dir.length) {
+        const pick = el('select', { class: 'input select' });
+        pick.append(el('option', { value: '' }, ['— Someone new —']));
+        dir.forEach((p) => pick.append(el('option', { value: String(p.id) }, [`${p.full_name} (${p.username}) · ${t(`roles.${p.role}`)}`])));
+        pick.addEventListener('change', () => {
+          picked = dir.find((p) => String(p.id) === pick.value) || null;
+          name.value = picked ? picked.full_name : '';
+          uname.value = picked ? picked.username : '';
+          name.disabled = uname.disabled = !!picked;
+          if (picked) {
+            Array.from(role.options).forEach((o) => { o.selected = o.value === picked.role; });
+            pass.placeholder = 'Leave blank to keep their current password';
+            clear(passHint);
+            passHint.append(`${picked.full_name} already has a password — leave this blank and they sign in exactly as before.`);
+          } else {
+            pass.placeholder = 'Password';
+            clear(passHint);
+          }
+        });
+        fields.push(el('label', { class: 'field span-2' }, [
+          el('span', { class: 'field-label' }, ['Has this person worked a clinic before?']),
+          pick,
+        ]));
+      }
+    }
+
+    fields.push(
       el('label', { class: 'field span-2' }, [el('span', { class: 'field-label' }, ['Full name']), name]),
       el('label', { class: 'field' }, [el('span', { class: 'field-label' }, ['Username']), uname]),
       el('label', { class: 'field' }, [el('span', { class: 'field-label' }, ['Role']), role]),
-      el('label', { class: 'field span-2' }, [el('span', { class: 'field-label' }, ['Password']), pass]),
-    ];
+      el('label', { class: 'field span-2' }, [el('span', { class: 'field-label' }, ['Password']), pass, passHint]),
+    );
     // On a new event-scoped staff member, make the scope obvious.
     if (isNew && !forceAdmin && active) {
       fields.push(el('div', { class: 'field span-2' }, [
@@ -246,7 +440,11 @@ export function renderAdmin(ctx, params = {}) {
     const ok = await modal({ title: isNew ? 'Add staff member' : 'Edit staff', body: form, confirmText: 'Save', cancelText: 'Cancel' });
     if (!ok) return;
     try {
-      if (isNew) {
+      if (isNew && picked) {
+        // A returning volunteer: their saved password carries over unless a new
+        // one was typed here.
+        await api.addStaffFromDirectory({ id: picked.id, role: role.value, password: pass.value || undefined });
+      } else if (isNew) {
         // Omit event_id: the backend scopes non-admins to the active event and
         // keeps admins global automatically.
         await api.createUser({ username: uname.value.trim(), full_name: name.value.trim(), role: role.value, password: pass.value });

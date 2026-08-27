@@ -19,6 +19,10 @@ export const api = {
   updateUser: (p) => call('usersUpdate', p),
   deleteUser: (id) => call('usersDelete', id),
   clearEventStaff: (eventId) => call('usersClearEventStaff', eventId),
+  staffDirectory: (eventId) => call('staffDirectory', { eventId }),
+  addStaffFromDirectory: (p) => call('staffAdd', p),
+  forgetStaff: (id) => call('staffForget', { id }),
+  resetClinicPassword: (username) => call('staffResetClinicPassword', { username }),
 
   listEvents: () => call('eventsList'),
   activeEvent: () => call('eventsActive'),
