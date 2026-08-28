@@ -50,16 +50,24 @@ jobs:
       - name: Publish downloadable release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.6.7-build.${{ github.run_number }}
-          name: Caring Hands v1.6.7 (build ${{ github.run_number }})
+          tag_name: v1.6.8-build.${{ github.run_number }}
+          name: Caring Hands v1.6.8 (build ${{ github.run_number }})
           prerelease: false
           make_latest: true
           body: |
-            ## Caring Hands Worldwide — Practice Management Software (v1.6.7)
+            ## Caring Hands Worldwide — Practice Management Software (v1.6.8)
 
             Offline-first dental clinic app for Windows. **Download the installer once — it auto-updates from here on.**
 
-            **New in v1.6.7 — setting up a clinic's team is picking names off a list**
+            **New in v1.6.8 — IMPORTANT: last clinic's patients no longer carry into the new one**
+            - **Fixed: creating a clinic left the app running the PREVIOUS one.** It created the event and asked you to go and press *Set active* separately. Miss that — and it was easy to miss — and every station still showed last clinic's patients, the dashboard still counted them, and, worst of all, **new check-ins were quietly filed into the old clinic**. Creating a clinic now starts it: every station switches to it, the queues are empty, and the day begins at zero. The **Create clinic event** dialog has a **Start this clinic now** tick (on by default) so you can still set up a future clinic without disturbing one that is running — and if a clinic is under way it tells you how many patient records are in it before you switch.
+            - **Fixed: a check-in could disappear into a closed clinic.** If the clinic the app was on had been finished, turned off, or deleted on another laptop, the front desk kept checking people in and they were filed there — invisible to every station. A check-in is now always filed into a clinic that is actually open, and says so plainly if there is none.
+            - **Fixed: a returning patient loaded from a USB stick overwrote their old visit.** The name-and-date-of-birth match searched *every clinic ever run*, so it updated the record from the clinic they last attended and never put them in today's queue. It now matches within the clinic being run, so they start a fresh visit and their old record is left exactly as it was.
+            - **Fixed: the header could name the wrong clinic.** The clinic name at the top of the screen was painted from a cached copy and could sit there naming the previous clinic after a switch — which is what made all of the above so hard to spot. It is now read from the data each time, so it is always the clinic you are actually working in, including when another laptop switches clinics.
+            - *Nothing is deleted by any of this: a past clinic keeps all of its own records, they simply stay with that clinic.*
+            - *No clinic-server update is needed for this release — the server is still v1.6.6.*
+
+            **From v1.6.7 — setting up a clinic's team is picking names off a list**
             - **New: a staff directory.** A staff account belongs to one clinic and is deliberately destroyed when that clinic ends — but the *people* are not. Everyone who has ever been given an account now appears on a standing list under **Admin → Staff & roles**, in A–Z order by surname. Setting up the next clinic is clicking **Add to this clinic** beside each name, or picking them from the new *“Has this person worked a clinic before?”* dropdown at the top of **Add staff**.
             - **A returning volunteer keeps the login they already had.** Their username and password come back with them, so nobody has to invent a new password on the morning of a clinic or explain to a returning hygienist why last year's login stopped working. You can still set a new password when adding them, and the role is a fresh choice each time — someone who ran the front desk last year can be put on x-rays this year.
             - **The list is shared across the clinic's laptops**, like everything else, so a volunteer added on one computer is there to pick on all of them.
@@ -299,8 +307,8 @@ jobs:
 
             Includes everything from v1.0.2–1.1.1 (optional Cloud Sync, triage-free flow, per-event staff, Oregon consent, USB workflow, accountability, Russian, in-app auto-update).
 
-            - **Caring-Hands-Setup-1.6.7.exe** — installer (recommended; required for auto-update).
-            - **Caring-Hands-Portable-1.6.7.exe** — portable (no auto-update).
+            - **Caring-Hands-Setup-1.6.8.exe** — installer (recommended; required for auto-update).
+            - **Caring-Hands-Portable-1.6.8.exe** — portable (no auto-update).
 
             First sign-in: `admin / admin` — then create your staff accounts. All clinical data stays on the device unless you enable Cloud Sync.
           files: |

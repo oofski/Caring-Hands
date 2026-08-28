@@ -884,7 +884,16 @@ function listEvents() {
   }));
 }
 
-function createEvent(actor, { name, location, start_date, end_date, languages }) {
+// `activate` (default true) makes the new clinic the one the app is ON.
+//
+// It used to create the event and leave the PREVIOUS clinic active, with only a
+// toast asking the admin to go and press "Set active". Miss that and every
+// station still showed last clinic's patients, the dashboard still counted them,
+// and — worst of all — new check-ins were silently filed into the old clinic.
+// That is the "patients carry over into the new clinic" bug: starting a clinic
+// now moves the app to it, and because the selection is a globally-ordered
+// stamp, every other laptop follows on its next sync.
+function createEvent(actor, { name, location, start_date, end_date, languages, activate = true }) {
   if (!name) throw new Error('Event name is required.');
   const info = db.prepare(
     `INSERT INTO events (name, location, start_date, end_date, languages, active, created_at)
@@ -895,6 +904,7 @@ function createEvent(actor, { name, location, start_date, end_date, languages })
   // here rather than left to be remembered on the morning.
   ensureClinicAccounts(actor);
   audit(actor, 'create', 'event', info.lastInsertRowid, name);
+  if (activate) setActiveEvent(actor, info.lastInsertRowid);
   return db.prepare('SELECT * FROM events WHERE id = ?').get(info.lastInsertRowid);
 }
 
@@ -1026,8 +1036,14 @@ function visitNeedsSurgeryConsent(visitType) {
 }
 
 function createPatient(actor, data) {
-  const eventId = Number(getSetting('active_event_id'));
-  if (!eventId) throw new Error('No active clinic event. Ask an admin to create one.');
+  // A check-in belongs to the clinic that is RUNNING. If the stored selection has
+  // gone stale — the clinic was finished, turned off, or deleted on another
+  // laptop — re-resolve rather than filing a live patient into a closed clinic
+  // where nobody would ever see them again.
+  let eventId = Number(getSetting('active_event_id'));
+  const open = eventId ? db.prepare('SELECT id FROM events WHERE id = ? AND active = 1').get(eventId) : null;
+  if (!open) eventId = resolveActiveEvent();
+  if (!eventId) throw new Error('No clinic is open. Ask an admin to create or reactivate one before checking anyone in.');
   const d = data || {};
   // Hard guard: never persist a nameless patient (defense-in-depth against any
   // intake bug — this is what produced the empty legacy records).
@@ -1503,9 +1519,17 @@ function importPatientFromPortable(actor, portable) {
   if (!portable || !portable.first_name) throw new Error('Invalid patient file.');
   const evId = Number(getSetting('active_event_id'));
   let existing = portable.id ? db.prepare('SELECT * FROM patients WHERE id = ?').get(portable.id) : null;
+  // Match WITHIN THIS CLINIC only. The name+dob fallback searched every event
+  // ever run, so loading a returning patient off a USB stick overwrote the
+  // record from their LAST clinic and never put them in today's queue — the
+  // visit carried over instead of starting. (evId was already worked out here
+  // and simply never used.)
+  if (existing && evId && existing.event_id !== evId) existing = null;
   if (!existing) {
-    existing = db.prepare('SELECT * FROM patients WHERE lower(first_name)=lower(?) AND lower(last_name)=lower(?) AND (dob = ? OR ? IS NULL) ORDER BY created_at DESC')
-      .get(portable.first_name, portable.last_name, portable.dob, portable.dob);
+    existing = db.prepare(
+      `SELECT * FROM patients WHERE event_id = ? AND lower(first_name)=lower(?) AND lower(last_name)=lower(?)
+         AND (dob = ? OR ? IS NULL) ORDER BY created_at DESC`
+    ).get(evId, portable.first_name, portable.last_name, portable.dob, portable.dob);
   }
   let pid;
   if (existing) {

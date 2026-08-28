@@ -2057,6 +2057,86 @@ async function main() {
       'v1.6.7: someone added on another laptop shows up in the list here');
   }
 
+  // ---- v1.6.8: last clinic's patients must not carry into the new one ----
+  {
+    currentUser = db.login('admin', 'admin');
+    const mkP = (f, l) => db.createPatient(currentUser, {
+      first_name: f, last_name: l, dob: '1980-01-01', gender: 'female',
+      demographics: { city: 'Sandy', state: 'OR' }, medical_history: {},
+      dental_history: { visit_type: 'cleaning' },
+      consents: [{ type: 'general', signer_name: f, signature_png: 'data:image/png;base64,AAAA' }],
+    });
+
+    const evOld = db.createEvent(currentUser, { name: 'Carry Over Last Year', location: 'Sandy' });
+    const older = mkP('Ada', 'Alpha');
+    mkP('Ben', 'Bravo');
+    log(db.listPatients({}).length === 2 && db.getActiveEvent().id === evOld.id,
+      'v1.6.8: (setup) a clinic with two patients is the one the app is on');
+
+    // THE BUG: creating the next clinic left the app on the PREVIOUS one, so
+    // every station still showed last clinic's patients and new check-ins were
+    // filed into the old clinic.
+    const evNew = db.createEvent(currentUser, { name: 'Carry Over This Year', location: 'Sandy' });
+    log(db.getActiveEvent().id === evNew.id,
+      'v1.6.8: creating a clinic makes it the one the app is on');
+    log(db.listPatients({}).length === 0,
+      'v1.6.8: the new clinic starts empty — last clinic\'s patients do not carry over');
+    log(db.dashboardStats().total === 0,
+      'v1.6.8: and the dashboard counts nobody yet');
+
+    const fresh = mkP('Cara', 'Charlie');
+    log(db.listPatients({ eventId: evNew.id }).some((p) => p.id === fresh.id)
+      && !db.listPatients({ eventId: evOld.id }).some((p) => p.id === fresh.id),
+      'v1.6.8: a new check-in is filed into the clinic being run, not the last one');
+
+    // Nothing was destroyed — the old clinic still has its own records.
+    log(db.listPatients({ eventId: evOld.id }).length === 2,
+      'v1.6.8: last clinic keeps its own records, they just stay there');
+
+    // Setting up a FUTURE clinic mid-clinic must not yank the running one away.
+    const evLater = db.createEvent(currentUser, { name: 'Next Season', location: 'Sandy', activate: false });
+    log(db.getActiveEvent().id === evNew.id && db.listPatients({}).some((p) => p.id === fresh.id),
+      'v1.6.8: a clinic created for later leaves the running clinic alone');
+    db.setEventActive(currentUser, evLater.id, false);
+    db.setActiveEvent(currentUser, evNew.id);
+
+    // A check-in can never disappear into a clinic that has been closed.
+    db.setEventActive(currentUser, evNew.id, false);
+    const landed = mkP('Late', 'Walkin');
+    const landedEvent = db.listPatients({ eventId: 'all' }).find((p) => p.id === landed.id);
+    log(landedEvent && landedEvent.event_id !== evNew.id,
+      'v1.6.8: a check-in is never filed into a clinic that has been closed');
+    db.setEventActive(currentUser, evNew.id, true);
+    db.setActiveEvent(currentUser, evNew.id);
+
+    // A returning patient loaded off a USB stick starts a visit HERE, instead of
+    // overwriting the record from the clinic they last attended.
+    const before = db.getPatient(older.id);
+    const imported = db.importPatientFromPortable(currentUser, {
+      first_name: 'Ada', last_name: 'Alpha', dob: '1980-01-01', gender: 'female',
+      demographics: { city: 'Boring', state: 'OR' }, medical_history: {},
+      dental_history: { visit_type: 'extraction_pain' },
+    });
+    log(imported.id !== older.id && db.listPatients({}).some((p) => p.id === imported.id),
+      'v1.6.8: a returning patient from a USB stick joins today\'s queue');
+    const after = db.getPatient(older.id);
+    log(after.demographics.city === before.demographics.city
+      && after.dental_history.visit_type === before.dental_history.visit_type,
+      'v1.6.8: and their record from the last clinic is left exactly as it was');
+
+    // The dialog promises "every station switches to it" — that only holds if the
+    // selection carries a globally-ordered stamp for the other laptops to follow.
+    {
+      const h = rawDb();
+      const stamp = h.prepare('SELECT selected_at FROM events WHERE id = ?').get(evNew.id).selected_at;
+      h.close();
+      log(!!stamp, 'v1.6.8: starting a clinic is stamped so the other laptops follow it too');
+    }
+    const evBatch = db.collectSyncRows(400);
+    log(evBatch.rows.some((r) => r.entity === 'event' && r.data.name === 'Carry Over This Year' && r.data.selected_at),
+      'v1.6.8: and that switch is pushed to them');
+  }
+
   await tick();
   if (errors.length) errors.forEach((e) => log(false, 'RUNTIME: ' + e));
   const failed = results.filter((r) => !r[0]).length;

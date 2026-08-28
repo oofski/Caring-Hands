@@ -71,6 +71,9 @@ const ctx = {
     detailOpen = !!v;
     if (!detailOpen && lastNav.params && lastNav.params.id) lastNav = { name: lastNav.name, params: {} };
   },
+  // For screens that change WHICH clinic is running: the header names it, and a
+  // view repaint alone does not rebuild the header.
+  refreshEventLabel: () => refreshActiveEventLabel(),
 };
 
 // App version + offline-update state, shown in any view.
@@ -195,7 +198,8 @@ function renderShell(active, contentNode) {
   const topbar = el('header', { class: 'topbar' }, [
     el('div', { class: 'topbar-event' }, [
       el('span', { class: 'te-label' }, ['Active event']),
-      el('strong', {}, [store.event ? store.event.name : 'No event']),
+      // Named so it can be corrected in place — see refreshActiveEventLabel.
+      el('strong', { id: 'topbar-event-name' }, [store.event ? store.event.name : 'No event']),
     ]),
     el('div', { class: 'topbar-right' }, [
       // Always-available update control
@@ -223,6 +227,23 @@ function renderShell(active, contentNode) {
   // Silent offline update check once per session; patches the labels in place.
   if (store.user && !appInfo.checked) refreshAppInfo(true).then(updateVersionUI);
   else updateVersionUI();
+  refreshActiveEventLabel();
+}
+
+// Which clinic the app is on is the single most important thing on this screen:
+// it decides whose queue you are looking at and where a check-in is filed. It
+// used to be painted from a cached copy that only whoever changed the clinic
+// remembered to update, so it could sit there naming the previous clinic — the
+// exact confusion behind patients seeming to "carry over". Read it from the data
+// layer on every shell render instead, so it is never a stale copy, and so a
+// clinic switched on ANOTHER laptop shows up here too.
+function refreshActiveEventLabel() {
+  if (!store.user) return;
+  api.activeEvent().then((ev) => {
+    store.setEvent(ev);
+    const node = document.getElementById('topbar-event-name');
+    if (node) node.textContent = ev ? ev.name : 'No event';
+  }).catch(() => { /* offline / not signed in: keep what is on screen */ });
 }
 
 // Patch the version/update labels in place without re-rendering the view.

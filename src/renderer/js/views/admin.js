@@ -516,7 +516,12 @@ export function renderAdmin(ctx, params = {}) {
     );
 
     async function setActive(e) {
-      try { const ev = await api.setActiveEvent(e.id); store.setEvent(ev); toast('Active event set', 'success'); paint(); } catch (err) { toast(err.message, 'error'); }
+      try {
+        const ev = await api.setActiveEvent(e.id);
+        store.setEvent(ev);
+        if (ctx.refreshEventLabel) ctx.refreshEventLabel();
+        toast(`Now running “${ev.name}”.`, 'success'); paint();
+      } catch (err) { toast(err.message, 'error'); }
     }
     // Share the per-event pre-registration link. Patients open it ahead of time,
     // answer the check-in questions, and appear in THIS event's queue.
@@ -575,13 +580,47 @@ export function renderAdmin(ctx, params = {}) {
 
   async function newEvent() {
     const f = eventForm();
+    // Starting a clinic means running it. Leaving the app on the PREVIOUS clinic
+    // was the "patients carry over" bug: every station kept showing last clinic's
+    // patients and new check-ins were filed into the old clinic. So this is on by
+    // default — but it is shown, and if a clinic is genuinely under way right now
+    // the dialog says exactly what switching would do.
+    const [active, events] = await Promise.all([
+      api.activeEvent().catch(() => null), api.listEvents().catch(() => []),
+    ]);
+    const liveCount = active ? ((events.find((e) => e.id === active.id) || {}).patient_count || 0) : 0;
+    const activate = el('input', {
+      type: 'checkbox', checked: true,
+      style: 'width:20px; height:20px; accent-color:var(--accent); cursor:pointer; flex:0 0 auto;',
+    });
+    f.form.append(el('div', { class: 'field span-2' }, [
+      el('label', { style: 'display:flex; align-items:center; gap:10px; cursor:pointer;' }, [
+        activate,
+        el('span', {}, [el('strong', {}, ['Start this clinic now']), ' — every station switches to it.']),
+      ]),
+      el('div', { class: 'subtle small', style: 'margin-top:6px' }, [
+        active
+          ? (liveCount
+            ? `“${active.name}” has ${liveCount} patient record(s) in it. Switching moves every station off it — leave this unticked if that clinic is still running.`
+            : `The app is currently on “${active.name}”. Leave this unticked only if you are setting up a clinic for later.`)
+          : 'Nothing is running right now, so this becomes the current clinic.',
+      ]),
+    ]));
+
     const ok = await modal({ title: 'Create clinic event', body: f.form, confirmText: 'Create', cancelText: 'Cancel' });
     if (!ok) return;
     try {
       const data = f.get();
       if (!data.name) { toast('Event name is required.', 'error'); return; }
-      await api.createEvent(data);
-      toast('Event created. Use “Set active” to make it the current event.', 'success'); paint();
+      const created = await api.createEvent({ ...data, activate: activate.checked });
+      if (activate.checked) {
+        store.setEvent(await api.activeEvent());
+        if (ctx.refreshEventLabel) ctx.refreshEventLabel();
+        toast(`“${created.name}” created and is now the current clinic.`, 'success');
+      } else {
+        toast(`“${created.name}” created. Use “Set active” when you are ready to run it.`, 'success');
+      }
+      paint();
     } catch (e) { toast(e.message, 'error'); }
   }
 
