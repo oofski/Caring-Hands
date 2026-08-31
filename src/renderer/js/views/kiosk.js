@@ -190,10 +190,16 @@ export function renderKiosk(ctx) {
     const m = data.medical_history;
     // A2: vitals are no longer collected at check-in — the EMT records them.
 
-    const underTx = yesNo(t('intake.underTreatment'), { value: m.under_treatment, yesText: t('common.yes'), noText: t('common.no') });
-    const hosp = yesNo(t('intake.hospitalized'), { value: m.hospitalized, yesText: t('common.yes'), noText: t('common.no') });
-    const tobacco = yesNo(t('intake.tobacco'), { value: m.tobacco, yesText: t('common.yes'), noText: t('common.no') });
-    const pregnancy = yesNo(t('intake.pregnancy'), { value: m.pregnancy, yesText: t('common.yes'), noText: t('common.no') });
+    // Every history question must be ANSWERED — a blank is not "no". The dentist
+    // reads these before deciding whether it is safe to treat, and the online
+    // pre-registration form has refused to submit without them since v1.6.4;
+    // the desk let them through blank, so the same patient was held to two
+    // different standards depending on how they signed up.
+    const ynReq = (label, value) => yesNo(label + ' *', { value, yesText: t('common.yes'), noText: t('common.no') });
+    const underTx = ynReq(t('intake.underTreatment'), m.under_treatment);
+    const hosp = ynReq(t('intake.hospitalized'), m.hospitalized);
+    const tobacco = ynReq(t('intake.tobacco'), m.tobacco);
+    const pregnancy = ynReq(t('intake.pregnancy'), m.pregnancy);
 
     const noneLabel = L({ en: 'None of the above', es: 'Ninguna de las anteriores', ru: 'Ничего из перечисленного' });
 
@@ -307,6 +313,13 @@ export function renderKiosk(ctx) {
         if (!condSel.length) { toast(L({ en: 'Please answer the conditions question — choose a condition, Other, or None of the above.', es: 'Por favor responda la pregunta de condiciones: elija una condición, Otra o Ninguna de las anteriores.', ru: 'Пожалуйста, ответьте на вопрос о заболеваниях — выберите заболевание, «Другое» или «Ничего из перечисленного».' }), 'error'); return false; }
         if (condSel.includes('other') && !condOther.get()) { toast(L({ en: 'Please specify the other condition.', es: 'Por favor especifique la otra condición.', ru: 'Пожалуйста, укажите другое заболевание.' }), 'error'); return false; }
         if (!noMeds.checked && !medList.length) { toast(L({ en: 'Please list your medications, or check "No medications".', es: 'Por favor indique sus medicamentos o marque «Sin medicamentos».', ru: 'Пожалуйста, укажите ваши лекарства или отметьте «Нет лекарств».' }), 'error'); return false; }
+        if (!underTx.get() || !hosp.get() || !tobacco.get() || !pregnancy.get()) {
+          toast(L({
+            en: 'Please answer every medical history question — Yes or No.',
+            es: 'Por favor responda todas las preguntas del historial médico — Sí o No.',
+            ru: 'Пожалуйста, ответьте на все вопросы о медицинской истории — «Да» или «Нет».',
+          }), 'error'); return false;
+        }
         Object.assign(m, {
           under_treatment: underTx.get(), hospitalized: hosp.get(), tobacco: tobacco.get(), pregnancy: pregnancy.get(),
           allergies: allergySel, conditions: condSel,
@@ -327,7 +340,9 @@ export function renderKiosk(ctx) {
     const dh = data.dental_history;
     const reason = textArea(t('intake.reason'), { value: dh.reason, rows: 2 });
     const prior = textField(t('intake.priorDentist'), { value: dh.prior_dentist });
-    const yn = (k, label) => yesNo(label, { value: dh[k], yesText: t('common.yes'), noText: t('common.no') });
+    // Required for the same reason as the medical questions above, and to the
+    // same standard the online form has always applied.
+    const yn = (k, label) => yesNo(label + ' *', { value: dh[k], yesText: t('common.yes'), noText: t('common.no') });
     const gum = yn('gum_bleeding', t('intake.gumBleeding'));
     const sores = yn('sores', t('intake.sores'));
     const jaw = yn('jaw_injury', t('intake.jawInjury'));
@@ -404,6 +419,13 @@ export function renderKiosk(ctx) {
       node,
       collect: () => {
         if (!visitNum) { toast(L({ en: 'Please choose what you need today.', es: 'Por favor elija qué necesita hoy.', ru: 'Пожалуйста, выберите, что вам нужно сегодня.' }), 'error'); return false; }
+        if (![gum, sores, jaw, grinding, postExt, ortho].every((f) => f.get())) {
+          toast(L({
+            en: 'Please answer every dental history question — Yes or No.',
+            es: 'Por favor responda todas las preguntas del historial dental — Sí o No.',
+            ru: 'Пожалуйста, ответьте на все вопросы о стоматологической истории — «Да» или «Нет».',
+          }), 'error'); return false;
+        }
         const vopt = VOPTS[visitNum - 1];
         Object.assign(dh, {
           reason: reason.get(), prior_dentist: prior.get(),
@@ -467,9 +489,9 @@ export function renderKiosk(ctx) {
     ]);
 
     const sigHelp = L({
-      en: 'Signature optional — you may sign with a stylus/touchscreen or leave blank.',
-      es: 'Firma opcional — puede firmar con un lápiz óptico/pantalla táctil o dejarlo en blanco.',
-      ru: 'Подпись необязательна — вы можете расписаться стилусом/на сенсорном экране или оставить поле пустым.',
+      en: 'Please sign with a finger or stylus on the screen.',
+      es: 'Por favor firme con el dedo o un lápiz óptico en la pantalla.',
+      ru: 'Пожалуйста, распишитесь пальцем или стилусом на экране.',
     });
 
     const node = el('div', { class: 'consent-screen' }, [
@@ -487,7 +509,18 @@ export function renderKiosk(ctx) {
       collect: () => {
         if (!agree.checked) { toast(t('consent.agree'), 'error'); return false; }
         if (!signer.get()) { toast(t('common.required') + ': ' + t('intake.signerName'), 'error'); return false; }
-        // A5: signature is optional — a missing signature does not block submission.
+        // The SIGNATURE is what makes this a consent. Online pre-registration has
+        // refused to submit without one since v1.5.25, and the Arrivals desk
+        // already refuses to send an unsigned patient to a station — so leaving it
+        // optional here only moved the problem to the point where the patient has
+        // walked away from the desk. Required in person too, as it always was online.
+        if (sigPad.isEmpty()) {
+          toast(L({
+            en: 'Please sign the consent to finish.',
+            es: 'Por favor firme el consentimiento para terminar.',
+            ru: 'Пожалуйста, подпишите согласие, чтобы закончить.',
+          }), 'error'); return false;
+        }
         upsertConsent('general', {
           signer_name: signer.get(), relationship: rel.get(),
           signature_png: sigPad.isEmpty() ? null : sigPad.getDataUrl(),
@@ -511,9 +544,9 @@ export function renderKiosk(ctx) {
     }[getLang()] || 'Tooth number(s): to be completed at chairside by the provider.';
 
     const sigHelp = L({
-      en: 'Signature optional — you may sign with a stylus/touchscreen or leave blank.',
-      es: 'Firma opcional — puede firmar con un lápiz óptico/pantalla táctil o dejarlo en blanco.',
-      ru: 'Подпись необязательна — вы можете расписаться стилусом/на сенсорном экране или оставить поле пустым.',
+      en: 'Please sign with a finger or stylus on the screen.',
+      es: 'Por favor firme con el dedo o un lápiz óptico en la pantalla.',
+      ru: 'Пожалуйста, распишитесь пальцем или стилусом на экране.',
     });
 
     // English shows the complete oral-surgery wording (consent.oralSurgeryFull,
@@ -540,7 +573,16 @@ export function renderKiosk(ctx) {
       node,
       collect: () => {
         if (!agree.checked) { toast(t('consent.agree'), 'error'); return false; }
-        // A5: signature is optional — a missing signature does not block submission.
+        if (!signer.get() && !signerFromGeneral()) { toast(t('common.required') + ': ' + t('intake.signerName'), 'error'); return false; }
+        // The extraction consent above all — this is the one the dentist needs on
+        // file before touching a tooth, and the online form has always required it.
+        if (sigPad.isEmpty()) {
+          toast(L({
+            en: 'Please sign the oral surgery consent to finish.',
+            es: 'Por favor firme el consentimiento de cirugía oral para terminar.',
+            ru: 'Пожалуйста, подпишите согласие на операцию, чтобы закончить.',
+          }), 'error'); return false;
+        }
         upsertConsent('oral_surgery', {
           signer_name: signer.get() || signerFromGeneral(),
           signature_png: sigPad.isEmpty() ? null : sigPad.getDataUrl(),

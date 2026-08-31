@@ -187,6 +187,20 @@ function drawSig(root = document) {
   return true;
 }
 
+// Answer every yes/no question on the current step that is still blank, by
+// clicking its "No". Returns how many it had to answer.
+function answerRemainingYesNo(pick = 'no') {
+  let n = 0;
+  $all('.kiosk-body .field').forEach((f) => {
+    const btns = $all('.chip-btn', f);
+    if (btns.length !== 2) return;                       // not a yes/no pair
+    if (btns.some((b) => b.classList.contains('chip-btn--on'))) return; // already answered
+    btns[pick === 'yes' ? 0 : 1].click();
+    n += 1;
+  });
+  return n;
+}
+
 const results = [];
 const log = (ok, msg) => { results.push([ok, msg]); console.log((ok ? 'PASS ' : 'FAIL ') + msg); };
 
@@ -277,6 +291,16 @@ async function main() {
   clickText('Next'); await tick();
   log(/Medical|Historia/i.test($('.kiosk-step-label').textContent), 'v1.4.9: medical step blocks Next until medications are answered');
   const noMeds = $('.kiosk-body .big-check'); if (noMeds) { noMeds.checked = true; noMeds.dispatchEvent(new window.Event('change', { bubbles: true })); }
+  // v1.6.9: the four medical yes/no questions must be ANSWERED, exactly as the
+  // online pre-registration form has required since v1.6.4. Only one has been
+  // clicked so far, so Next must still refuse.
+  log(/Are you currently under a doctor.s care\?\s*\*/.test($('.kiosk-body').textContent),
+    'v1.6.9: the medical history questions are marked required (*) at check-in');
+  clickText('Next'); await tick();
+  log(/Medical|Historia/i.test($('.kiosk-step-label').textContent),
+    'v1.6.9: check-in will not advance with a medical history question unanswered');
+  const answeredMed = answerRemainingYesNo();
+  log(answeredMed === 3, 'v1.6.9: (setup) answered the remaining medical questions (' + answeredMed + ')');
   clickText('Next');
   await tick();
 
@@ -300,6 +324,14 @@ async function main() {
   log(/1\./.test($('.visit-desc').textContent) && vrange.style.opacity === '1',
     'v1.5.26: tapping the scale on option 1 registers the choice (no silent rejection)');
   if (vrange) { vrange.value = '3'; vrange.dispatchEvent(new window.Event('input', { bubbles: true })); }
+  // v1.6.9: and the six dental history questions, for the same reason.
+  log(/Do your gums bleed\?\s*\*/.test($('.kiosk-body').textContent),
+    'v1.6.9: the dental history questions are marked required (*) at check-in');
+  clickText('Next'); await tick();
+  log(/Dental/i.test($('.kiosk-step-label').textContent),
+    'v1.6.9: check-in will not advance with a dental history question unanswered');
+  const answeredDent = answerRemainingYesNo();
+  log(answeredDent === 6, 'v1.6.9: (setup) answered the dental questions (' + answeredDent + ')');
   clickText('Next');
   await tick();
 
@@ -311,6 +343,11 @@ async function main() {
   // signer is the first text input on consent step
   const consentInputs = $all('.kiosk-body input').filter((i) => i.type === 'text' || !i.type);
   if (consentInputs[0]) setInput(consentInputs[0], 'Maria Lopez');
+  // v1.6.9: the signature is what makes this a consent, and the online form has
+  // always refused without one. Agreed + named but UNSIGNED must not advance.
+  clickText('Next'); await tick();
+  log(/Consent|Consentimiento/i.test($('.kiosk-step-label').textContent),
+    'v1.6.9: check-in will not advance on an unsigned consent');
   drawSig();
   clickText('Next');
   await tick();

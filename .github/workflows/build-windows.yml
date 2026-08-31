@@ -50,16 +50,25 @@ jobs:
       - name: Publish downloadable release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.6.8-build.${{ github.run_number }}
-          name: Caring Hands v1.6.8 (build ${{ github.run_number }})
+          tag_name: v1.6.9-build.${{ github.run_number }}
+          name: Caring Hands v1.6.9 (build ${{ github.run_number }})
           prerelease: false
           make_latest: true
           body: |
-            ## Caring Hands Worldwide — Practice Management Software (v1.6.8)
+            ## Caring Hands Worldwide — Practice Management Software (v1.6.9)
 
             Offline-first dental clinic app for Windows. **Download the installer once — it auto-updates from here on.**
 
-            **New in v1.6.8 — IMPORTANT: last clinic's patients no longer carry into the new one**
+            **New in v1.6.9 — one required set, whether a patient signs up online or at the desk**
+            Pre-registration and check-in had drifted apart: each required things the other did not, so the same patient was held to a different standard depending on how they signed up, and a pre-registered arrival could reach the chair with gaps a walk-in could never have had. Both now ask for exactly the same set.
+            - **Emergency contact name and phone are required in both** (online since v1.6.4, and already required at the desk) — confirmed and covered by tests either way in.
+            - **Now required to pre-register online, as they already were at the desk:** a **phone number**, **what you need today**, and a real answer for **allergies**, **conditions** and **medications** — where *“None of the above”* / *“No medications”* counts as an answer, but leaving the section blank does not.
+            - **Now required at the desk, as they already were online:** an answer to **every medical and dental history question**. A blank is not the same as “no” — the dentist reads these before deciding whether it is safe to treat. Each is marked with a **\*** and check-in will not move on until they are all answered.
+            - **The consent signature is now required at check-in.** It was optional in person while the online form has always refused without one — and the Arrivals desk already refuses to send an unsigned patient to a station, so a missed signature only surfaced later, once the patient had left the desk. Signing at the point of check-in is where it can actually be fixed. The oral-surgery consent is required the same way when an extraction is chosen.
+            - **The online form now marks every required field** and checks them before submitting, so nobody fills the page in twice to find out what was missing. All messages appear in English and Spanish.
+            - *This one DOES need the clinic server refreshed (now v1.6.9) — the same one-time paste your admin has done before. Until it is pasted, the online form keeps the old, looser rules; the app is correct as soon as it updates.*
+
+            **From v1.6.8 — IMPORTANT: last clinic's patients no longer carry into the new one**
             - **Fixed: creating a clinic left the app running the PREVIOUS one.** It created the event and asked you to go and press *Set active* separately. Miss that — and it was easy to miss — and every station still showed last clinic's patients, the dashboard still counted them, and, worst of all, **new check-ins were quietly filed into the old clinic**. Creating a clinic now starts it: every station switches to it, the queues are empty, and the day begins at zero. The **Create clinic event** dialog has a **Start this clinic now** tick (on by default) so you can still set up a future clinic without disturbing one that is running — and if a clinic is under way it tells you how many patient records are in it before you switch.
             - **Fixed: a check-in could disappear into a closed clinic.** If the clinic the app was on had been finished, turned off, or deleted on another laptop, the front desk kept checking people in and they were filed there — invisible to every station. A check-in is now always filed into a clinic that is actually open, and says so plainly if there is none.
             - **Fixed: a returning patient loaded from a USB stick overwrote their old visit.** The name-and-date-of-birth match searched *every clinic ever run*, so it updated the record from the clinic they last attended and never put them in today's queue. It now matches within the clinic being run, so they start a fresh visit and their old record is left exactly as it was.
@@ -307,8 +316,8 @@ jobs:
 
             Includes everything from v1.0.2–1.1.1 (optional Cloud Sync, triage-free flow, per-event staff, Oregon consent, USB workflow, accountability, Russian, in-app auto-update).
 
-            - **Caring-Hands-Setup-1.6.8.exe** — installer (recommended; required for auto-update).
-            - **Caring-Hands-Portable-1.6.8.exe** — portable (no auto-update).
+            - **Caring-Hands-Setup-1.6.9.exe** — installer (recommended; required for auto-update).
+            - **Caring-Hands-Portable-1.6.9.exe** — portable (no auto-update).
 
             First sign-in: `admin / admin` — then create your staff accounts. All clinical data stays on the device unless you enable Cloud Sync.
           files: |

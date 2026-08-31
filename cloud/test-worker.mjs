@@ -159,7 +159,7 @@ async function main() {
       h.data &&
       h.data.ok === true &&
       h.data.service === 'caring-hands-sync' &&
-      h.data.version === '1.6.6' &&
+      h.data.version === '1.6.9' &&
       h.data.seq === true &&
       typeof h.data.time === 'string'
   );
@@ -403,8 +403,15 @@ async function main() {
   // v1.6.2 requires an emergency contact and an answer to every history
   // question, so every submission below carries them unless it is the one
   // deliberately leaving something out.
+  // Everything the form requires, so each test can vary ONE thing and still be
+  // testing what it says it is. v1.6.9 brought this in line with the front desk:
+  // phone, what they need today, and a real answer for allergies / conditions /
+  // medications are all required now, exactly as they are at check-in.
   const REQ = {
+    phone: '5035550142',
     emergency_name: 'Kin Contact', emergency_phone: '5550001111',
+    visit_type: 'cleaning',
+    allergies: ['none'], conditions: ['none'], medications_none: true,
     under_treatment: 'no', hospitalized: 'no', tobacco: 'no', pregnancy: 'no',
     gum_bleeding: 'no', sores: 'no', jaw_injury: 'no', grinding: 'no',
     post_extraction_bleeding: 'no', ortho: 'no',
@@ -745,6 +752,58 @@ async function main() {
     });
     check('v1.6.6: a finished clinic refuses new pre-registrations',
       closedPost.status === 410 && closedPost.data.ok === false && /closed/i.test(closedPost.data.error));
+  }
+
+  // --- v1.6.9: the online form asks for exactly what the front desk asks for ---
+  {
+    const base = {
+      ...REQ, first_name: 'Parity', last_name: 'Check', dob: '1988-03-03', gender: 'female',
+      city: 'Sandy', state: 'OR',
+      consent_agree: true, signer_name: 'Parity Check',
+      signature_png: 'data:image/png;base64,AAAA',
+    };
+    const post = (patch) => call(env, 'POST', '/checkin/evt-1', { body: { ...base, ...patch } });
+
+    const noPhone = await post({ phone: '' });
+    check('v1.6.9: pre-registration without a phone number -> 400',
+      noPhone.status === 400 && /phone number/i.test(noPhone.data.error));
+
+    const noVisit = await post({ visit_type: '' });
+    check('v1.6.9: pre-registration without choosing what they need -> 400',
+      noVisit.status === 400 && /what you need/i.test(noVisit.data.error));
+
+    const noAllergy = await post({ allergies: [] });
+    check('v1.6.9: pre-registration with the allergies question unanswered -> 400',
+      noAllergy.status === 400 && /allergies question/i.test(noAllergy.data.error));
+
+    const otherNoText = await post({ allergies: ['other'], allergies_other: '' });
+    check('v1.6.9: "Other" allergy with nothing typed -> 400',
+      otherNoText.status === 400 && /other allergy/i.test(otherNoText.data.error));
+
+    const noCond = await post({ conditions: [] });
+    check('v1.6.9: pre-registration with the conditions question unanswered -> 400',
+      noCond.status === 400 && /conditions question/i.test(noCond.data.error));
+
+    const noMeds = await post({ medications_none: false, medications: [] });
+    check('v1.6.9: pre-registration with medications unanswered -> 400',
+      noMeds.status === 400 && /medications/i.test(noMeds.data.error));
+
+    const esMsg = await post({ language: 'es', phone: '' });
+    check('v1.6.9: (es) the new rules answer in Spanish',
+      esMsg.status === 400 && /teléfono/i.test(esMsg.data.error));
+
+    // "None of the above" IS an answer — it must not be mistaken for a blank.
+    const noneIsAnswer = await post({ allergies: ['none'], conditions: ['none'], medications_none: true });
+    check('v1.6.9: "None of the above" counts as answering the question',
+      noneIsAnswer.status === 200 && noneIsAnswer.data.ok === true);
+
+    // And the form itself marks every one of them, so nobody fills the page in
+    // twice to find out.
+    const formHtml = await getText('/checkin/evt-1');
+    const reqCount = (formHtml.text.match(/class="req"/g) || []).length;
+    check('v1.6.9: the form marks the newly required fields with an asterisk', reqCount >= 12);
+    check('v1.6.9: the form still carries the medication placeholder text',
+      /"medNamePh":"Medication"/.test(formHtml.text));
   }
 
   // --- summary ---
