@@ -123,7 +123,7 @@ function fakeD1() {
         _b: [],
         bind(...a) { this._b = a; return this; },
         async first() {
-          if (/entity = 'event'/.test(sql)) { const r = store.get(this._b[0]); return r ? { data: r.data } : null; }
+          if (/entity = 'event'/.test(sql)) { const r = store.get(this._b[0]); return r ? { data: r.data, deleted: 0 } : null; }
           if (/RETURNING v/.test(sql)) { seq += 1; return { v: seq }; }
           return null;
         },

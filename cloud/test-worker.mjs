@@ -46,11 +46,14 @@ function makeFakeD1() {
           const row = store.get(uid);
           return row ? { updated_at: row.updated_at, deleted: row.deleted ? 1 : 0 } : null;
         }
-        // Pre-registration: look up an event row by uid (must exist, not deleted).
-        if (/SELECT data FROM sync_rows WHERE uid = \? AND entity = 'event' AND deleted = 0/.test(s)) {
+        // Pre-registration: look up an event row by uid. Matched loosely on the
+        // shape of the query rather than its exact text, so a change to the
+        // SELECT list does not silently turn every checkin test into a 404.
+        if (/FROM sync_rows WHERE uid = \? AND entity = 'event'/.test(s)) {
           const uid = this._binds[0];
           const row = store.get(uid);
-          return row && row.entity === 'event' && !row.deleted ? { data: row.data } : null;
+          if (!row || row.entity !== 'event') return null;
+          return { data: row.data, deleted: row.deleted ? 1 : 0 };
         }
         // v1.5.0 delivery counter: reserve the next sequence number.
         if (/INSERT INTO sync_seq .*ON CONFLICT\(id\) DO UPDATE SET v = v \+ 1 RETURNING v/.test(s)) {
@@ -121,6 +124,11 @@ function makeFakeD1() {
           rows = rows.slice(0, limit);
           return { results: rows.map((r) => ({ ...r })) };
         }
+        if (/FROM sync_rows WHERE entity = 'event'/.test(s)) {
+          const rows = Array.from(store.values()).filter((r) => r.entity === 'event')
+            .map((r) => ({ uid: r.uid, deleted: r.deleted ? 1 : 0, updated_at: r.updated_at, data: r.data }));
+          return { results: rows };
+        }
         throw new Error('fake D1: unsupported all() SQL: ' + s);
       },
     };
@@ -165,7 +173,7 @@ async function main() {
       h.data &&
       h.data.ok === true &&
       h.data.service === 'caring-hands-sync' &&
-      h.data.version === '1.7.1' &&
+      h.data.version === '1.7.2' &&
       h.data.seq === true &&
       typeof h.data.time === 'string'
   );
@@ -757,6 +765,46 @@ async function main() {
     // A link for an event that does not exist is still refused.
     const bogus = await worker.fetch(new Request('https://sync.example.com/checkin/no-such-event'), env, {});
     check('v1.7.1: an unknown link is still refused', bogus.status === 404);
+  }
+
+  // --- v1.7.2: a dead pre-registration link must say WHY ---
+  {
+    // Deleted clinic -> "no longer available", not "not found". The two have
+    // different fixes, and one message for both sent the diagnosis the wrong way.
+    const delUid = 'evt-gone';
+    await call(env, 'POST', '/v1/push', {
+      auth: CLINIC_KEY,
+      body: { device_id: 'd1', rows: [{ entity: 'event', uid: delUid, event_uid: null,
+        updated_at: '2026-09-01T00:00:00.000Z', data: { name: 'Deleted Clinic', active: 1 } }] },
+    });
+    const live = await worker.fetch(new Request('https://sync.example.com/checkin/' + delUid), env, {});
+    check('v1.7.2: (setup) the link works before the clinic is deleted', live.status === 200);
+
+    await call(env, 'POST', '/v1/push', {
+      auth: CLINIC_KEY,
+      body: { device_id: 'd1', rows: [{ entity: 'event', uid: delUid, deleted: 1,
+        updated_at: '2026-09-02T00:00:00.000Z', data: {} }] },
+    });
+    const gone = await worker.fetch(new Request('https://sync.example.com/checkin/' + delUid), env, {});
+    const goneText = await gone.text();
+    check('v1.7.2: a deleted clinic says the link is no longer available',
+      gone.status === 404 && /no longer available/i.test(goneText) && !/not been synced/i.test(goneText));
+
+    const never = await worker.fetch(new Request('https://sync.example.com/checkin/never-existed'), env, {});
+    const neverText = await never.text();
+    check('v1.7.2: an unknown uid says the link is not found / not synced',
+      never.status === 404 && /not been synced|not valid/i.test(neverText) && !/no longer available/i.test(neverText));
+
+    // The diagnostic list: which clinics exist, and does each link work.
+    const noAuth = await call(env, 'GET', '/v1/events');
+    check('v1.7.2: the clinic list needs the clinic key', noAuth.status === 401);
+    const list = await call(env, 'GET', '/v1/events', { auth: CLINIC_KEY });
+    check('v1.7.2: the clinic list reports every event and whether its link works',
+      list.status === 200 && Array.isArray(list.data.events)
+      && list.data.events.some((e) => e.uid === delUid && e.deleted === true && e.prereg_link_works === false)
+      && list.data.events.some((e) => e.uid === 'evt-1' && e.prereg_link_works === true));
+    check('v1.7.2: and it hands back the full link for each clinic',
+      list.data.events.every((e) => typeof e.prereg_link === 'string' && e.prereg_link.includes('/checkin/')));
   }
 
   // --- summary ---

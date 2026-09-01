@@ -1,4 +1,4 @@
-// Caring Hands — Cloud Sync Worker (v1.7.1)
+// Caring Hands — Cloud Sync Worker (v1.7.2)
 // =============================================================================
 // NO INSTALLS NEEDED. To deploy: create a Worker in the Cloudflare dashboard,
 // paste THIS ENTIRE FILE into its code editor, then:
@@ -15,7 +15,7 @@
 // See ./SYNC_CONTRACT.md for the exact API + schema this implements.
 
 const SERVICE = 'caring-hands-sync';
-const VERSION = '1.7.1';
+const VERSION = '1.7.2';
 // Smallest believable signature image. A 1x1 pixel is ~70 bytes and an empty
 // canvas of any size compresses to a few hundred; a real drawn signature is
 // comfortably above this. Deliberately conservative — the job here is to reject
@@ -149,6 +149,16 @@ export default {
           return await handlePull(url, env);
         }
 
+        // Diagnostic: which clinics does the server actually know about, and is
+        // each one's pre-registration link live? A dead link has exactly three
+        // causes — the clinic never synced up, it was deleted, or the link has
+        // the wrong uid — and they are indistinguishable from the outside.
+        // Clinic-key protected; names and dates only, never patient data.
+        if (path === '/v1/events') {
+          if (request.method !== 'GET') return methodNotAllowed();
+          return await handleEventList(url, env);
+        }
+
         return json({ ok: false, error: 'not found' }, 404);
       }
 
@@ -162,6 +172,32 @@ export default {
 // ---------------------------------------------------------------------------
 // Route handlers
 // ---------------------------------------------------------------------------
+
+// Every clinic event this server holds, with the pre-registration link each one
+// answers to and whether that link currently works.
+async function handleEventList(url, env) {
+  const base = url.origin;
+  const res = await env.DB
+    .prepare("SELECT uid, deleted, updated_at, data FROM sync_rows WHERE entity = 'event' ORDER BY updated_at DESC LIMIT 200")
+    .all();
+  const rows = (res && res.results) || [];
+  const events = rows.map((r) => {
+    const d = parseData(r.data) || {};
+    return {
+      uid: r.uid,
+      name: typeof d.name === 'string' ? d.name : null,
+      location: typeof d.location === 'string' ? d.location : null,
+      start_date: d.start_date || null,
+      active: d.active === undefined ? null : !(d.active === 0 || d.active === false || d.active === '0'),
+      deleted: !!r.deleted,
+      // The one thing the clinic actually needs: does this link work right now?
+      prereg_link: base + '/checkin/' + r.uid,
+      prereg_link_works: !r.deleted,
+      updated_at: r.updated_at,
+    };
+  });
+  return json({ ok: true, count: events.length, events });
+}
 
 async function handlePush(request, env) {
   let body;
@@ -299,10 +335,15 @@ async function getEventRow(env, uid) {
   if (!uid) return null;
   try {
     const row = await env.DB
-      .prepare("SELECT data FROM sync_rows WHERE uid = ? AND entity = 'event' AND deleted = 0")
+      .prepare("SELECT data, deleted FROM sync_rows WHERE uid = ? AND entity = 'event'")
       .bind(uid)
       .first();
     if (!row) return null;
+    // A DELETED event is reported as such rather than as "no such link". These
+    // are different problems with different fixes — the link was never published
+    // vs the clinic was deleted in the app — and one message for both sent us
+    // looking in the wrong place.
+    if (row.deleted) return { deleted: true };
     const data = parseData(row.data) || {};
     // NOTE (v1.7.1): this used to also close the link whenever the event's
     // 'active' flag arrived as 0, so that "Finish clinic" would shut the public
@@ -322,14 +363,15 @@ async function getEventRow(env, uid) {
 
 async function handleCheckinGet(eventUid, env, url) {
   const ev = await getEventRow(env, eventUid);
-  if (!ev) return htmlResponse(checkinErrorPage(), 404);
+  if (!ev) return htmlResponse(checkinErrorPage('missing'), 404);
+  if (ev.deleted) return htmlResponse(checkinErrorPage('deleted'), 404);
   const lang = (url && url.searchParams && url.searchParams.get('lang') === 'es') ? 'es' : 'en';
   return htmlResponse(checkinFormPage(eventUid, ev.name, lang));
 }
 
 async function handleCheckinPost(eventUid, request, env) {
   const ev = await getEventRow(env, eventUid);
-  if (!ev) return json({ ok: false, error: 'This pre-registration link is not valid.' }, 404);
+  if (!ev || ev.deleted) return json({ ok: false, error: 'This pre-registration link is not valid.' }, 404);
 
   let body;
   try { body = await request.json(); } catch (_e) { return json({ ok: false, error: 'Invalid submission.' }, 400); }
@@ -745,8 +787,17 @@ function htmlResponse(html, status) {
     headers: { 'content-type': 'text/html; charset=utf-8', ...CORS_HEADERS },
   });
 }
-function checkinErrorPage() {
-  return checkinShell('Link not found', '<h1>Pre-registration link not found</h1><p>This link is not valid or the clinic event has ended. Please check the link with your clinic.</p>');
+function checkinErrorPage(why) {
+  if (why === 'deleted') {
+    return checkinShell('Link no longer available',
+      '<h1>This pre-registration link is no longer available</h1>' +
+      '<p>The clinic this link belonged to was deleted, so the link can no longer be used. Please ask the clinic for their current pre-registration link.</p>' +
+      '<p lang="es">La clínica de este enlace fue eliminada, por lo que el enlace ya no se puede usar. Pida a la clínica su enlace de pre-registro actual.</p>');
+  }
+  return checkinShell('Link not found',
+    '<h1>Pre-registration link not found</h1>' +
+    '<p>This link is not valid, or this clinic has not been synced to the server yet. Please check the link with your clinic.</p>' +
+    '<p lang="es">Este enlace no es válido o esta clínica aún no se ha sincronizado con el servidor. Verifique el enlace con su clínica.</p>');
 }
 function checkinShell(title, inner) {
   return '<!doctype html><html lang="en"><head><meta charset="utf-8">' +
