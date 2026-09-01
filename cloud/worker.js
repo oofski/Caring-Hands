@@ -1,4 +1,4 @@
-// Caring Hands — Cloud Sync Worker (v1.7.0)
+// Caring Hands — Cloud Sync Worker (v1.7.1)
 // =============================================================================
 // NO INSTALLS NEEDED. To deploy: create a Worker in the Cloudflare dashboard,
 // paste THIS ENTIRE FILE into its code editor, then:
@@ -15,7 +15,7 @@
 // See ./SYNC_CONTRACT.md for the exact API + schema this implements.
 
 const SERVICE = 'caring-hands-sync';
-const VERSION = '1.7.0';
+const VERSION = '1.7.1';
 // Smallest believable signature image. A 1x1 pixel is ~70 bytes and an empty
 // canvas of any size compresses to a few hundred; a real drawn signature is
 // comfortably above this. Deliberately conservative — the job here is to reject
@@ -304,12 +304,17 @@ async function getEventRow(env, uid) {
       .first();
     if (!row) return null;
     const data = parseData(row.data) || {};
-    // 'active' travels with the event row, so finishing a clinic in the app
-    // closes its public link too. Without this the pre-registration form stayed
-    // open after "Finish clinic" and kept taking sign-ups into a clinic that had
-    // already been closed and had its records removed.
-    const active = !(data.active === 0 || data.active === false || data.active === '0');
-    return { name: typeof data.name === 'string' && data.name ? data.name : 'the clinic', active };
+    // NOTE (v1.7.1): this used to also close the link whenever the event's
+    // 'active' flag arrived as 0, so that "Finish clinic" would shut the public
+    // form. In practice that took a LIVE clinic's link down: the flag reaches
+    // the cloud from whichever laptop last pushed the event row, and a clinic
+    // that had been finished, turned off, or purged at any point in its history
+    // — or a stale copy pushed by a laptop catching up — was enough to serve
+    // every patient "This clinic has closed". A link that stops working during
+    // a clinic is far worse than one that stays open after it, so the link is
+    // served whenever the event exists. Closing it is a deliberate act and
+    // belongs behind an explicit control, not a synced flag.
+    return { name: typeof data.name === 'string' && data.name ? data.name : 'the clinic' };
   } catch (_e) {
     return null;
   }
@@ -318,7 +323,6 @@ async function getEventRow(env, uid) {
 async function handleCheckinGet(eventUid, env, url) {
   const ev = await getEventRow(env, eventUid);
   if (!ev) return htmlResponse(checkinErrorPage(), 404);
-  if (!ev.active) return htmlResponse(checkinClosedPage(ev.name), 410);
   const lang = (url && url.searchParams && url.searchParams.get('lang') === 'es') ? 'es' : 'en';
   return htmlResponse(checkinFormPage(eventUid, ev.name, lang));
 }
@@ -326,9 +330,6 @@ async function handleCheckinGet(eventUid, env, url) {
 async function handleCheckinPost(eventUid, request, env) {
   const ev = await getEventRow(env, eventUid);
   if (!ev) return json({ ok: false, error: 'This pre-registration link is not valid.' }, 404);
-  if (!ev.active) {
-    return json({ ok: false, error: 'This clinic has closed and is no longer taking pre-registrations. / Esta clínica ha cerrado y ya no acepta pre-registros.' }, 410);
-  }
 
   let body;
   try { body = await request.json(); } catch (_e) { return json({ ok: false, error: 'Invalid submission.' }, 400); }
@@ -743,14 +744,6 @@ function htmlResponse(html, status) {
     status: status || 200,
     headers: { 'content-type': 'text/html; charset=utf-8', ...CORS_HEADERS },
   });
-}
-// A clinic that has been closed in the app. Distinct from a bad link — the
-// person followed a real link, it is just over.
-function checkinClosedPage(name) {
-  return checkinShell('Clinic closed',
-    '<h1>' + htmlEscape(name || 'This clinic') + ' has closed</h1>' +
-    '<p>This clinic is no longer taking pre-registrations online. Please contact the clinic if you need care.</p>' +
-    '<p lang="es">Esta clínica ya no acepta pre-registros en línea. Comuníquese con la clínica si necesita atención.</p>');
 }
 function checkinErrorPage() {
   return checkinShell('Link not found', '<h1>Pre-registration link not found</h1><p>This link is not valid or the clinic event has ended. Please check the link with your clinic.</p>');

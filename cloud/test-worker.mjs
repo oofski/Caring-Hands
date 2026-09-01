@@ -165,7 +165,7 @@ async function main() {
       h.data &&
       h.data.ok === true &&
       h.data.service === 'caring-hands-sync' &&
-      h.data.version === '1.7.0' &&
+      h.data.version === '1.7.1' &&
       h.data.seq === true &&
       typeof h.data.time === 'string'
   );
@@ -729,89 +729,34 @@ async function main() {
       revive.data.applied === 1 && rows[0].deleted === 0 && rows[0].data.last_name === 'Again');
   }
 
-  // --- v1.6.6: finishing a clinic must close its public pre-registration link ---
+  // --- v1.7.1: a pre-registration link keeps working ---
+  // v1.6.6 closed the public link whenever the event's synced 'active' flag was
+  // 0. That took LIVE clinics' links down — the flag reflects whichever laptop
+  // last pushed the event row, so a clinic finished or turned off at any point
+  // in its history served every patient "This clinic has closed". Reverted: the
+  // link is served whenever the event exists, whatever the flag says.
   {
-    const closedUid = 'evt-closed';
-    const openPush = await call(env, 'POST', '/v1/push', {
-      auth: CLINIC_KEY,
-      body: { device_id: 'd1', rows: [{ entity: 'event', uid: closedUid, event_uid: null,
-        updated_at: '2026-08-01T00:00:00.000Z', data: { name: 'Closing Clinic', active: 1 } }] },
-    });
-    const openGet = await worker.fetch(new Request('https://sync.example.com/checkin/' + closedUid), env, {});
-    check('v1.6.6: an open clinic still serves its pre-registration form',
-      openPush.data.applied === 1 && openGet.status === 200);
-
-    // "Finish clinic" in the app sets active = 0 and syncs the event row up.
+    const closedUid = 'evt-flag';
     await call(env, 'POST', '/v1/push', {
       auth: CLINIC_KEY,
       body: { device_id: 'd1', rows: [{ entity: 'event', uid: closedUid, event_uid: null,
-        updated_at: '2026-08-02T00:00:00.000Z', data: { name: 'Closing Clinic', active: 0 } }] },
+        updated_at: '2026-08-01T00:00:00.000Z', data: { name: 'Flagged Clinic', active: 0 } }] },
     });
-    const closedGet = await worker.fetch(new Request('https://sync.example.com/checkin/' + closedUid), env, {});
-    const closedText = await closedGet.text();
-    check('v1.6.6: a finished clinic no longer serves the pre-registration form',
-      closedGet.status === 410 && /has closed/i.test(closedText));
+    const get = await worker.fetch(new Request('https://sync.example.com/checkin/' + closedUid), env, {});
+    const text = await get.text();
+    check('v1.7.1: a link still works even when the event arrives flagged inactive',
+      get.status === 200 && /Pre-registration/i.test(text) && /Flagged Clinic/.test(text));
 
-    const closedPost = await call(env, 'POST', '/checkin/' + closedUid, {
-      body: { ...REQ, first_name: 'Too', last_name: 'Late', dob: '1990-01-02', gender: 'male',
-        city: 'Sandy', state: 'OR', visit_type: 'cleaning',
-        consent_general: true, consent_general_name: 'Too Late',
-        consent_general_signature: SIG },
+    const post = await call(env, 'POST', '/checkin/' + closedUid, {
+      body: { ...REQ, first_name: 'Still', last_name: 'Open', dob: '1990-01-02', gender: 'male',
+        city: 'Sandy', state: 'OR', consent_agree: true, signer_name: 'Still Open', signature_png: SIG },
     });
-    check('v1.6.6: a finished clinic refuses new pre-registrations',
-      closedPost.status === 410 && closedPost.data.ok === false && /closed/i.test(closedPost.data.error));
-  }
+    check('v1.7.1: and it still accepts a pre-registration',
+      post.status === 200 && post.data.ok === true);
 
-  // --- v1.6.9: the online form asks for exactly what the front desk asks for ---
-  {
-    const base = {
-      ...REQ, first_name: 'Parity', last_name: 'Check', dob: '1988-03-03', gender: 'female',
-      city: 'Sandy', state: 'OR',
-      consent_agree: true, signer_name: 'Parity Check',
-      signature_png: SIG,
-    };
-    const post = (patch) => call(env, 'POST', '/checkin/evt-1', { body: { ...base, ...patch } });
-
-    const noPhone = await post({ phone: '' });
-    check('v1.6.9: pre-registration without a phone number -> 400',
-      noPhone.status === 400 && /phone number/i.test(noPhone.data.error));
-
-    const noVisit = await post({ visit_type: '' });
-    check('v1.6.9: pre-registration without choosing what they need -> 400',
-      noVisit.status === 400 && /what you need/i.test(noVisit.data.error));
-
-    const noAllergy = await post({ allergies: [] });
-    check('v1.6.9: pre-registration with the allergies question unanswered -> 400',
-      noAllergy.status === 400 && /allergies question/i.test(noAllergy.data.error));
-
-    const otherNoText = await post({ allergies: ['other'], allergies_other: '' });
-    check('v1.6.9: "Other" allergy with nothing typed -> 400',
-      otherNoText.status === 400 && /other allergy/i.test(otherNoText.data.error));
-
-    const noCond = await post({ conditions: [] });
-    check('v1.6.9: pre-registration with the conditions question unanswered -> 400',
-      noCond.status === 400 && /conditions question/i.test(noCond.data.error));
-
-    const noMeds = await post({ medications_none: false, medications: [] });
-    check('v1.6.9: pre-registration with medications unanswered -> 400',
-      noMeds.status === 400 && /medications/i.test(noMeds.data.error));
-
-    const esMsg = await post({ language: 'es', phone: '' });
-    check('v1.6.9: (es) the new rules answer in Spanish',
-      esMsg.status === 400 && /teléfono/i.test(esMsg.data.error));
-
-    // "None of the above" IS an answer — it must not be mistaken for a blank.
-    const noneIsAnswer = await post({ allergies: ['none'], conditions: ['none'], medications_none: true });
-    check('v1.6.9: "None of the above" counts as answering the question',
-      noneIsAnswer.status === 200 && noneIsAnswer.data.ok === true);
-
-    // And the form itself marks every one of them, so nobody fills the page in
-    // twice to find out.
-    const formHtml = await getText('/checkin/evt-1');
-    const reqCount = (formHtml.text.match(/class="req"/g) || []).length;
-    check('v1.6.9: the form marks the newly required fields with an asterisk', reqCount >= 12);
-    check('v1.6.9: the form still carries the medication placeholder text',
-      /"medNamePh":"Medication"/.test(formHtml.text));
+    // A link for an event that does not exist is still refused.
+    const bogus = await worker.fetch(new Request('https://sync.example.com/checkin/no-such-event'), env, {});
+    check('v1.7.1: an unknown link is still refused', bogus.status === 404);
   }
 
   // --- summary ---

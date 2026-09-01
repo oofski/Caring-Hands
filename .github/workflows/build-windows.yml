@@ -50,16 +50,21 @@ jobs:
       - name: Publish downloadable release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.7.0-build.${{ github.run_number }}
-          name: Caring Hands v1.7.0 (build ${{ github.run_number }})
+          tag_name: v1.7.1-build.${{ github.run_number }}
+          name: Caring Hands v1.7.1 (build ${{ github.run_number }})
           prerelease: false
           make_latest: true
           body: |
-            ## Caring Hands Worldwide — Practice Management Software (v1.7.0)
+            ## Caring Hands Worldwide — Practice Management Software (v1.7.1)
 
             Offline-first dental clinic app for Windows. **Download the installer once — it auto-updates from here on.**
 
-            **New in v1.7.0 — IMPORTANT: the signature is now real, on both paths**
+            **New in v1.7.1 — FIX: pre-registration links stopped working**
+            - **Fixed: a live clinic's pre-registration link could show “This clinic has closed”.** v1.6.6 added a rule that shut the public link whenever the clinic event's `active` flag reached the cloud as off. That flag reflects whichever computer last pushed the event — so a clinic that had been finished, turned off, or had its data removed at any point in its history was enough to close the link for everyone, including a clinic running right now. The link is served again whenever the event exists. **A link that dies during a clinic is far worse than one that stays open after it**, so closing a link is going back to being a deliberate act rather than something a synced flag can do on its own.
+            - Everything made required in v1.6.9 and v1.7.0 is unchanged and still enforced — phone, city and state, emergency contact and phone, what you need today, allergies, conditions, medications, every medical and dental history question, and a real signature on the consent (and on the oral-surgery consent for an extraction).
+            - *This needs the clinic server refreshed (now v1.7.1). If your pre-registration links are showing “This clinic has closed”, this paste is the fix.*
+
+            **From v1.7.0 — IMPORTANT: the signature is now real, on both paths**
             v1.6.9 made the two intake paths ask for the same things. A full audit of that claim then found the rule they *shared* was not actually the same rule — and the gap was in the signature.
             - **CRITICAL FIX: a single tap counted as a signature online.** On the pre-registration form, touching the signature box once — without drawing anything — produced a completely blank image that was accepted and filed as a signed consent. The same tap at the front desk was correctly refused. So a patient could arrive pre-registered, their record reading **“Signed”** on the roster and in Reports, with nothing but an empty box behind it. **This applied to the oral-surgery consent too**, meaning a dentist could reach the chair believing the extraction consent was on file. Signing online now requires an actual stroke, exactly as it always has at the desk.
             - **CRITICAL FIX: signing and then rotating your phone erased the signature — silently.** Resizing the page cleared the drawn signature but the form still reported it as signed, and submitted a blank image. The signature now survives a rotation, and if it ever cannot be recovered the form says it is unsigned rather than sending an empty one.
@@ -329,8 +334,8 @@ jobs:
 
             Includes everything from v1.0.2–1.1.1 (optional Cloud Sync, triage-free flow, per-event staff, Oregon consent, USB workflow, accountability, Russian, in-app auto-update).
 
-            - **Caring-Hands-Setup-1.7.0.exe** — installer (recommended; required for auto-update).
-            - **Caring-Hands-Portable-1.7.0.exe** — portable (no auto-update).
+            - **Caring-Hands-Setup-1.7.1.exe** — installer (recommended; required for auto-update).
+            - **Caring-Hands-Portable-1.7.1.exe** — portable (no auto-update).
 
             First sign-in: `admin / admin` — then create your staff accounts. All clinical data stays on the device unless you enable Cloud Sync.
           files: |
