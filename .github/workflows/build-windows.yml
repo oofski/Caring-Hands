@@ -50,16 +50,29 @@ jobs:
       - name: Publish downloadable release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.6.9-build.${{ github.run_number }}
-          name: Caring Hands v1.6.9 (build ${{ github.run_number }})
+          tag_name: v1.7.0-build.${{ github.run_number }}
+          name: Caring Hands v1.7.0 (build ${{ github.run_number }})
           prerelease: false
           make_latest: true
           body: |
-            ## Caring Hands Worldwide — Practice Management Software (v1.6.9)
+            ## Caring Hands Worldwide — Practice Management Software (v1.7.0)
 
             Offline-first dental clinic app for Windows. **Download the installer once — it auto-updates from here on.**
 
-            **New in v1.6.9 — one required set, whether a patient signs up online or at the desk**
+            **New in v1.7.0 — IMPORTANT: the signature is now real, on both paths**
+            v1.6.9 made the two intake paths ask for the same things. A full audit of that claim then found the rule they *shared* was not actually the same rule — and the gap was in the signature.
+            - **CRITICAL FIX: a single tap counted as a signature online.** On the pre-registration form, touching the signature box once — without drawing anything — produced a completely blank image that was accepted and filed as a signed consent. The same tap at the front desk was correctly refused. So a patient could arrive pre-registered, their record reading **“Signed”** on the roster and in Reports, with nothing but an empty box behind it. **This applied to the oral-surgery consent too**, meaning a dentist could reach the chair believing the extraction consent was on file. Signing online now requires an actual stroke, exactly as it always has at the desk.
+            - **CRITICAL FIX: signing and then rotating your phone erased the signature — silently.** Resizing the page cleared the drawn signature but the form still reported it as signed, and submitted a blank image. The signature now survives a rotation, and if it ever cannot be recovered the form says it is unsigned rather than sending an empty one.
+            - **The server now checks that a signature is genuinely an image.** It previously accepted any text that merely started with `data:image/png;base64,` — never opening it. It now decodes the image and verifies it before storing it.
+            - **Fixed: the Spanish oral-surgery consent was a DIFFERENT DOCUMENT online than at the desk.** The online version was missing the post-operative care and emergency-contact paragraphs — and both versions were filed under the same version number, so records could not be told apart. The two now match word for word, and the corrected Spanish wording is filed as **v2** so anything signed under the old text stays identifiable.
+            - **Under-18 patients:** the desk has always shown “a parent or guardian must sign”. The online form had no age check at all. It now shows the same notice and, on both paths, requires you to say **who** is signing.
+            - **Fixed: a space in the City box passed the online form** and was only refused after the patient had signed both consents. Every check now trims, and takes the patient straight to the field it means instead of showing an error at the bottom of a long page.
+            - **Fixed: pasting a phone number as “(503) 555-0199” silently lost the last four digits** — on both the online form and at the desk.
+            - **Fixed: switching the form to Spanish threw away everything already entered**, including a drawn signature, with no warning. It now asks first.
+            - **New: a test that compares the two paths directly.** Until now each side was tested in isolation, which is exactly how the Spanish consent drifted apart unnoticed. There is now a parity suite that reads both and fails if the required fields, the questions asked, or the consent wording ever diverge again.
+            - *This needs the clinic server refreshed (now v1.7.0) — the same one-time paste your admin has done before. **Please do this one promptly:** until it is pasted, the online form can still accept a blank signature.*
+
+            **From v1.6.9 — one required set, whether a patient signs up online or at the desk**
             Pre-registration and check-in had drifted apart: each required things the other did not, so the same patient was held to a different standard depending on how they signed up, and a pre-registered arrival could reach the chair with gaps a walk-in could never have had. Both now ask for exactly the same set.
             - **Emergency contact name and phone are required in both** (online since v1.6.4, and already required at the desk) — confirmed and covered by tests either way in.
             - **Now required to pre-register online, as they already were at the desk:** a **phone number**, **what you need today**, and a real answer for **allergies**, **conditions** and **medications** — where *“None of the above”* / *“No medications”* counts as an answer, but leaving the section blank does not.
@@ -316,8 +329,8 @@ jobs:
 
             Includes everything from v1.0.2–1.1.1 (optional Cloud Sync, triage-free flow, per-event staff, Oregon consent, USB workflow, accountability, Russian, in-app auto-update).
 
-            - **Caring-Hands-Setup-1.6.9.exe** — installer (recommended; required for auto-update).
-            - **Caring-Hands-Portable-1.6.9.exe** — portable (no auto-update).
+            - **Caring-Hands-Setup-1.7.0.exe** — installer (recommended; required for auto-update).
+            - **Caring-Hands-Portable-1.7.0.exe** — portable (no auto-update).
 
             First sign-in: `admin / admin` — then create your staff accounts. All clinical data stays on the device unless you enable Cloud Sync.
           files: |

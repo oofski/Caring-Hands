@@ -5,7 +5,9 @@ import { el } from './dom.js';
 export function limitDigits(inputEl, max = 10) {
   if (!inputEl) return;
   inputEl.setAttribute('inputmode', 'numeric');
-  inputEl.setAttribute('maxlength', String(max));
+  // Deliberately NO maxlength: the browser applies it to the RAW text, so
+  // pasting "(503) 555-0199" would be cut to "(503) 555-" and end up as the
+  // six digits 503555. Stripping first and slicing after keeps all ten.
   const clean = () => { const d = (inputEl.value || '').replace(/\D/g, '').slice(0, max); if (d !== inputEl.value) inputEl.value = d; };
   inputEl.addEventListener('input', clean);
   clean();

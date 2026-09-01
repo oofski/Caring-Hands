@@ -1,4 +1,4 @@
-// Caring Hands — Cloud Sync Worker (v1.6.9)
+// Caring Hands — Cloud Sync Worker (v1.7.0)
 // =============================================================================
 // NO INSTALLS NEEDED. To deploy: create a Worker in the Cloudflare dashboard,
 // paste THIS ENTIRE FILE into its code editor, then:
@@ -15,7 +15,12 @@
 // See ./SYNC_CONTRACT.md for the exact API + schema this implements.
 
 const SERVICE = 'caring-hands-sync';
-const VERSION = '1.6.9';
+const VERSION = '1.7.0';
+// Smallest believable signature image. A 1x1 pixel is ~70 bytes and an empty
+// canvas of any size compresses to a few hundred; a real drawn signature is
+// comfortably above this. Deliberately conservative — the job here is to reject
+// obvious non-images, while the browser pad is what guarantees actual ink.
+const MIN_SIGNATURE_BYTES = 256;
 const DEFAULT_LIMIT = 500;
 const MAX_LIMIT = 1000;
 
@@ -371,7 +376,23 @@ async function handleCheckinPost(eventUid, request, env) {
 
   const iso = nowIso();
   const lang = clean.language;
-  const sig = (v) => { const t = String(v == null ? '' : v); return (/^data:image\/(png|jpe?g);base64,/.test(t) && t.length < 700000) ? t : null; };
+  // A signature has to BE an image, not merely claim to be one. The old check
+  // was a prefix regex and a length cap, so any string starting
+  // "data:image/png;base64," was stored and later printed on the consent as if
+  // the patient had signed. Decode it, require the real PNG/JPEG magic bytes,
+  // and require enough of them to be an actual drawing rather than a 1x1 pixel.
+  const sig = (v) => {
+    const t = String(v == null ? '' : v);
+    if (!/^data:image\/(png|jpe?g);base64,/.test(t) || t.length >= 700000) return null;
+    const b64 = t.slice(t.indexOf(',') + 1);
+    let bytes;
+    try { bytes = atob(b64); } catch (_e) { return null; }
+    if (bytes.length < MIN_SIGNATURE_BYTES) return null;
+    const png = bytes.charCodeAt(0) === 0x89 && bytes.charCodeAt(1) === 0x50
+      && bytes.charCodeAt(2) === 0x4e && bytes.charCodeAt(3) === 0x47;
+    const jpg = bytes.charCodeAt(0) === 0xff && bytes.charCodeAt(1) === 0xd8;
+    return (png || jpg) ? t : null;
+  };
 
   // Consent must be SIGNED, not merely ticked. A pre-registration that arrives
   // without a signature would land in the clinic looking complete while the
@@ -382,6 +403,18 @@ async function handleCheckinPost(eventUid, request, env) {
   if (!agreed(body.consent_agree)) return json({ ok: false, error: esErr ? 'Por favor lea y acepte el consentimiento para terminar.' : 'Please read and agree to the consent to finish.' }, 400);
   if (!generalSig) return json({ ok: false, error: esErr ? 'Por favor firme el consentimiento para terminar.' : 'Please sign the consent to finish.' }, 400);
   if (!String(body.signer_name || '').trim()) return json({ ok: false, error: esErr ? 'Por favor escriba su nombre para la firma.' : 'Please type your name for the signature.' }, 400);
+  // A minor cannot consent for themselves. The front desk has shown this notice
+  // since v1.0; online it was not asked at all, so a child could pre-register
+  // with a consent signed by nobody identifiable.
+  {
+    const born = new Date(clean.dob);
+    const age = isNaN(born) ? null : Math.floor((Date.now() - born.getTime()) / (365.25 * 24 * 3600 * 1000));
+    if (age != null && age < 18 && !String(body.relationship || '').trim()) {
+      return json({ ok: false, error: esErr
+        ? 'Este paciente es menor de 18 — por favor indique quién firma (padre, tutor).'
+        : 'This patient is under 18 — please say who is signing (parent, guardian).' }, 400);
+    }
+  }
 
   // The Oral Surgery consent is required ONLY when an extraction was chosen —
   // and then it must be signed too.
@@ -423,7 +456,10 @@ async function handleCheckinPost(eventUid, request, env) {
   ];
   if (extraction) {
     rows.push({ entity: 'consent', uid: crypto.randomUUID(), patient_uid: patientUid, stamp: iso + '@prereg-c2', data: {
-      type: 'oral_surgery', version: 'oral_surgery-' + lang + '-v1', language: lang,
+      // es-v2 is the corrected Spanish text (v1 online was missing the
+      // post-operative and emergency paragraphs the desk always showed), so a
+      // record signed under the old wording stays honestly identifiable.
+      type: 'oral_surgery', version: 'oral_surgery-' + lang + (lang === 'es' ? '-v2' : '-v1'), language: lang,
       signer_name: signer, relationship: relationship, signature_png: surgerySig, signed_at: iso,
       tooth_numbers: String(body.surgery_teeth || '').trim().slice(0, 60) || null, amended_by: null, amended_at: null,
     } });
@@ -492,7 +528,14 @@ function buildPreregPatient(b) {
     language: b.language === 'es' ? 'es' : 'en',
     demographics: {
       address: s(b.address, 200), city: s(b.city, 80), state: s(b.state, 40),
-      emergency_name: s(b.emergency_name, 120), emergency_phone: s(b.emergency_phone, 20), referral: s(b.referral, 120),
+      emergency_name: s(b.emergency_name, 120),
+      // Digits only, ten of them — the SAME normalisation the front desk applies
+      // (limitDigits on the check-in field). Without this the two paths stored
+      // the same field in two different shapes, and "call my mom" passed the
+      // online form as an emergency contact number while the desk would never
+      // have accepted it.
+      emergency_phone: s(b.emergency_phone, 30).replace(/\D/g, '').slice(0, 10),
+      referral: s(b.referral, 120),
     },
     medical_history,
     dental_history,
@@ -502,6 +545,22 @@ function buildPreregPatient(b) {
 // The check-in questions offered on the public form — the SAME options a patient
 // gets in person. Keys MUST match the app's i18n keys (renderer/i18n/strings.js)
 // so selections render natively in the clinic app.
+// Exported for cloud/test-parity.mjs, which compares these against the app's own
+// src/renderer/i18n/strings.js. Hand-copying is how the Spanish oral-surgery
+// consent silently drifted apart from the one the front desk shows.
+export const PARITY = () => ({
+  en: {
+    visits: FORM_VISITS, allergies: FORM_ALLERGIES, conditions: FORM_CONDITIONS,
+    medYesNo: FORM_MED_YESNO, dentalYesNo: FORM_DENTAL_YESNO,
+    generalConsent: GENERAL_CONSENT, oralSurgery: ORAL_SURGERY_CONSENT,
+  },
+  es: {
+    visits: FORM_VISITS_ES, allergies: FORM_ALLERGIES_ES, conditions: FORM_CONDITIONS_ES,
+    medYesNo: FORM_MED_YESNO_ES, dentalYesNo: FORM_DENTAL_YESNO_ES,
+    generalConsent: GENERAL_CONSENT_ES, oralSurgery: ORAL_SURGERY_ES,
+  },
+});
+
 const FORM_ALLERGIES = [
   ['lidocaine', 'Lidocaine'], ['articaine', 'Articaine'], ['penicillin', 'Penicillin'], ['codeine', 'Codeine'],
   ['erythromycin', 'Erythromycin'], ['nsaids', 'NSAIDs (Ibuprofen, Aspirin)'], ['tylenol', 'Tylenol (Acetaminophen)'],
@@ -586,6 +645,14 @@ const ORAL_SURGERY_ES = [
   'Entiendo que las complicaciones pueden incluir dolor, hinchazón, moretones, infección, alvéolo seco, sangrado, apertura limitada de la mandíbula, lesión a dientes u obturaciones cercanas, y entumecimiento del labio, lengua o mentón que suele ser temporal pero rara vez puede ser permanente.',
   'Entiendo que un diente o la punta de la raíz puede romperse durante la extracción y que un pequeño fragmento puede quedar si extraerlo causara mayor daño.',
   'He informado al equipo de todos los medicamentos y condiciones de salud que puedan afectar la cirugía o la recuperación.',
+  // The post-operative and emergency paragraphs. Without these the Spanish
+  // patient signing ONLINE was agreeing to a shorter document than the Spanish
+  // patient signing at the desk — two different consents sharing one version
+  // string. These are the app's own translations (strings.js es postOp /
+  // emergency), so the two documents now match word for word.
+  'Instrucciones Postoperatorias',
+  'Muerda firmemente la gasa durante 30–45 minutos. No se enjuague, escupa, fume ni use pajilla por 24 horas. Coma alimentos blandos y evite el área quirúrgica. Una hinchazón y sangrado leves son normales. Tome los medicamentos según las indicaciones.',
+  'Para emergencias fuera de horario llame al 541-556-5902.',
 ];
 
 // Bilingual dictionary — keys stay identical (they map to the app's data); only
@@ -619,6 +686,9 @@ const I18N = {
     errConditions: 'Please answer the conditions question — choose a condition, Other, or None of the above.',
     errConditionOther: 'Please say what the other condition is.',
     errMeds: 'Please list your medications, or tick “No medications”.',
+    minorNotice: 'This patient is under 18 — a parent or guardian must sign.',
+    errRelationship: 'This patient is under 18 — please say who is signing (parent, guardian).',
+    switchWarn: 'Switching language will clear everything you have entered so far, including your signature. Continue?',
     errConsent: 'Please read and agree to the consent to finish.', errSurgery: 'An extraction was selected — please read and agree to the Oral Surgery consent too.',
     errSign: 'Please sign the consent to finish.', errSignSurgery: 'Please sign the Oral Surgery consent.', errSigner: 'Please type your name for the signature.',
     netErr: 'Network error. Please try again.', genErr: 'Something went wrong. Please try again.',
@@ -653,6 +723,9 @@ const I18N = {
     errConditions: 'Por favor responda la pregunta de condiciones: elija una condición, Otra o Ninguna de las anteriores.',
     errConditionOther: 'Por favor indique cuál es la otra condición.',
     errMeds: 'Por favor indique sus medicamentos o marque «Sin medicamentos».',
+    minorNotice: 'Este paciente es menor de 18 — un padre o tutor debe firmar.',
+    errRelationship: 'Este paciente es menor de 18 — por favor indique quién firma (padre, tutor).',
+    switchWarn: 'Cambiar de idioma borrará todo lo que ha ingresado, incluida su firma. ¿Continuar?',
     errConsent: 'Por favor lea y acepte el consentimiento para terminar.', errSurgery: 'Se seleccionó una extracción — por favor lea y acepte también el consentimiento de cirugía oral.',
     errSign: 'Por favor firme el consentimiento para terminar.', errSignSurgery: 'Por favor firme el consentimiento de cirugía oral.', errSigner: 'Por favor escriba su nombre para la firma.',
     netErr: 'Error de red. Por favor intente de nuevo.', genErr: 'Algo salió mal. Por favor intente de nuevo.',
@@ -728,7 +801,7 @@ function checkinFormPage(eventUid, eventName, lang) {
   const dentalYesNo = L.dentalYesNo.map(([k, l]) => ynRow(k, l)).join('');
   const genConsent = '<h3>' + htmlEscape(L.generalTitle) + '</h3>' + (L.generalMode === 'ol' ? ('<ol>' + L.general.map((c) => '<li>' + htmlEscape(c) + '</li>').join('') + '</ol>') : L.general.map((c) => '<p>' + htmlEscape(c) + '</p>').join(''));
   const surConsent = '<h3>' + htmlEscape(L.surgeryTitle) + '</h3>' + L.surgeryText.map((c) => '<p>' + htmlEscape(c) + '</p>').join('');
-  const T = { errName: L.errName, errDob: L.errDob, errGender: L.errGender, errCity: L.errCity, errState: L.errState, errEmName: L.errEmName, errEmPhone: L.errEmPhone, errMedical: L.errMedical, errPhone: L.errPhone, errVisit: L.errVisit, errAllergies: L.errAllergies, errAllergyOther: L.errAllergyOther, errConditions: L.errConditions, errConditionOther: L.errConditionOther, errMeds: L.errMeds, medNamePh: L.medNamePh, errConsent: L.errConsent, errSurgery: L.errSurgery, errSign: L.errSign, errSignSurgery: L.errSignSurgery, errSigner: L.errSigner, submitting: L.submitting, submitLabel: L.submit, thankYou: L.thankYou, done: L.done, netErr: L.netErr, genErr: L.genErr };
+  const T = { errName: L.errName, errDob: L.errDob, errGender: L.errGender, errCity: L.errCity, errState: L.errState, errEmName: L.errEmName, errEmPhone: L.errEmPhone, errMedical: L.errMedical, errPhone: L.errPhone, errVisit: L.errVisit, errAllergies: L.errAllergies, errAllergyOther: L.errAllergyOther, errConditions: L.errConditions, errConditionOther: L.errConditionOther, errMeds: L.errMeds, medNamePh: L.medNamePh, minorNotice: L.minorNotice, errRelationship: L.errRelationship, switchWarn: L.switchWarn, errConsent: L.errConsent, errSurgery: L.errSurgery, errSign: L.errSign, errSignSurgery: L.errSignSurgery, errSigner: L.errSigner, submitting: L.submitting, submitLabel: L.submit, thankYou: L.thankYou, done: L.done, netErr: L.netErr, genErr: L.genErr };
 
   const inner =
     '<div class="hero"><div style="display:flex;justify-content:space-between;align-items:center"><div class="ey">Caring Hands · Pre-registration</div>' +
@@ -767,7 +840,9 @@ function checkinFormPage(eventUid, eventName, lang) {
 
     '<div class="card"><h2>' + htmlEscape(L.dentHist) + '</h2><label>' + htmlEscape(L.priorDentist) + '</label><input type="text" id="prior_dentist">' + dentalYesNo + '</div>' +
 
-    '<div class="card"><h2>' + htmlEscape(L.consent) + '</h2><div class="consent">' + genConsent + '</div>' +
+    '<div class="card"><h2>' + htmlEscape(L.consent) + '</h2>' +
+    '<div class="minor" id="minorNote" style="display:none;background:#fdf2d5;border:1px solid #e0c069;border-radius:8px;padding:10px 12px;margin:0 0 10px;font-weight:600">' + htmlEscape(L.minorNotice) + '</div>' +
+    '<div class="consent">' + genConsent + '</div>' +
     '<div class="row" style="margin-top:10px"><div><label>' + htmlEscape(L.signName) + '</label><input type="text" id="signer"></div>' +
     '<div><label>' + htmlEscape(L.relationship) + '</label><input type="text" id="relationship" placeholder="' + htmlEscape(L.relPh) + '"></div></div>' +
     '<label class="agree"><input type="checkbox" id="cagree"><span>' + htmlEscape(L.agree) + '</span></label>' +
@@ -793,39 +868,70 @@ function checkinFormPage(eventUid, eventName, lang) {
     "function el(id){return document.getElementById(id);}function val(id){var e=el(id);return e?e.value:'';}" +
     "function chipwire(id){document.querySelectorAll('#'+id+' .chip input').forEach(function(i){i.addEventListener('change',function(){i.closest('.chip').classList.toggle('on',i.checked);});});}" +
     "chipwire('allergies');chipwire('conditions');" +
+    // Under-18 check, mirroring the front desk: show the guardian notice as soon
+    // as the date of birth says so.
+    "function ageOf(v){if(!v)return null;var d=new Date(v);if(isNaN(d))return null;return Math.floor((Date.now()-d.getTime())/(365.25*24*3600*1000));}" +
+    "function syncMinor(){var a=ageOf(val('dob'));var n=el('minorNote');if(n)n.style.display=(a!=null&&a<18)?'block':'none';}" +
+    "if(el('dob'))el('dob').addEventListener('change',syncMinor);syncMinor();" +
+    // The language link is a full page navigation, so it throws away everything
+    // entered — including a drawn signature. The desk cannot lose work this way
+    // (it asks for a language before the form exists), so at least ask first.
+    "var touched=false;el('f').addEventListener('input',function(){touched=true;},true);" +
+    "var langLink=document.querySelector('.hero a[href^=\"?lang=\"]');" +
+    "if(langLink)langLink.addEventListener('click',function(e){if(touched&&!window.confirm(T.switchWarn))e.preventDefault();});" +
+    // Phone fields accept digits only, as they do at the front desk.
+    "['phone','emergency_phone'].forEach(function(id){var e=el(id);if(!e)return;e.addEventListener('input',function(){var d=(e.value||'').replace(/\\D/g,'').slice(0,10);if(d!==e.value)e.value=d;});});" +
     "function checked(name){return Array.prototype.slice.call(document.querySelectorAll('input[name='+name+']:checked')).map(function(i){return i.value;});}" +
-    "function mkpad(id){var c=el(id);if(!c)return null;var ctx=c.getContext('2d');var drawing=false,empty=true;function fit(){var r=c.getBoundingClientRect();if(!r.width)return;c.width=r.width;c.height=150;ctx.lineWidth=2.2;ctx.lineCap='round';ctx.strokeStyle='#12303f';}fit();window.addEventListener('resize',fit);function pt(e){var r=c.getBoundingClientRect();var t=(e.touches&&e.touches[0])?e.touches[0]:e;return{x:t.clientX-r.left,y:t.clientY-r.top};}function down(e){drawing=true;empty=false;var p=pt(e);ctx.beginPath();ctx.moveTo(p.x,p.y);e.preventDefault();}function mv(e){if(!drawing)return;var p=pt(e);ctx.lineTo(p.x,p.y);ctx.stroke();e.preventDefault();}function up(){drawing=false;}c.addEventListener('pointerdown',down);c.addEventListener('pointermove',mv);window.addEventListener('pointerup',up);return{data:function(){return empty?null:c.toDataURL('image/png');},clear:function(){ctx.clearRect(0,0,c.width,c.height);empty=true;},fit:fit};}" +
+    "function mkpad(id){var c=el(id);if(!c)return null;var ctx=c.getContext('2d');var drawing=false,empty=true;" +
+    "function stroke(){ctx.lineWidth=2.2;ctx.lineCap='round';ctx.lineJoin='round';ctx.strokeStyle='#12303f';}" +
+    // Assigning canvas.width WIPES the bitmap. Preserve the drawn signature
+    // across a resize (phone rotated, surgery card revealed); if the snapshot
+    // cannot be restored, say the pad is empty rather than exporting a blank.
+    "function fit(){var r=c.getBoundingClientRect();if(!r.width)return;var snap=empty?null:c.toDataURL('image/png');c.width=r.width;c.height=150;stroke();if(snap){var im=new Image();im.onload=function(){ctx.drawImage(im,0,0,r.width,150);};im.onerror=function(){empty=true;};im.src=snap;}}" +
+    "fit();window.addEventListener('resize',fit);function pt(e){var r=c.getBoundingClientRect();var t=(e.touches&&e.touches[0])?e.touches[0]:e;return{x:t.clientX-r.left,y:t.clientY-r.top};}" +
+    // A TAP IS NOT A SIGNATURE. 'empty' clears on the first actual stroke, the
+    // same rule the front desk's pad applies (signature.js sets dirty in move()).
+    "function down(e){drawing=true;var p=pt(e);ctx.beginPath();ctx.moveTo(p.x,p.y);e.preventDefault();}" +
+    "function mv(e){if(!drawing)return;var p=pt(e);ctx.lineTo(p.x,p.y);ctx.stroke();empty=false;e.preventDefault();}" +
+    "function up(){drawing=false;}c.addEventListener('pointerdown',down);c.addEventListener('pointermove',mv);window.addEventListener('pointerup',up);return{data:function(){return empty?null:c.toDataURL('image/png');},clear:function(){ctx.clearRect(0,0,c.width,c.height);empty=true;},fit:fit};}" +
     "var gpad=mkpad('gsig');var spad=mkpad('ssig');el('gclear').onclick=function(){if(gpad)gpad.clear();};if(el('sclear'))el('sclear').onclick=function(){if(spad)spad.clear();};" +
     "document.querySelectorAll('input[name=visit]').forEach(function(i){i.addEventListener('change',function(){document.querySelectorAll('input[name=visit]').forEach(function(r){r.closest('.chip').classList.toggle('on',r.checked);});var v=(document.querySelector('input[name=visit]:checked')||{}).value||'';var ex=(v==='extraction_pain'||v==='extraction_no_pain');el('surgeryCard').style.display=ex?'block':'none';if(ex&&spad)setTimeout(function(){spad.fit();},0);});});" +
     "var meds=el('meds');function addmed(){var d=document.createElement('div');d.className='med-row';d.innerHTML='<input type=\"text\" placeholder=\"'+T.medNamePh+'\"><button type=\"button\">✕</button>';d.querySelector('button').onclick=function(){d.remove();};meds.appendChild(d);}el('addmed').onclick=addmed;" +
     "el('f').addEventListener('submit',function(e){e.preventDefault();var err=el('err');err.textContent='';" +
-    "var fn=val('first_name').trim(),ln=val('last_name').trim();if(!fn||!ln){err.textContent=T.errName;window.scrollTo(0,0);return;}" +
-    "if(!val('dob')){err.textContent=T.errDob;return;}if(!val('gender')){err.textContent=T.errGender;return;}" +
-    "if(!val('city')){err.textContent=T.errCity;return;}if(!val('state')){err.textContent=T.errState;return;}" +
-    "if(!val('emergency_name').trim()){err.textContent=T.errEmName;el('emergency_name').focus();return;}" +
-    "if(!val('emergency_phone').trim()){err.textContent=T.errEmPhone;el('emergency_phone').focus();return;}" +
-    "if(!val('phone').trim()){err.textContent=T.errPhone;el('phone').focus();return;}" +
+    // Every refusal takes the patient TO the field, and trims exactly as the
+    // server does — a single space in City used to clear the browser and be
+    // refused only after both consents had been signed.
+    "function fail(msg,id){err.textContent=msg;var e=el(id);if(e){e.scrollIntoView({block:'center'});if(e.focus)e.focus();}else{err.scrollIntoView({block:'center'});}return false;}" +
+    // Checked in the order the fields appear on the page, so nobody is bounced
+    // back up past questions they have already answered.
+    "var fn=val('first_name').trim(),ln=val('last_name').trim();if(!fn||!ln){return fail(T.errName,'first_name');}" +
+    "if(!val('dob').trim()){return fail(T.errDob,'dob');}if(!val('gender').trim()){return fail(T.errGender,'gender');}" +
+    "if(!val('phone').trim()){return fail(T.errPhone,'phone');}" +
+    "if(!val('city').trim()){return fail(T.errCity,'city');}if(!val('state').trim()){return fail(T.errState,'state');}" +
+    "if(!val('emergency_name').trim()){return fail(T.errEmName,'emergency_name');}" +
+    "if(!val('emergency_phone').trim()){return fail(T.errEmPhone,'emergency_phone');}" +
     // The same set the front desk requires: what they need today, and an actual
     // answer (including "none") for allergies, conditions and medications.
     "var visitSel=(document.querySelector('input[name=visit]:checked')||{}).value||'';" +
-    "if(!visitSel){err.textContent=T.errVisit;document.querySelector('input[name=visit]').closest('.card').scrollIntoView({block:'center'});return;}" +
-    "var al=checked('allergy');if(!al.length){err.textContent=T.errAllergies;el('allergies').scrollIntoView({block:'center'});return;}" +
-    "if(al.indexOf('other')>=0&&!val('allergies_other').trim()){err.textContent=T.errAllergyOther;el('allergies_other').focus();return;}" +
-    "var cd=checked('condition');if(!cd.length){err.textContent=T.errConditions;el('conditions').scrollIntoView({block:'center'});return;}" +
-    "if(cd.indexOf('other')>=0&&!val('conditions_other').trim()){err.textContent=T.errConditionOther;el('conditions_other').focus();return;}" +
+    "if(!visitSel){return fail(T.errVisit,'reason');}" +
+    "var al=checked('allergy');if(!al.length){return fail(T.errAllergies,'allergies');}" +
+    "if(al.indexOf('other')>=0&&!val('allergies_other').trim()){return fail(T.errAllergyOther,'allergies_other');}" +
+    "var cd=checked('condition');if(!cd.length){return fail(T.errConditions,'conditions');}" +
+    "if(cd.indexOf('other')>=0&&!val('conditions_other').trim()){return fail(T.errConditionOther,'conditions_other');}" +
     "var medNames=Array.prototype.slice.call(meds.querySelectorAll('input')).map(function(i){return i.value.trim();}).filter(Boolean);" +
-    "if(!medNames.length&&!el('medications_none').checked){err.textContent=T.errMeds;el('meds').scrollIntoView({block:'center'});return;}" +
+    "if(!medNames.length&&!el('medications_none').checked){return fail(T.errMeds,'meds');}" +
     // Every medical and dental history question must be answered — a blank is
     // not the same as "no", and the dentist reads these before treating.
     "var unanswered=null;" +
     "MEDQ.concat(DENTQ).forEach(function(k){if(!unanswered&&!val(k))unanswered=k;});" +
-    "if(unanswered){err.textContent=T.errMedical;var e2=el(unanswered);if(e2){e2.scrollIntoView({block:'center'});e2.focus();}return;}" +
-    "if(!el('cagree').checked){err.textContent=T.errConsent;return;}" +
-    "if(!val('signer').trim()){err.textContent=T.errSigner;return;}" +
-    "if(!gpad||!gpad.data()){err.textContent=T.errSign;el('gsig').scrollIntoView({block:'center'});return;}" +
+    "if(unanswered){return fail(T.errMedical,unanswered);}" +
+    "if(!el('cagree').checked){return fail(T.errConsent,'cagree');}" +
+    "if(!val('signer').trim()){return fail(T.errSigner,'signer');}" +
+    "var ageNow=ageOf(val('dob'));if(ageNow!=null&&ageNow<18&&!val('relationship').trim()){return fail(T.errRelationship,'relationship');}" +
+    "if(!gpad||!gpad.data()){return fail(T.errSign,'gsig');}" +
     "var visit=visitSel;var extraction=(visit==='extraction_pain'||visit==='extraction_no_pain');" +
-    "if(extraction&&!el('sagree').checked){err.textContent=T.errSurgery;return;}" +
-    "if(extraction&&(!spad||!spad.data())){err.textContent=T.errSignSurgery;el('ssig').scrollIntoView({block:'center'});return;}" +
+    "if(extraction&&!el('sagree').checked){return fail(T.errSurgery,'sagree');}" +
+    "if(extraction&&(!spad||!spad.data())){return fail(T.errSignSurgery,'ssig');}" +
     "var payload={first_name:fn,last_name:ln,dob:val('dob'),gender:val('gender'),phone:val('phone'),email:val('email'),language:LANG,address:val('address'),city:val('city'),state:val('state'),emergency_name:val('emergency_name'),emergency_phone:val('emergency_phone')," +
     "reason:val('reason'),visit_type:visit,allergies:al,allergies_other:val('allergies_other'),conditions:cd,conditions_other:val('conditions_other')," +
     "medications:medNames,medications_none:el('medications_none').checked," +

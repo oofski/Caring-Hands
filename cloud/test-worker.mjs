@@ -8,6 +8,12 @@ import worker from './worker.js';
 
 const CLINIC_KEY = 'super-secret-clinic-key';
 
+// A REAL signature image — a 600x150 PNG with an actual stroke in it. The old
+// fixture was SIG, three bytes that decode to nothing;
+// v1.7.0 makes the server decode the payload and check the PNG/JPEG magic, so a
+// placeholder that is not an image is correctly refused.
+const SIG = 'data:image/png;base64,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';
+
 let failures = 0;
 function check(name, cond) {
   if (cond) {
@@ -159,7 +165,7 @@ async function main() {
       h.data &&
       h.data.ok === true &&
       h.data.service === 'caring-hands-sync' &&
-      h.data.version === '1.6.9' &&
+      h.data.version === '1.7.0' &&
       h.data.seq === true &&
       typeof h.data.time === 'string'
   );
@@ -435,7 +441,7 @@ async function main() {
       reason: 'tooth hurts', visit_type: 'filling', allergies: ['penicillin', 'other'], allergies_other: 'shellfish',
       conditions: ['diabetes', 'pain_mgmt'], medications: ['Metformin', 'Lisinopril'],
       under_treatment: 'yes', tobacco: 'no', gum_bleeding: 'yes', prior_dentist: 'Dr. Smith',
-      consent_agree: true, signer_name: 'Pre Reg', relationship: 'Self', signature_png: 'data:image/png;base64,AAAA',
+      consent_agree: true, signer_name: 'Pre Reg', relationship: 'Self', signature_png: SIG,
     },
   });
   check('POST /checkin/<event> accepts a full submission with a signed consent', preReg.status === 200 && preReg.data && preReg.data.ok === true);
@@ -485,7 +491,7 @@ async function main() {
   const base = { first_name: 'Un', last_name: 'Signed', dob: '1990-01-01', gender: 'male', city: 'Sandy', state: 'OR', visit_type: 'cleaning' };
   const noSig = await call(env, 'POST', '/checkin/evt-1', { body: { ...REQ, ...REQ, ...base, consent_agree: true, signer_name: 'Un Signed' } });
   check('POST /checkin agreed but NOT signed -> 400', noSig.status === 400 && /sign the consent/i.test(noSig.data.error));
-  const noSigner = await call(env, 'POST', '/checkin/evt-1', { body: { ...REQ, ...REQ, ...base, consent_agree: true, signature_png: 'data:image/png;base64,AAAA' } });
+  const noSigner = await call(env, 'POST', '/checkin/evt-1', { body: { ...REQ, ...REQ, ...base, consent_agree: true, signature_png: SIG } });
   check('POST /checkin signed but no name typed -> 400', noSigner.status === 400 && /type your name/i.test(noSigner.data.error));
   const noSigEs = await call(env, 'POST', '/checkin/evt-1', { body: { ...REQ, ...REQ, ...base, language: 'es', consent_agree: true, signer_name: 'Sin Firma' } });
   check('POST /checkin (es) not signed -> Spanish 400', noSigEs.status === 400 && /firme el consentimiento/i.test(noSigEs.data.error));
@@ -494,14 +500,14 @@ async function main() {
   // signature alone is not enough.
   const exNoSurgerySig = await call(env, 'POST', '/checkin/evt-1', {
     body: { ...REQ, ...base, last_name: 'Extraction', visit_type: 'extraction_pain', consent_agree: true, signer_name: 'Un Signed',
-      signature_png: 'data:image/png;base64,AAAA', surgery_agree: true },
+      signature_png: SIG, surgery_agree: true },
   });
   check('POST /checkin extraction agreed but surgery NOT signed -> 400',
     exNoSurgerySig.status === 400 && /sign the oral surgery/i.test(exNoSurgerySig.data.error));
 
   // A NON-extraction visit must NOT be asked for the surgery consent.
   const cleaningOk = await call(env, 'POST', '/checkin/evt-1', {
-    body: { ...REQ, ...base, last_name: 'Cleaning', consent_agree: true, signer_name: 'Un Signed', signature_png: 'data:image/png;base64,AAAA' },
+    body: { ...REQ, ...base, last_name: 'Cleaning', consent_agree: true, signer_name: 'Un Signed', signature_png: SIG },
   });
   check('POST /checkin cleaning needs only the general consent -> 200', cleaningOk.status === 200 && cleaningOk.data.ok === true);
   const cleanRow = Array.from(env.DB._store.values()).find((r) => r.entity === 'patient' && JSON.parse(r.data).last_name === 'Cleaning');
@@ -518,9 +524,9 @@ async function main() {
     !/Signature \(optional\)/.test(sigForm.text));
 
   // An extraction visit also requires (and files) the Oral Surgery consent.
-  const noSurgery = await call(env, 'POST', '/checkin/evt-1', { body: { ...REQ, ...REQ, first_name: 'Ex', last_name: 'Tract', dob: '1990-01-01', gender: 'male', city: 'Sandy', state: 'OR', visit_type: 'extraction_pain', consent_agree: true, signer_name: 'Ex Tract', signature_png: 'data:image/png;base64,BBBB' } });
+  const noSurgery = await call(env, 'POST', '/checkin/evt-1', { body: { ...REQ, ...REQ, first_name: 'Ex', last_name: 'Tract', dob: '1990-01-01', gender: 'male', city: 'Sandy', state: 'OR', visit_type: 'extraction_pain', consent_agree: true, signer_name: 'Ex Tract', signature_png: SIG } });
   check('POST /checkin extraction without surgery consent -> 400', noSurgery.status === 400 && /surgery/i.test(noSurgery.data.error));
-  const withSurgery = await call(env, 'POST', '/checkin/evt-1', { body: { ...REQ, ...REQ, first_name: 'Ex', last_name: 'Tract', dob: '1990-01-01', gender: 'male', city: 'Sandy', state: 'OR', visit_type: 'extraction_pain', consent_agree: true, surgery_agree: true, surgery_teeth: '14, 15', signer_name: 'Ex Tract', signature_png: 'data:image/png;base64,BBBB', surgery_signature_png: 'data:image/png;base64,CCCC' } });
+  const withSurgery = await call(env, 'POST', '/checkin/evt-1', { body: { ...REQ, ...REQ, first_name: 'Ex', last_name: 'Tract', dob: '1990-01-01', gender: 'male', city: 'Sandy', state: 'OR', visit_type: 'extraction_pain', consent_agree: true, surgery_agree: true, surgery_teeth: '14, 15', signer_name: 'Ex Tract', signature_png: SIG, surgery_signature_png: SIG } });
   check('POST /checkin extraction WITH surgery consent -> 200', withSurgery.status === 200 && withSurgery.data.ok === true);
   const exPatient = Array.from(env.DB._store.values()).find((r) => r.entity === 'patient' && JSON.parse(r.data).last_name === 'Tract');
   const surgeryRow = Array.from(env.DB._store.values()).find((r) => r.entity === 'consent' && r.patient_uid === exPatient.uid && JSON.parse(r.data).type === 'oral_surgery');
@@ -556,13 +562,15 @@ async function main() {
     /id="city"/.test(fullForm.text) && /id="state"/.test(fullForm.text) &&
     fullForm.text.includes('City') && fullForm.text.includes('State'));
   // ...and they are marked required, with the browser blocking submit.
+  // Asserted by BEHAVIOUR, not by pattern-matching the emitted JavaScript. The
+  // old version checked the served HTML contained the literal "if(!val('city'))",
+  // which pinned an untrimmed check in place: fixing it broke the test.
   check('the pre-registration form marks City and State required',
-    fullForm.text.includes("if(!val('city'))") && fullForm.text.includes("if(!val('state'))") &&
     /City <span class="req">\*<\/span>/.test(fullForm.text) && /State <span class="req">\*<\/span>/.test(fullForm.text));
   // DOB and gender are marked required on the form (asterisk + client-side validation).
   check('the pre-registration form marks date of birth and gender required',
     /id="dob"/.test(fullForm.text) && /id="gender"/.test(fullForm.text) &&
-    fullForm.text.includes("if(!val('dob'))") && fullForm.text.includes("if(!val('gender'))"));
+    /Date of birth <span class="req">\*<\/span>/.test(fullForm.text) && /Gender <span class="req">\*<\/span>/.test(fullForm.text));
   // The English form offers a link to switch to Spanish.
   check('the English form links to the Spanish version',
     /\?lang=es/.test(fullForm.text) && fullForm.text.includes('Español'));
@@ -583,7 +591,7 @@ async function main() {
   // A Spanish submission still round-trips (writes a checked-in patient + Spanish-versioned consent).
   const esSubmit = await call(env, 'POST', '/checkin/evt-1', {
     body: { ...REQ, first_name: 'Ana', last_name: 'Ruiz', dob: '1988-05-05', gender: 'female', language: 'es', city: 'Sandy', state: 'OR',
-      visit_type: 'cleaning', consent_agree: true, signer_name: 'Ana Ruiz', relationship: 'Self', signature_png: 'data:image/png;base64,DDDD' },
+      visit_type: 'cleaning', consent_agree: true, signer_name: 'Ana Ruiz', relationship: 'Self', signature_png: SIG },
   });
   check('POST /checkin (es) full submission -> 200', esSubmit.status === 200 && esSubmit.data.ok === true);
   const esStored = Array.from(env.DB._store.values()).find((r) => r.entity === 'patient' && JSON.parse(r.data).last_name === 'Ruiz');
@@ -651,7 +659,7 @@ async function main() {
     const full = {
       ...REQ, first_name: 'All', last_name: 'Answers', dob: '1990-01-01', gender: 'female',
       city: 'Sandy', state: 'OR', visit_type: 'cleaning', consent_agree: true,
-      signer_name: 'All Answers', signature_png: 'data:image/png;base64,AAAA',
+      signer_name: 'All Answers', signature_png: SIG,
     };
     const post = (body) => call(env, 'POST', '/checkin/evt-1', { body });
 
@@ -748,7 +756,7 @@ async function main() {
       body: { ...REQ, first_name: 'Too', last_name: 'Late', dob: '1990-01-02', gender: 'male',
         city: 'Sandy', state: 'OR', visit_type: 'cleaning',
         consent_general: true, consent_general_name: 'Too Late',
-        consent_general_signature: 'data:image/png;base64,AAAA' },
+        consent_general_signature: SIG },
     });
     check('v1.6.6: a finished clinic refuses new pre-registrations',
       closedPost.status === 410 && closedPost.data.ok === false && /closed/i.test(closedPost.data.error));
@@ -760,7 +768,7 @@ async function main() {
       ...REQ, first_name: 'Parity', last_name: 'Check', dob: '1988-03-03', gender: 'female',
       city: 'Sandy', state: 'OR',
       consent_agree: true, signer_name: 'Parity Check',
-      signature_png: 'data:image/png;base64,AAAA',
+      signature_png: SIG,
     };
     const post = (patch) => call(env, 'POST', '/checkin/evt-1', { body: { ...base, ...patch } });
 

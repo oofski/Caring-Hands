@@ -349,6 +349,18 @@ async function main() {
   log(/Consent|Consentimiento/i.test($('.kiosk-step-label').textContent),
     'v1.6.9: check-in will not advance on an unsigned consent');
   drawSig();
+  // ...and clearing it again puts the block straight back, so a signature that
+  // is wiped cannot be walked past by tapping Next twice.
+  const clearBtn = $all('.sigpad-actions button')[0];
+  if (clearBtn) {
+    clearBtn.click(); await tick();
+    clickText('Next'); await tick();
+    log(/Consent|Consentimiento/i.test($('.kiosk-step-label').textContent),
+      'v1.7.0: clearing the signature blocks check-in again');
+    drawSig();
+  } else {
+    log(false, 'v1.7.0: (setup) signature pad has a Clear control');
+  }
   clickText('Next');
   await tick();
 

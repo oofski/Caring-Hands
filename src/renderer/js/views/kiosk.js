@@ -509,6 +509,15 @@ export function renderKiosk(ctx) {
       collect: () => {
         if (!agree.checked) { toast(t('consent.agree'), 'error'); return false; }
         if (!signer.get()) { toast(t('common.required') + ': ' + t('intake.signerName'), 'error'); return false; }
+        // A minor cannot consent for themselves. The banner above has said so
+        // since v1.0 but nothing enforced it — so say WHO is signing.
+        if (minor && !rel.get()) {
+          toast(L({
+            en: 'This patient is under 18 — please say who is signing (parent, guardian).',
+            es: 'Este paciente es menor de 18 — por favor indique quién firma (padre, tutor).',
+            ru: 'Пациенту меньше 18 лет — укажите, кто подписывает (родитель, опекун).',
+          }), 'error'); return false;
+        }
         // The SIGNATURE is what makes this a consent. Online pre-registration has
         // refused to submit without one since v1.5.25, and the Arrivals desk
         // already refuses to send an unsigned patient to a station — so leaving it
@@ -586,7 +595,10 @@ export function renderKiosk(ctx) {
         upsertConsent('oral_surgery', {
           signer_name: signer.get() || signerFromGeneral(),
           signature_png: sigPad.isEmpty() ? null : sigPad.getDataUrl(),
-          version: `oral_surgery-${getLang()}-v1`,
+          // Matches the cloud form. es-v2 marks the corrected Spanish wording —
+          // the online v1 was missing the post-op / emergency paragraphs this
+          // screen has always shown, so the two were different documents.
+          version: `oral_surgery-${getLang()}${getLang() === 'es' ? '-v2' : '-v1'}`,
         });
         return true;
       },
@@ -709,6 +721,31 @@ export function renderKiosk(ctx) {
         en: 'Please choose who you would like to see.',
         es: 'Por favor elija a quién desea ver.',
         ru: 'Пожалуйста, выберите, к кому вы хотите обратиться.',
+      }), 'error');
+      return;
+    }
+    // v1.7.0: NOTHING is submitted without the patient's signature. The consent
+    // step already refuses to advance unsigned, but this is the last gate before
+    // the record exists, and it is checked separately for the same reason the
+    // cloud form checks on the server as well as in the browser: a step guard
+    // can be walked around, a submit guard cannot.
+    const signed = (type) => {
+      const c = data.consents.find((x) => x.type === type);
+      return !!(c && typeof c.signature_png === 'string' && c.signature_png.trim());
+    };
+    if (!signed('general')) {
+      toast(L({
+        en: 'A signature is required. Please go back and sign the consent.',
+        es: 'Se requiere una firma. Por favor regrese y firme el consentimiento.',
+        ru: 'Требуется подпись. Пожалуйста, вернитесь и подпишите согласие.',
+      }), 'error');
+      return;
+    }
+    if (data.dental_history.may_need_extraction === 'yes' && !signed('oral_surgery')) {
+      toast(L({
+        en: 'An extraction was chosen — the oral surgery consent must be signed too.',
+        es: 'Se eligió una extracción — también debe firmarse el consentimiento de cirugía oral.',
+        ru: 'Выбрано удаление — согласие на операцию также должно быть подписано.',
       }), 'error');
       return;
     }
