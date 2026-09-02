@@ -270,18 +270,25 @@ function fullPacketBody(p) {
       }
     }
     // F9: render the verbatim Oregon general-consent body for general consents.
+    // `c.body` was never a column on consents — nothing has ever written it —
+    // so this always fell through to the constant. Read it straight.
     const consentBody = !isSurgery
-      ? `<div class="box consent-body">${esc(c.body || OREGON_CONSENT)}</div>`
+      ? `<div class="box consent-body">${esc(OREGON_CONSENT)}</div>`
       : '';
+    // A consent is only SIGNED if there is a signature. Printing "Signed" over
+    // an empty box asserted something the record does not support.
+    const isSigned = !!String(c.signature_png || '').trim();
     return `
     <div class="box">
       <div class="two">
         <div>
           <div class="label">${isSurgery ? 'Oral Surgery Consent' : 'General Dental Consent'}</div>
           <div class="val">${esc(c.signer_name)}${c.relationship ? ' (' + esc(c.relationship) + ')' : ''}</div>
-          <div class="muted">${esc(c.version)} · Signed ${fmtDate(c.signed_at)}</div>
+          <div class="muted">${esc(c.version)} · ${isSigned ? 'Signed ' + fmtDate(c.signed_at) : '<b>NOT SIGNED</b>'}</div>
         </div>
-        <div>${c.signature_png ? `<div class="sig"><img src="${imgSrc(c.signature_png)}"/></div>` : ''}</div>
+        <div>${isSigned
+          ? `<div class="sig"><img src="${imgSrc(c.signature_png)}"/></div>`
+          : '<div class="sig sig--unsigned"><span class="muted">No signature on file</span></div>'}</div>
       </div>
       ${consentBody}
       ${teethBlock}

@@ -201,6 +201,15 @@ function answerRemainingYesNo(pick = 'no') {
   return n;
 }
 
+// Every real check-in arrives with a SIGNED general consent — the kiosk and the
+// cloud form both refuse to submit without one. Fixtures that skipped it were
+// exercising a state the product cannot produce, which is how an unsigned
+// patient reaching a clinician went unnoticed.
+const SIGNED = [{ type: 'general', signer_name: 'Test Patient', signature_png: 'data:image/png;base64,AAAA' }];
+// An extraction visit needs the oral-surgery consent too before anyone may be
+// sent to a clinician, so fixtures for those visits carry both.
+const SIGNED_SURGERY = [...SIGNED, { type: 'oral_surgery', signer_name: 'Test Patient', signature_png: 'data:image/png;base64,BBBB' }];
+
 const results = [];
 const log = (ok, msg) => { results.push([ok, msg]); console.log((ok ? 'PASS ' : 'FAIL ') + msg); };
 
@@ -440,19 +449,19 @@ async function main() {
   db.createUser(currentUser, { username: 'docx', full_name: 'Dr X', role: 'doctor', password: 'x' });
   let pr = await window.api.authLogin({ username: 'docx', password: 'x' });
   log(pr.ok && pr.data.role === 'doctor', 'can sign in as a doctor');
-  pr = await window.api.patientsCreate({ first_name: 'Walkin', last_name: 'Patient', demographics: {}, medical_history: {}, dental_history: { reason: 'pain' }, consents: [] });
+  pr = await window.api.patientsCreate({ first_name: 'Walkin', last_name: 'Patient', demographics: {}, medical_history: {}, dental_history: { reason: 'pain' }, consents: SIGNED });
   log(pr.ok, 'DOCTOR can complete a check-in (the reported bug): ' + (pr.ok ? 'allowed' : pr.error));
   pr = await window.api.usersList();
   log(!pr.ok && /permission/i.test(pr.error || ''), 'permission guard works: doctor blocked from staff list');
   // triage role can also check in
   currentUser = db.login('admin', 'admin'); db.createUser(currentUser, { username: 'trix', full_name: 'Front', role: 'triage', password: 'x' });
   await window.api.authLogin({ username: 'trix', password: 'x' });
-  pr = await window.api.patientsCreate({ first_name: 'Tri', last_name: 'Age', demographics: {}, medical_history: {}, dental_history: {}, consents: [] });
+  pr = await window.api.patientsCreate({ first_name: 'Tri', last_name: 'Age', demographics: {}, medical_history: {}, dental_history: {}, consents: SIGNED });
   log(pr.ok, 'TRIAGE can complete a check-in: ' + (pr.ok ? 'allowed' : pr.error));
   // v1.0.6 roles: EMT records vitals; CHECKOUT dismisses a signed-off patient.
   currentUser = db.login('admin', 'admin'); db.createUser(currentUser, { username: 'emtx', full_name: 'EMT One', role: 'emt', password: 'x' });
   db.createUser(currentUser, { username: 'cox', full_name: 'Checkout One', role: 'checkout', password: 'x' });
-  const vp = db.createPatient(currentUser, { first_name: 'Vital', last_name: 'Test', demographics: {}, medical_history: {}, dental_history: {} });
+  const vp = db.createPatient(currentUser, { first_name: 'Vital', last_name: 'Test', demographics: {}, medical_history: {}, dental_history: {}, consents: SIGNED });
   await window.api.authLogin({ username: 'emtx', password: 'x' });
   pr = await window.api.vitalsSave({ patientId: vp.id, data: { bp_systolic: '120', bp_diastolic: '80', heart_rate: '70' } });
   log(pr.ok, 'EMT can record vitals: ' + (pr.ok ? 'allowed' : pr.error));
@@ -467,7 +476,7 @@ async function main() {
   log(pr.ok && pr.data.status === 'triaged' && pr.data.triage.route === 'dentist', 'EMT routes to dentist -> patient enters dentist queue (triaged): ' + (pr.ok ? 'ok' : pr.error));
   let listed = db.listPatients({}).find((x) => x.id === vp.id);
   log(listed && listed.route === 'dentist' && ['triaged', 'in_treatment'].includes(listed.status), 'routed patient appears in the dentist queue filter with route exposed');
-  const hp = db.createPatient(db.login('admin', 'admin'), { first_name: 'Clean', last_name: 'Route', demographics: {}, medical_history: {}, dental_history: {} });
+  const hp = db.createPatient(db.login('admin', 'admin'), { first_name: 'Clean', last_name: 'Route', demographics: {}, medical_history: {}, dental_history: {}, consents: SIGNED });
   await window.api.authLogin({ username: 'emtx', password: 'x' });
   // v1.5.24: vitals are a hard gate — routing without them is refused.
   const noVitalsRoute = await window.api.patientsRoute({ patientId: hp.id, route: 'hygienist' });
@@ -493,7 +502,7 @@ async function main() {
 
   // ---- v1.2.1: patients move through WITHOUT a forced sign-off/lock ----
   currentUser = db.login('admin', 'admin');
-  const flowP = db.createPatient(currentUser, { first_name: 'Flow', last_name: 'Through', demographics: {}, medical_history: {}, dental_history: {}, route: 'dentist' });
+  const flowP = db.createPatient(currentUser, { first_name: 'Flow', last_name: 'Through', demographics: {}, medical_history: {}, dental_history: {}, route: 'dentist', consents: SIGNED });
   db.saveVitals(currentUser, flowP.id, { bp_systolic: '120', bp_diastolic: '80', heart_rate: '70' });
   db.routePatient(currentUser, flowP.id, 'dentist');
   // provider marks the visit COMPLETE without locking (mode 'complete')
@@ -508,7 +517,7 @@ async function main() {
   log(pr.ok && pr.data.status === 'dismissed', 'v1.2.1: CHECKOUT dismisses a completed patient with NO lock required: ' + (pr.ok ? 'allowed' : pr.error));
   // v1.2.1: the optional lock still works and makes the record read-only
   currentUser = db.login('admin', 'admin');
-  const lockP = db.createPatient(currentUser, { first_name: 'Lock', last_name: 'Opt', demographics: {}, medical_history: {}, dental_history: {}, route: 'dentist' });
+  const lockP = db.createPatient(currentUser, { first_name: 'Lock', last_name: 'Opt', demographics: {}, medical_history: {}, dental_history: {}, route: 'dentist', consents: SIGNED });
   db.saveVitals(currentUser, lockP.id, { bp_systolic: '118', bp_diastolic: '76', heart_rate: '66' });
   db.routePatient(currentUser, lockP.id, 'dentist');
   let lk = db.saveTreatment(currentUser, lockP.id, { provider_name: 'Dr B', provider_signature: 'data:,s' }, 'lock');
@@ -516,7 +525,7 @@ async function main() {
   log(lk.treatment.locked && lockedThrew, 'v1.2.1: optional lock still finalizes a read-only record when chosen');
   // guard: a patient still at check-in (not seen by EMT) cannot be dismissed
   currentUser = db.login('admin', 'admin');
-  const rawP = db.createPatient(currentUser, { first_name: 'Not', last_name: 'Seen', demographics: {}, medical_history: {}, dental_history: {} });
+  const rawP = db.createPatient(currentUser, { first_name: 'Not', last_name: 'Seen', demographics: {}, medical_history: {}, dental_history: {}, consents: SIGNED });
   await window.api.authLogin({ username: 'cox', password: 'x' });
   pr = await window.api.patientsDismiss(rawP.id);
   log(!pr.ok && /EMT|nurse|vitals/i.test(pr.error || ''), 'v1.2.1: a checked-in (unseen) patient still cannot be dismissed: ' + (pr.ok ? 'NOT BLOCKED' : 'blocked'));
@@ -526,7 +535,7 @@ async function main() {
   const reg = db.createUser(currentUser, { username: 'regx', full_name: 'Reg One', role: 'registration', password: 'x' });
   log(reg.role === 'registration', 'registration role can be created (CHECK widened, existing accounts intact)');
   await window.api.authLogin({ username: 'regx', password: 'x' });
-  pr = await window.api.patientsCreate({ first_name: 'Front', last_name: 'Desk', demographics: {}, medical_history: {}, dental_history: { reason: 'checkup' }, consents: [] });
+  pr = await window.api.patientsCreate({ first_name: 'Front', last_name: 'Desk', demographics: {}, medical_history: {}, dental_history: { reason: 'checkup' }, consents: SIGNED });
   log(pr.ok, 'REGISTRATION can complete a check-in: ' + (pr.ok ? 'allowed' : pr.error));
   const regMade = pr.ok ? db.getPatient(pr.data.id) : null;
   log(!!regMade && regMade.status === 'checked_in', 'REGISTRATION check-in enters the queue (status=checked_in)');
@@ -543,7 +552,7 @@ async function main() {
   log(hyg.role === 'hygienist', 'hygienist role can be created (CHECK widened, existing accounts intact)');
   const activeEv = await window.api.eventsActive();
   log(hyg.event_id === (activeEv.data ? activeEv.data.id : null), 'new clinical staff scoped to the active event');
-  const cp = db.createPatient(currentUser, { first_name: 'Clean', last_name: 'Only', demographics: {}, medical_history: {}, dental_history: {} });
+  const cp = db.createPatient(currentUser, { first_name: 'Clean', last_name: 'Only', demographics: {}, medical_history: {}, dental_history: {}, consents: SIGNED });
   await window.api.authLogin({ username: 'hygx', password: 'x' });
   pr = await window.api.treatmentSave({ patientId: cp.id, data: { cleaning: { adult_prophy: true, teeth: ['3', '14'] } }, finalize: false });
   log(pr.ok, 'HYGIENIST can save a cleaning: ' + (pr.ok ? 'allowed' : pr.error));
@@ -573,10 +582,10 @@ async function main() {
     currentUser = db.login('admin', 'admin');
     const store2 = (await import('../src/renderer/js/store.js')).store; store2.setUser(currentUser);
     const ctx2 = { navigate: () => {}, toast: () => {}, store: store2, setDetail: () => {} };
-    const hiP = db.createPatient(currentUser, { first_name: 'High', last_name: 'Pressure', demographics: {}, medical_history: {}, dental_history: { reason: 'x' }, route: 'dentist' });
+    const hiP = db.createPatient(currentUser, { first_name: 'High', last_name: 'Pressure', demographics: {}, medical_history: {}, dental_history: { reason: 'x' }, route: 'dentist', consents: SIGNED });
     db.saveVitals(currentUser, hiP.id, { bp_systolic: '190', bp_diastolic: '105', heart_rate: '88' });
     db.routePatient(currentUser, hiP.id, 'dentist');
-    const okP = db.createPatient(currentUser, { first_name: 'Normal', last_name: 'Pressure', demographics: {}, medical_history: {}, dental_history: { reason: 'x' }, route: 'dentist' });
+    const okP = db.createPatient(currentUser, { first_name: 'Normal', last_name: 'Pressure', demographics: {}, medical_history: {}, dental_history: { reason: 'x' }, route: 'dentist', consents: SIGNED });
     db.saveVitals(currentUser, okP.id, { bp_systolic: '118', bp_diastolic: '76', heart_rate: '70' });
     db.routePatient(currentUser, okP.id, 'dentist');
 
@@ -638,14 +647,14 @@ async function main() {
 
     currentUser = db.login('admin', 'admin');
     // Chairside oral-surgery consent with tooth numbers (dentist station).
-    const cp = db.createPatient(currentUser, { first_name: 'Chair', last_name: 'Side', demographics: {}, medical_history: {}, dental_history: {}, consents: [] });
+    const cp = db.createPatient(currentUser, { first_name: 'Chair', last_name: 'Side', demographics: {}, medical_history: {}, dental_history: {}, consents: SIGNED });
     const afterAdd = db.addPatientConsent(currentUser, cp.id, { type: 'oral_surgery', signer_name: 'Chair Side', tooth_numbers: '18, 19', signature_png: 'data:,sig' });
     const os = (afterAdd.consents || []).find((c) => c.type === 'oral_surgery');
     log(!!os && os.tooth_numbers === '18, 19', 'v1.4.7: dentist can capture an oral-surgery consent chairside WITH tooth numbers');
     log(db.collectSyncRows(3000).rows.some((r) => r.entity === 'consent' && r.data && r.data.tooth_numbers === '18, 19'), 'v1.4.7: a chairside consent is a syncable row (reaches other laptops)');
 
     // BP re-checks: stored, capped at 2, preserved by a plain re-save.
-    const bpp = db.createPatient(currentUser, { first_name: 'Re', last_name: 'Check', demographics: {}, medical_history: {}, dental_history: {} });
+    const bpp = db.createPatient(currentUser, { first_name: 'Re', last_name: 'Check', demographics: {}, medical_history: {}, dental_history: {}, consents: SIGNED });
     db.saveVitals(currentUser, bpp.id, { bp_systolic: '190', bp_diastolic: '110', heart_rate: '88', bp_rechecks: [{ bp_systolic: '185', bp_diastolic: '105', heart_rate: '84' }, { bp_systolic: '176', bp_diastolic: '98', heart_rate: '80' }, { bp_systolic: '170', bp_diastolic: '95' }] });
     let bpFull = db.getPatient(bpp.id);
     log((bpFull.triage.bp_rechecks || []).length === 2, 'v1.4.7: up to 2 BP re-checks stored (extra dropped)');
@@ -665,9 +674,27 @@ async function main() {
     const emtHi2 = (await import('../src/renderer/js/views/emt.js')).renderEmt(ctx3, { id: bpp.id }); document.body.append(emtHi2); await tick(); await tick();
     log(/Add another BP reading/i.test(emtHi2.textContent), 'v1.4.7: EMT offers extra BP readings when the reading is high');
 
-    // Provider consent panel + gate: patient with NO general consent cannot be documented.
+    // v1.7.3: an unsigned patient can no longer be SENT to a clinician at all —
+    // the gate used to live only on the Arrivals screen, so the vitals station
+    // could route them straight to the chair.
     db.saveVitals(currentUser, cp.id, { bp_systolic: '120', bp_diastolic: '80', heart_rate: '70' });
-    db.routePatient(currentUser, cp.id, 'dentist');
+    {
+      const h = rawDb();
+      h.prepare('DELETE FROM consents WHERE patient_id = ?').run(cp.id);
+      h.close();
+      let blocked = '';
+      try { db.routePatient(currentUser, cp.id, 'dentist'); } catch (e) { blocked = e.message; }
+      log(/general consent has not been signed/i.test(blocked),
+        'v1.7.3: an unsigned patient cannot be routed to a clinician');
+      // Put the consent back so they can be routed, then remove it again to
+      // recreate the LEGACY state the provider gate below defends against (a
+      // record whose consent was deleted after they reached the chair).
+      db.addPatientConsent(currentUser, cp.id, { type: 'general', signer_name: 'Chair Side', signature_png: 'data:image/png;base64,AAAA' });
+      db.routePatient(currentUser, cp.id, 'dentist');
+      const h2 = rawDb();
+      h2.prepare('DELETE FROM consents WHERE patient_id = ?').run(cp.id);
+      h2.close();
+    }
     const { renderProvider } = await import('../src/renderer/js/views/provider.js');
     const provNoConsent = renderProvider(ctx3, { id: cp.id }); document.body.append(provNoConsent); await tick(); await tick();
     log(/Consents/.test(provNoConsent.textContent) && /Complete now/i.test(provNoConsent.textContent), 'v1.4.7: dentist sees a Consents panel with a "Complete now" action for the missing general consent');
@@ -702,7 +729,7 @@ async function main() {
     log(!!weight && /weight management/i.test(weight.label) && weight.flag !== true, 'health history: "Weight management program" is offered as a condition checkbox (not a red flag)');
     // A patient can check them and they persist on the record.
     currentUser = db.login('admin', 'admin');
-    const hp = db.createPatient(currentUser, { first_name: 'Pat', last_name: 'Hh', demographics: {}, medical_history: { conditions: ['pain_mgmt', 'weight_mgmt'] }, dental_history: {}, consents: [] });
+    const hp = db.createPatient(currentUser, { first_name: 'Pat', last_name: 'Hh', demographics: {}, medical_history: { conditions: ['pain_mgmt', 'weight_mgmt'] }, dental_history: {}, consents: SIGNED });
     log((db.getPatient(hp.id).medical_history.conditions || []).includes('pain_mgmt') && (db.getPatient(hp.id).medical_history.conditions || []).includes('weight_mgmt'), 'health history: the two program selections save on the patient record');
   }
 
@@ -714,10 +741,10 @@ async function main() {
     const ctx14 = { navigate: (v) => { navTo = v; }, toast: () => {}, store: store14, setDetail: () => {} };
 
     // Patients spread across the pipeline stages.
-    const a = db.createPatient(currentUser, { first_name: 'Al', last_name: 'Aa', demographics: {}, medical_history: {}, dental_history: {}, consents: [] }); // checked in, no vitals
-    const b = db.createPatient(currentUser, { first_name: 'Bo', last_name: 'Bb', demographics: {}, medical_history: {}, dental_history: {}, consents: [] });
+    const a = db.createPatient(currentUser, { first_name: 'Al', last_name: 'Aa', demographics: {}, medical_history: {}, dental_history: {}, consents: SIGNED }); // checked in, no vitals
+    const b = db.createPatient(currentUser, { first_name: 'Bo', last_name: 'Bb', demographics: {}, medical_history: {}, dental_history: {}, consents: SIGNED });
     db.saveVitals(currentUser, b.id, { bp_systolic: '120', bp_diastolic: '80', heart_rate: '70' }); // vitals in, not routed
-    const c = db.createPatient(currentUser, { first_name: 'Cy', last_name: 'Cc', demographics: {}, medical_history: {}, dental_history: {}, consents: [] });
+    const c = db.createPatient(currentUser, { first_name: 'Cy', last_name: 'Cc', demographics: {}, medical_history: {}, dental_history: {}, consents: SIGNED });
     db.saveVitals(currentUser, c.id, { bp_systolic: '118', bp_diastolic: '76', heart_rate: '66' }); db.routePatient(currentUser, c.id, 'dentist'); // ready
 
     const dash = (await import('../src/renderer/js/views/dashboard.js')).renderDashboard(ctx14);
@@ -800,7 +827,7 @@ async function main() {
     // EMT/dentist screens (medFlags), matching the queues (db on_thinner).
     const mf = await import('../src/renderer/js/medFlags.js');
     log(mf.bloodThinnerStatus({ triage: {}, medical_history: { conditions: ['bleeding'] } }).onThinner === true, 'v1.5.16: a "Bleeding disorder" condition raises the blood-thinner flag on the EMT/dentist screens');
-    const bpat = db.createPatient(currentUser, { first_name: 'Bl', last_name: 'Eed', demographics: {}, medical_history: { conditions: ['bleeding'] }, dental_history: {}, consents: [] });
+    const bpat = db.createPatient(currentUser, { first_name: 'Bl', last_name: 'Eed', demographics: {}, medical_history: { conditions: ['bleeding'] }, dental_history: {}, consents: SIGNED });
     const bRow = db.listPatients({}).find((x) => x.id === bpat.id);
     log(!!bRow && bRow.on_thinner === true, 'v1.5.16: the same bleeding patient is flagged in the queues (db) — screens + queues + PDF now agree');
 
@@ -824,7 +851,7 @@ async function main() {
     log(!!doneCard && /total/.test(doneCard.textContent) && /here/.test(doneCard.textContent), 'v1.5.16: board cards show two time tags — total time from check-in + time at the current stage');
 
     // #9: a localized free-text gender ("Mujer") must NOT be mislabeled "Male".
-    const gp = db.createPatient(currentUser, { first_name: 'Gen', last_name: 'Der', gender: 'Mujer', demographics: {}, medical_history: {}, dental_history: {}, consents: [] });
+    const gp = db.createPatient(currentUser, { first_name: 'Gen', last_name: 'Der', gender: 'Mujer', demographics: {}, medical_history: {}, dental_history: {}, consents: SIGNED });
     void gp;
     const rep16 = (await import('../src/renderer/js/views/reports.js')).renderReports(ctx16);
     document.body.append(rep16); await tick(); await tick();
@@ -860,7 +887,7 @@ async function main() {
     currentUser = db.login('admin', 'admin');
 
     // #1: start a new visit from an existing record — details carry over, fresh visit.
-    const src = db.createPatient(currentUser, { first_name: 'Rita', last_name: 'Returns', dob: '1980-05-05', gender: 'female', phone: '5551234567', email: 'rita@example.com', demographics: { address: '5 Elm St' }, medical_history: { conditions: ['diabetes'], allergies: ['penicillin'] }, dental_history: { reason: 'old reason', visit_type: 'extraction_pain', prior_dentist: 'Dr. Prior' }, consents: [] });
+    const src = db.createPatient(currentUser, { first_name: 'Rita', last_name: 'Returns', dob: '1980-05-05', gender: 'female', phone: '5551234567', email: 'rita@example.com', demographics: { address: '5 Elm St' }, medical_history: { conditions: ['diabetes'], allergies: ['penicillin'] }, dental_history: { reason: 'old reason', visit_type: 'extraction_pain', prior_dentist: 'Dr. Prior' }, consents: SIGNED_SURGERY });
     const nv = db.startVisitFromExisting(currentUser, src.id);
     log(nv.id !== src.id && nv.first_name === 'Rita' && nv.last_name === 'Returns' && nv.dob === '1980-05-05' && nv.email === 'rita@example.com', 'v1.5.18: a returning patient starts a NEW visit with their details carried over');
     log((nv.medical_history.conditions || []).includes('diabetes') && nv.demographics.address === '5 Elm St' && nv.dental_history.prior_dentist === 'Dr. Prior', 'v1.5.18: the new visit keeps medical + demographics (no re-typing)');
@@ -876,7 +903,7 @@ async function main() {
     // #4: checked-out patients with an email appear in Reports' email list.
     const store18 = (await import('../src/renderer/js/store.js')).store; store18.setUser(currentUser);
     const ctx18 = { navigate: () => {}, toast: () => {}, store: store18, setDetail: () => {} };
-    const ep = db.createPatient(currentUser, { first_name: 'Ed', last_name: 'Mailer', email: 'ed@example.com', demographics: {}, medical_history: {}, dental_history: {}, consents: [] });
+    const ep = db.createPatient(currentUser, { first_name: 'Ed', last_name: 'Mailer', email: 'ed@example.com', demographics: {}, medical_history: {}, dental_history: {}, consents: SIGNED });
     db.saveVitals(currentUser, ep.id, { bp_systolic: '120', bp_diastolic: '80', heart_rate: '70' });
     db.routePatient(currentUser, ep.id, 'dentist');
     db.dismissPatient(currentUser, ep.id);
@@ -893,7 +920,7 @@ async function main() {
   // ---- v1.5.0: X-ray import — per-x-ray tooth + auto-name, synced; import tile. ----
   {
     currentUser = db.login('admin', 'admin');
-    const xp = db.createPatient(currentUser, { first_name: 'Ex', last_name: 'Ray', demographics: {}, medical_history: {}, dental_history: {}, consents: [] });
+    const xp = db.createPatient(currentUser, { first_name: 'Ex', last_name: 'Ray', demographics: {}, medical_history: {}, dental_history: {}, consents: SIGNED });
     const added = db.addXray(currentUser, xp.id, { image_png: 'data:image/png;base64,AAAA', note: 'Ray_Ex_UR_T3', tooth: '3' });
     let xl = db.listXrays(xp.id);
     log(xl.length === 1 && xl[0].tooth === '3' && xl[0].note === 'Ray_Ex_UR_T3', 'v1.5.0: an x-ray stores its tooth + auto-name (Lastname_Firstname_area_tooth)');
@@ -917,7 +944,7 @@ async function main() {
     const store51 = (await import('../src/renderer/js/store.js')).store; store51.setUser(currentUser);
     const ctx51 = { navigate: () => {}, toast: () => {}, store: store51, setDetail: () => {} };
     const renderProvider = (await import('../src/renderer/js/views/provider.js')).renderProvider;
-    const yp = db.createPatient(currentUser, { first_name: 'Ada', last_name: 'Xu', demographics: {}, medical_history: {}, dental_history: {}, consents: [] });
+    const yp = db.createPatient(currentUser, { first_name: 'Ada', last_name: 'Xu', demographics: {}, medical_history: {}, dental_history: {}, consents: SIGNED });
     db.saveVitals(currentUser, yp.id, { bp_systolic: '118', bp_diastolic: '76', heart_rate: '66' });
     db.routePatient(currentUser, yp.id, 'dentist');
 
@@ -1049,7 +1076,7 @@ async function main() {
     log(routeOf(mk('Fill', 'filling')) === 'dentist', 'v1.5.24: choosing a filling routes to the dentist automatically');
     log(routeOf(mk('Pull', 'extraction_pain')) === 'dentist', 'v1.5.24: choosing an extraction routes to the dentist automatically');
     // An explicit choice still wins, and an unanswered visit type leaves it open.
-    const explicit = db.createPatient(currentUser, { first_name: 'Auto', last_name: 'Override', demographics: {}, medical_history: {}, dental_history: { visit_type: 'cleaning' }, route: 'dentist' });
+    const explicit = db.createPatient(currentUser, { first_name: 'Auto', last_name: 'Override', demographics: {}, medical_history: {}, dental_history: { visit_type: 'cleaning' }, route: 'dentist', consents: SIGNED });
     log(routeOf(explicit) === 'dentist', 'v1.5.24: an explicitly chosen station still wins over the automatic one');
     log(routeOf(mk('Blank', null)) == null, 'v1.5.24: no answer leaves the station for the EMT to choose');
   }
@@ -1323,14 +1350,17 @@ async function main() {
       demographics: { city: 'Sandy', state: 'OR' },
       medical_history: { allergies: ['penicillin'], allergies_other: 'Sulfa', conditions: ['diabetes'] },
       dental_history: { visit_type: 'extraction_pain', reason: 'Molar pain' },
-      consents: [{ type: 'general', signer_name: 'Wilhelmina Farnsworth', signature_png: 'data:image/png;base64,AAAA' }],
+      consents: [
+        { type: 'general', signer_name: 'Wilhelmina Farnsworth', signature_png: 'data:image/png;base64,AAAA' },
+        { type: 'oral_surgery', signer_name: 'Wilhelmina Farnsworth', signature_png: 'data:image/png;base64,BBBB' },
+      ],
     });
     db.saveVitals(currentUser, pt.id, { bp_systolic: '148', bp_diastolic: '92', heart_rate: '78' });
     db.routePatient(currentUser, pt.id, 'dentist');
     db.addXray(currentUser, pt.id, { station: 'dentist', image_png: 'data:image/jpeg;base64,BBBB', note: 'Farnsworth_W_T30.jpg', tooth: '30' });
 
     const bundle = db.exportClinicBundle(ev.id);
-    log(bundle.patients.length === 1 && bundle.consents.length === 1 && bundle.xrays.length === 1 && !!bundle.patients[0].uid,
+    log(bundle.patients.length === 1 && bundle.consents.length === 2 && bundle.xrays.length === 1 && !!bundle.patients[0].uid,
       'v1.6.0: the clinic export carries patients, consents and x-rays, each with a stable id');
     log(String(bundle.consents[0].signature_png).startsWith('data:image') && String(bundle.xrays[0].image_png).startsWith('data:image'),
       'v1.6.0: signatures and x-ray images are in the backup (a spreadsheet cannot hold them)');
@@ -1381,7 +1411,7 @@ async function main() {
     // ...and an incoming deletion removes the record here too.
     db.setEventActive(currentUser, ev.id, true); // finishing the clinic turned it off
     db.setActiveEvent(currentUser, ev.id);
-    const victim = db.createPatient(currentUser, { first_name: 'Gone', last_name: 'Soon', demographics: {}, medical_history: {}, dental_history: {} });
+    const victim = db.createPatient(currentUser, { first_name: 'Gone', last_name: 'Soon', demographics: {}, medical_history: {}, dental_history: {}, consents: SIGNED });
     const vUid = db.exportClinicBundle(ev.id).patients.find((p) => p.last_name === 'Soon').uid;
     // v1.6.3: deletions are counted separately from records brought in.
     const del = db.applyRemoteRows([{ entity: 'patient', uid: vUid, deleted: 1, updated_at: '2099-12-31T00:00:00.000Z@peer', data: {} }]);
@@ -1584,14 +1614,14 @@ async function main() {
     const tombUids = () => new Set(db.collectSyncRows(800).rows.filter((r) => r.deleted).map((r) => r.uid));
 
     // An x-ray carries its own image to every station.
-    const xp = db.createPatient(currentUser, { first_name: 'X', last_name: 'Ray', demographics: {}, medical_history: {}, dental_history: {} });
+    const xp = db.createPatient(currentUser, { first_name: 'X', last_name: 'Ray', demographics: {}, medical_history: {}, dental_history: {}, consents: SIGNED });
     const xr = db.addXray(currentUser, xp.id, { station: 'dentist', image_png: 'data:image/jpeg;base64,AAAA', note: 'x.jpg', tooth: '14' });
     const xUid = db.exportClinicBundle(evT.id).xrays.find((x) => x.id === xr.id).uid;
     db.deleteXray(currentUser, xr.id);
     log(tombUids().has(xUid), 'v1.6.3: deleting an x-ray removes it from the cloud too, not just this laptop');
 
     // The empty-record cleanup says "permanently"; make sure it is.
-    const junk = db.createPatient(currentUser, { first_name: 'A', last_name: 'B', demographics: {}, medical_history: {}, dental_history: {} });
+    const junk = db.createPatient(currentUser, { first_name: 'A', last_name: 'B', demographics: {}, medical_history: {}, dental_history: {}, consents: SIGNED });
     const junkUid = db.exportClinicBundle(evT.id).patients.find((p) => p.id === junk.id).uid;
     db.deleteIncompletePatients(currentUser);
     log(tombUids().has(junkUid), 'v1.6.3: clearing empty records is permanent everywhere, as the dialog claims');
@@ -1614,14 +1644,14 @@ async function main() {
     // Force-deleting an event must clear its patients from the cloud as well.
     const ev2 = db.createEvent(currentUser, { name: 'Doomed' });
     db.setActiveEvent(currentUser, ev2.id);
-    const dp = db.createPatient(currentUser, { first_name: 'Doom', last_name: 'Ed', demographics: {}, medical_history: {}, dental_history: {} });
+    const dp = db.createPatient(currentUser, { first_name: 'Doom', last_name: 'Ed', demographics: {}, medical_history: {}, dental_history: {}, consents: SIGNED });
     const dpUid = db.exportClinicBundle(ev2.id).patients.find((p) => p.id === dp.id).uid;
     db.setActiveEvent(currentUser, evT.id);
     db.deleteEvent(currentUser, ev2.id, { force: true });
     log(tombUids().has(dpUid), 'v1.6.3: force-deleting an event clears its patients from the cloud too');
 
     // A stale deletion must not wipe a newer local edit.
-    const keep = db.createPatient(currentUser, { first_name: 'Keep', last_name: 'Me', demographics: {}, medical_history: {}, dental_history: {} });
+    const keep = db.createPatient(currentUser, { first_name: 'Keep', last_name: 'Me', demographics: {}, medical_history: {}, dental_history: {}, consents: SIGNED });
     db.collectSyncRows(800);
     const keepUid = db.exportClinicBundle(evT.id).patients.find((p) => p.id === keep.id).uid;
     db.updatePatient(currentUser, keep.id, { first_name: 'Keep', last_name: 'Me', phone: '5035551234' });
@@ -1708,7 +1738,9 @@ async function main() {
         first_name: 'R', last_name: last, dob: '1980-01-01', gender: 'female',
         demographics: { city, state: 'OR' }, medical_history: { conditions: ['diabetes'] },
         dental_history: { visit_type: 'extraction_pain' },
-        consents: [{ type: 'general', signer_name: 'R', signature_png: 'data:image/png;base64,AAAA' }],
+        consents: [{ type: 'general', signer_name: 'R', signature_png: 'data:image/png;base64,AAAA' },
+        { type: 'oral_surgery', signer_name: 'R', signature_png: 'data:image/png;base64,BBBB' },
+      ],
       });
       db.saveVitals(currentUser, p.id, { bp_systolic: '120', heart_rate: '70' });
       db.routePatient(currentUser, p.id, 'dentist');
@@ -1791,7 +1823,9 @@ async function main() {
     const pc = db.createPatient(currentUser, {
       first_name: 'Count', last_name: 'Rules', dob: '1990-05-05', gender: 'male',
       demographics: { city: 'Sandy', state: 'OR' }, medical_history: {}, dental_history: { visit_type: 'extraction_pain' },
-      consents: [{ type: 'general', signer_name: 'C', signature_png: 'data:image/png;base64,AAAA' }],
+      consents: [{ type: 'general', signer_name: 'C', signature_png: 'data:image/png;base64,AAAA' },
+        { type: 'oral_surgery', signer_name: 'R', signature_png: 'data:image/png;base64,BBBB' },
+      ],
     });
     db.saveVitals(currentUser, pc.id, { bp_systolic: '120', heart_rate: '70' });
     db.routePatient(currentUser, pc.id, 'dentist');
@@ -2184,6 +2218,178 @@ async function main() {
     const evBatch = db.collectSyncRows(400);
     log(evBatch.rows.some((r) => r.entity === 'event' && r.data.name === 'Carry Over This Year' && r.data.selected_at),
       'v1.6.8: and that switch is pushed to them');
+  }
+
+  // ---- v1.7.3: the back-end audit fixes ----
+  {
+    currentUser = db.login('admin', 'admin');
+    const SG = [{ type: 'general', signer_name: 'A', signature_png: 'data:image/png;base64,AAAA' }];
+    const seen = (l, extra) => {
+      const q = db.createPatient(currentUser, { first_name: 'A', last_name: l, dob: '1985-05-05', gender: 'female',
+        demographics: { city: 'Sandy', state: 'OR' }, medical_history: {},
+        dental_history: { visit_type: 'cleaning' }, consents: SG, ...(extra || {}) });
+      db.saveVitals(currentUser, q.id, { bp_systolic: '120', heart_rate: '70' });
+      db.routePatient(currentUser, q.id, 'hygienist');
+      db.saveTreatment(currentUser, q.id, { cleaning: { scaling: true }, provider_name: 'H' }, true);
+      db.dismissPatient(currentUser, q.id); return q;
+    };
+
+    // 1. A kept report is a high-water mark. Finish, then use the Delete button
+    //    on the same clinic — the totals used to be overwritten with zeros.
+    const evK = db.createEvent(currentUser, { name: 'Keep Totals' });
+    db.setActiveEvent(currentUser, evK.id);
+    ['One', 'Two', 'Three', 'Four', 'Five'].forEach(seen);
+    db.finishEvent(currentUser, evK.id);
+    log(db.listEventReports().find((r) => r.event_id === evK.id).patients_seen === 5,
+      'v1.7.3: (setup) Finish clinic keeps the totals');
+    db.purgeEventPatients(currentUser, evK.id);
+    log(db.listEventReports().find((r) => r.event_id === evK.id).patients_seen === 5,
+      'v1.7.3: deleting the patient data AFTERWARDS does not wipe the kept totals');
+    db.captureEventSummary(currentUser, evK.id);
+    log(db.listEventReports().find((r) => r.event_id === evK.id).patients_seen === 5,
+      'v1.7.3: and a re-capture on an emptied clinic cannot reduce them');
+
+    // 2. The kept total must not be replaced by a SMALLER live count.
+    log(db.reportRollup(evK.id).summary.patients_seen === 5,
+      'v1.7.3: Reports shows the kept total for an emptied clinic');
+
+    // 3. A refused account deletion must publish nothing.
+    const tombs = () => { const h = rawDb(); const n = h.prepare("SELECT COUNT(*) n FROM tombstones WHERE entity='user'").get().n; h.close(); return n; };
+    const before = tombs();
+    let refused = '';
+    try { db.deleteUser(currentUser, currentUser.id); } catch (e) { refused = e.message; }
+    log(/cannot delete your own account/i.test(refused) && tombs() === before,
+      'v1.7.3: a REFUSED account deletion is not published to the other laptops');
+
+    // 4. A backup written by an older build must still restore.
+    const evB = db.createEvent(currentUser, { name: 'Old Backup' });
+    db.setActiveEvent(currentUser, evB.id);
+    ['Uno', 'Dos', 'Tres'].forEach(seen);
+    const bundle = db.exportClinicBundle(evB.id);
+    db.purgeEventPatients(currentUser, evB.id);
+    const OLDER = ['bp_rechecks', 'emt_review', 'teeth_notes', 'flags', 'checklist', 'teeth',
+      'triaged_by_name', 'vitals_by_name', 'routed_by_name'];
+    const aged = { ...bundle, triage: bundle.triage.map((t) => { const c = { ...t }; OLDER.forEach((k) => delete c[k]); return c; }) };
+    let restoreErr = null;
+    try { db.importClinicBundle(currentUser, aged); } catch (e) { restoreErr = e.message; }
+    log(!restoreErr && db.listPatients({ eventId: evB.id }).length === 3,
+      'v1.7.3: a backup from an older build still restores every patient'
+      + (restoreErr ? ' — threw: ' + restoreErr : ''));
+    const restored = db.getPatient(db.listPatients({ eventId: evB.id })[0].id);
+    log(!!(restored.triage && restored.triage.bp_systolic),
+      'v1.7.3: ...and their chart comes back with it');
+
+    // 5. A synced chart from an older build must APPLY, not be silently dropped.
+    const evS = db.createEvent(currentUser, { name: 'Old Chart' });
+    db.setActiveEvent(currentUser, evS.id);
+    const sp = db.createPatient(currentUser, { first_name: 'Sync', last_name: 'Chart', dob: '1985-05-05',
+      gender: 'female', demographics: {}, medical_history: {}, dental_history: {}, consents: SG });
+    db.collectSyncRows();
+    const h = rawDb(); const spUid = h.prepare('SELECT uid FROM patients WHERE id=?').get(sp.id).uid; h.close();
+    const later = new Date(Date.now() + 60000).toISOString();
+    const applied = db.applyRemoteRows([{ entity: 'triage', uid: 'old-build-triage', patient_uid: spUid, updated_at: later,
+      data: { complaint: 'Toothache', notes: 'from an older laptop', status: 'ready',
+        bp_systolic: '128', bp_diastolic: '82', heart_rate: '76', vitals_at: later, route: 'dentist', routed_at: later } }]);
+    const chart = db.getPatient(sp.id).triage;
+    log(applied.applied === 1 && chart && chart.complaint === 'Toothache' && chart.bp_systolic,
+      'v1.7.3: a chart synced from an older build arrives complete, not blank');
+
+    // 6. An unsigned patient cannot reach a clinician by ANY route.
+    const up = db.createPatient(currentUser, { first_name: 'Un', last_name: 'Consented', dob: '1990-01-01',
+      gender: 'male', demographics: {}, medical_history: {}, dental_history: {}, consents: [] });
+    db.saveVitals(currentUser, up.id, { bp_systolic: '120', heart_rate: '70' });
+    let routeErr = '';
+    try { db.routePatient(currentUser, up.id, 'dentist'); } catch (e) { routeErr = e.message; }
+    log(/general consent has not been signed/i.test(routeErr),
+      'v1.7.3: the vitals station cannot send an unsigned patient to a clinician');
+    let moveErr = '';
+    try { db.adminMovePatient(currentUser, up.id, 'hygienist'); } catch (e) { moveErr = e.message; }
+    log(/consent/i.test(moveErr), 'v1.7.3: nor can an admin move them there');
+    // an extraction needs the surgery consent too
+    const xp = db.createPatient(currentUser, { first_name: 'Ex', last_name: 'Traction', dob: '1990-01-01',
+      gender: 'male', demographics: {}, medical_history: {},
+      dental_history: { visit_type: 'extraction_pain' }, consents: SG });
+    db.saveVitals(currentUser, xp.id, { bp_systolic: '120', heart_rate: '70' });
+    let surgErr = '';
+    try { db.routePatient(currentUser, xp.id, 'dentist'); } catch (e) { surgErr = e.message; }
+    log(/Oral Surgery consent/i.test(surgErr),
+      'v1.7.3: an extraction patient needs the surgery consent before the chair');
+
+    // 7. USB import must key on uid, never the other laptop's row id.
+    const victim = db.createPatient(currentUser, { first_name: 'Real', last_name: 'Victim', dob: '1970-01-01',
+      gender: 'male', demographics: { city: 'Boring' }, medical_history: {}, dental_history: {}, consents: SG });
+    db.importPatientFromPortable(currentUser, { id: victim.id, first_name: 'Someone', last_name: 'Else',
+      dob: '1999-09-09', gender: 'female', demographics: {}, medical_history: {}, dental_history: {}, consents: [] });
+    log(db.getPatient(victim.id).last_name === 'Victim',
+      'v1.7.3: a USB import cannot overwrite a different patient by row id');
+
+    // 8. USB consents: not duplicated on a new record, not discarded on a merge.
+    const imp = db.importPatientFromPortable(currentUser, { first_name: 'Fresh', last_name: 'Import',
+      dob: '1990-01-01', gender: 'male', demographics: {}, medical_history: {}, dental_history: {},
+      consents: [{ type: 'general', signer_name: 'F', signature_png: 'data:image/png;base64,AAAA' },
+        { type: 'oral_surgery', signer_name: 'F', signature_png: 'data:image/png;base64,BBBB' }] });
+    log(db.getPatient(imp.id).consents.length === 2,
+      'v1.7.3: a USB import files each consent once, not twice');
+    db.collectSyncRows();
+    const h2 = rawDb(); const impUid = h2.prepare('SELECT uid FROM patients WHERE id=?').get(imp.id).uid; h2.close();
+    const h3 = rawDb(); h3.prepare("DELETE FROM consents WHERE patient_id = ? AND type='oral_surgery'").run(imp.id); h3.close();
+    db.importPatientFromPortable(currentUser, { uid: impUid, first_name: 'Fresh', last_name: 'Import',
+      dob: '1990-01-01', gender: 'male', demographics: {}, medical_history: {}, dental_history: {},
+      consents: [{ type: 'oral_surgery', signer_name: 'F', signature_png: 'data:image/png;base64,BBBB' }] });
+    log(db.getPatient(imp.id).consents.some((c) => c.type === 'oral_surgery'),
+      'v1.7.3: a consent carried on the USB stick is kept when the patient already exists');
+
+    // 9. Finishing a clinic must not silently select an older one.
+    const evOld = db.createEvent(currentUser, { name: 'Last Season' });
+    const evNow = db.createEvent(currentUser, { name: 'Running Today' });
+    db.setActiveEvent(currentUser, evNow.id);
+    seen('Attendee');
+    db.finishEvent(currentUser, evNow.id);
+    log(!db.getActiveEvent(), 'v1.7.3: finishing a clinic leaves no clinic selected');
+    let walkErr = '';
+    try {
+      db.createPatient(currentUser, { first_name: 'Walk', last_name: 'In', demographics: {},
+        medical_history: {}, dental_history: {}, consents: SG });
+    } catch (e) { walkErr = e.message; }
+    log(/No clinic is open/i.test(walkErr),
+      'v1.7.3: a walk-in is refused rather than filed into a previous clinic');
+    db.setActiveEvent(currentUser, evOld.id);
+    log(db.getActiveEvent() && db.getActiveEvent().id === evOld.id,
+      'v1.7.3: and choosing a clinic deliberately still works');
+
+    // 10. Two stations finishing the same clinic must reconcile.
+    const evR = db.createEvent(currentUser, { name: 'Two Stations' });
+    db.setActiveEvent(currentUser, evR.id);
+    ['P1', 'P2'].forEach(seen);
+    db.captureEventSummary(currentUser, evR.id);
+    db.collectSyncRows();
+    const h4 = rawDb(); const evRUid = h4.prepare('SELECT uid FROM events WHERE id=?').get(evR.id).uid; h4.close();
+    const rr = db.applyRemoteRows([{ entity: 'report', uid: 'other-station-report', event_uid: evRUid,
+      updated_at: new Date(Date.now() + 120000).toISOString(),
+      data: { summary: JSON.stringify({ patients_seen: 9, visits_completed: 9 }), patients_seen: 9,
+        finished_at: later, finished_by_name: 'Other Station', created_at: later } }]);
+    log(rr.applied === 1 && db.listEventReports().filter((r) => r.event_id === evR.id).length === 1,
+      'v1.7.3: a peer station\'s clinic report reconciles instead of being dropped');
+
+    // 11. Station logins never appear as people, and stay gone.
+    const dir2 = db.listStaffDirectory();
+    log(!dir2.some((p2) => ['admin', 'registration', 'checkout'].includes(p2.username)),
+      'v1.7.3: the shared station logins are not listed as staff');
+    const desks = db.listUsers().filter((u) => ['registration', 'checkout'].includes(u.username));
+    log(desks.length === 2 && desks.every((u) => u.event_id === null),
+      'v1.7.3: the shared desk logins stay global, so Start fresh cannot delete them');
+
+    // 12. An unsigned consent must not print as signed.
+    const pdfMod = require('../src/main/pdf.js');
+    // A consent ROW that carries no signature — the state that printed as
+    // "Signed" over an empty box.
+    db.addPatientConsent(currentUser, up.id, { type: 'general', signer_name: 'Un Consented', signature_png: '' });
+    const unsignedHtml = pdfMod.buildHtml(db.getPatient(up.id), 'full');
+    log(/NOT SIGNED/.test(unsignedHtml) && /No signature on file/.test(unsignedHtml),
+      'v1.7.3: the printed record marks a consent with no signature');
+    const signedHtml = pdfMod.buildHtml(db.getPatient(victim.id), 'full');
+    log(/Signed/.test(signedHtml) && !/NOT SIGNED/.test(signedHtml),
+      'v1.7.3: ...and still shows a real signature as signed');
   }
 
   await tick();

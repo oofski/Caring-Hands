@@ -458,9 +458,20 @@ function seed() {
   // v1.0.7: adopt any legacy clinical staff (created before event scoping, so
   // event_id IS NULL) into the active event, so "Start fresh for next event"
   // can clear them like any other event staff. Administrators stay global.
+  //
+  // v1.7.3: ...and so do the shared desk logins. This ran on EVERY launch and
+  // swept 'registration' and 'checkout' — which ensureClinicAccounts creates
+  // globally on purpose — into the active event. "Start fresh for next event"
+  // then deleted them AND tombstoned them, so the front desk and check-out
+  // stations lost their logins on every laptop, mid-season.
   const activeId = Number(getSetting('active_event_id'));
   if (activeId) {
-    db.prepare("UPDATE users SET event_id = ? WHERE event_id IS NULL AND role != 'admin'").run(activeId);
+    const shared = CLINIC_ACCOUNTS.map(() => '?').join(',');
+    db.prepare(`UPDATE users SET event_id = ? WHERE event_id IS NULL AND role != 'admin'
+                AND username NOT IN (${shared})`).run(activeId, ...CLINIC_ACCOUNTS.map((c) => c.username));
+    // Put back any that an earlier build already re-scoped.
+    db.prepare(`UPDATE users SET event_id = NULL WHERE username IN (${shared})`)
+      .run(...CLINIC_ACCOUNTS.map((c) => c.username));
   }
 }
 
@@ -631,12 +642,12 @@ function detachUserRefs(ids) {
 
 function deleteUser(actor, id) {
   ensureUids();
-  // A staff account is a synced entity carrying its own password hash, so a
-  // local-only delete leaves them able to sign in on every other laptop.
-  {
-    const u = db.prepare('SELECT uid, event_id FROM users WHERE id = ?').get(id);
-    if (u && u.uid) recordTombstone(u.uid, 'user', u.event_id ? uidOf('events', u.event_id) : null);
-  }
+  // EVERY refusal is checked before anything is written. The tombstone used to
+  // be recorded first, so a delete the app REFUSED — your own account, or the
+  // last administrator — still published "this account is gone" to the cloud.
+  // Locally nothing happened and the toast said it was refused, while every
+  // other laptop deleted the account on its next sync. An admin could lock
+  // themselves out of every other station without a single visible error.
   const row = db.prepare('SELECT * FROM users WHERE id = ?').get(id);
   if (!row) throw new Error('User not found.');
   if (actor && actor.id === id) throw new Error('You cannot delete your own account.');
@@ -646,7 +657,13 @@ function deleteUser(actor, id) {
     const admins = db.prepare("SELECT COUNT(*) AS n FROM users WHERE role = 'admin' AND active = 1").get().n;
     if (admins <= 1) throw new Error('Cannot delete the last administrator.');
   }
-  const tx = db.transaction(() => { detachUserRefs([id]); db.prepare('DELETE FROM users WHERE id = ?').run(id); });
+  // Past every guard: now it is safe to tell the other laptops. A staff account
+  // carries its own password hash, so a local-only delete would leave them able
+  // to sign in everywhere else.
+  const tx = db.transaction(() => {
+    if (row.uid) recordTombstone(row.uid, 'user', row.event_id ? uidOf('events', row.event_id) : null);
+    detachUserRefs([id]); db.prepare('DELETE FROM users WHERE id = ?').run(id);
+  });
   tx();
   audit(actor, 'delete', 'user', id, row.username);
   return { deleted: true };
@@ -759,9 +776,14 @@ function rememberStaff(row, eventName) {
 // Seed the list from the accounts already on this computer, so upgrading does
 // not start with an empty directory and lose everyone who is already set up.
 function backfillStaffDirectory() {
-  // A station login that an earlier run recorded as a person is dropped again.
-  for (const r of db.prepare('SELECT id, username FROM staff_directory').all()) {
-    if (isStationAccount(r.username)) db.prepare('DELETE FROM staff_directory WHERE id = ?').run(r.id);
+  // A station login that an earlier run recorded as a person is dropped again —
+  // WITH a tombstone. Without one, the cloud copy (v1.6.7 published these before
+  // station logins were excluded) came straight back on the next sync, so
+  // "Clinic Administrator" reappeared in the staff list after every restart.
+  for (const r of db.prepare('SELECT id, uid, username FROM staff_directory').all()) {
+    if (!isStationAccount(r.username)) continue;
+    if (r.uid) recordTombstone(r.uid, 'staffdir', null);
+    db.prepare('DELETE FROM staff_directory WHERE id = ?').run(r.id);
   }
   const known = new Set(db.prepare('SELECT username FROM staff_directory').all().map((r) => r.username));
   for (const u of db.prepare('SELECT * FROM users').all()) {
@@ -918,6 +940,8 @@ function setActiveEvent(actor, id) {
   // now propagates through cloud sync instead of staying local to this computer.
   db.prepare('UPDATE events SET selected_at = ? WHERE id = ?').run(stampNow(), id);
   persistStamp();
+  // A deliberate choice ends the "nothing is selected" state a finish left behind.
+  setSetting('active_event_cleared_at', '');
   setSetting('active_event_id', String(id));
   audit(actor, 'select', 'event', id, e.name);
   return db.prepare('SELECT * FROM events WHERE id = ?').get(id);
@@ -975,11 +999,24 @@ function deleteEvent(actor, id, { force } = {}) {
 // laptop: the ON event with the greatest selected_at (a globally-ordered stamp)
 // wins, so a "Set active" done on ANY computer becomes the active event here once
 // it syncs. Falls back to the current local event, then any active event.
-function resolveActiveEvent() {
+// `strict` drops the last-resort fallback. After a clinic is finished or its
+// records are removed, falling back to "the newest event that happens to still
+// be switched on" quietly moved every station onto a PREVIOUS clinic — and the
+// next walk-in was filed there. With no deliberately-selected clinic left, it is
+// safer to have none: check-in then says so plainly instead of misfiling.
+function resolveActiveEvent({ strict = false } = {}) {
+  // When a clinic is finished we record WHEN. Older clinics that are still
+  // switched on carry an older selected_at, so without this the app quietly fell
+  // back to one of them and the next walk-in was filed there. A selection made
+  // on ANY laptop after the finish still wins, so cross-station "Set active"
+  // keeps working — it just has to be a deliberate, more recent choice.
+  const clearedAt = getSetting('active_event_cleared_at') || '';
   const chosen = db.prepare(
-    "SELECT id FROM events WHERE active = 1 AND selected_at IS NOT NULL AND selected_at != '' ORDER BY selected_at DESC LIMIT 1"
-  ).get();
+    `SELECT id FROM events WHERE active = 1 AND selected_at IS NOT NULL AND selected_at != ''
+       AND (? = '' OR selected_at > ?) ORDER BY selected_at DESC LIMIT 1`
+  ).get(clearedAt, clearedAt);
   if (chosen) { setSetting('active_event_id', String(chosen.id)); return chosen.id; }
+  if (strict || clearedAt) { setSetting('active_event_id', ''); return null; }
   // No event was ever explicitly selected — keep a valid, still-on local event.
   const curId = Number(getSetting('active_event_id'));
   if (curId && db.prepare('SELECT 1 FROM events WHERE id = ? AND active = 1').get(curId)) return curId;
@@ -1352,6 +1389,11 @@ function requireVitals(patientId) {
 function routePatient(actor, patientId, route) {
   if (!ROUTES.includes(route)) throw new Error('Choose where the patient goes next: dentist, hygienist, or both.');
   requireVitals(patientId);
+  // The consent gate used to live only on the Arrivals screen — but Arrivals is
+  // a separate confirmation step that can be skipped, and the vitals station
+  // routes patients straight to a clinician. An unsigned patient could reach the
+  // chair through that door. Checked here so every path is gated.
+  requireConsents(patientId);
   const tr = db.prepare('SELECT id FROM triage WHERE patient_id = ?').get(patientId);
   if (!tr) {
     db.prepare(`INSERT INTO triage (patient_id, status, route, routed_by, routed_at, emt_signed_off)
@@ -1367,6 +1409,19 @@ function routePatient(actor, patientId, route) {
   db.prepare("UPDATE patients SET status='triaged', updated_at=? WHERE id=? AND status='checked_in'").run(now(), patientId);
   audit(actor, 'route', 'patient', patientId, route);
   return getPatient(patientId);
+}
+
+// Refuse to send a patient onward until the consents their visit needs are
+// actually signed. Shared by the Arrivals desk and by routePatient so the two
+// can never disagree about who is allowed through.
+function requireConsents(patientId) {
+  const r = arrivalReadiness(patientId);
+  if (!r.general_signed) {
+    throw new Error('The general consent has not been signed yet. Have the patient sign it before sending them through.');
+  }
+  if (r.needs_surgery_consent && !r.surgery_signed) {
+    throw new Error('This patient is here for an extraction, so the Oral Surgery consent must be signed too.');
+  }
 }
 
 // What still stands between this patient and being seen: the consents their
@@ -1518,7 +1573,11 @@ function patientAudit(id) {
 function importPatientFromPortable(actor, portable) {
   if (!portable || !portable.first_name) throw new Error('Invalid patient file.');
   const evId = Number(getSetting('active_event_id'));
-  let existing = portable.id ? db.prepare('SELECT * FROM patients WHERE id = ?').get(portable.id) : null;
+  // Match on UID, never on the exporting laptop's row id. Row ids are local
+  // counters: patient #6 on the carrying laptop is a different person from
+  // patient #6 here, so trusting it overwrote an unrelated patient's name, date
+  // of birth and history with the incoming one's.
+  let existing = portable.uid ? db.prepare('SELECT * FROM patients WHERE uid = ?').get(portable.uid) : null;
   // Match WITHIN THIS CLINIC only. The name+dob fallback searched every event
   // ever run, so loading a returning patient off a USB stick overwrote the
   // record from their LAST clinic and never put them in today's queue — the
@@ -1540,9 +1599,26 @@ function importPatientFromPortable(actor, portable) {
       demographics: portable.demographics, medical_history: portable.medical_history, dental_history: portable.dental_history,
     });
   } else {
+    // createPatient already files portable.consents; adding them again here gave
+    // every USB-imported patient a duplicate of each consent.
     const created = createPatient(actor, portable);
     pid = created.id;
-    (portable.consents || []).forEach((c) => addConsent(pid, c));
+  }
+  // A consent signed on the carrying laptop (the chairside oral-surgery consent
+  // with its signature and tooth numbers) used to be discarded entirely on the
+  // merge branch, because updatePatient never touches the consents table. Merge
+  // by type so a signature can arrive but never be silently replaced by a blank.
+  for (const c of (portable.consents || [])) {
+    if (!c || !c.type) continue;
+    const have = db.prepare('SELECT id, signature_png FROM consents WHERE patient_id = ? AND type = ?').get(pid, c.type);
+    if (!have) { addConsent(pid, c); continue; }
+    const incomingSigned = !!String(c.signature_png || '').trim();
+    const haveSigned = !!String(have.signature_png || '').trim();
+    if (incomingSigned && !haveSigned) {
+      db.prepare('UPDATE consents SET signer_name=?, relationship=?, signature_png=?, signed_at=?, tooth_numbers=?, updated_at=?, synced_rev=NULL, content_rev=NULL WHERE id=?')
+        .run(c.signer_name || null, c.relationship || null, c.signature_png,
+          c.signed_at || now(), c.tooth_numbers || null, now(), have.id);
+    }
   }
   // Triage, treatment, vitals, x-rays from the portable file.
   if (portable.triage) saveTriage(actor, pid, portable.triage);
@@ -1961,7 +2037,7 @@ function importClinicBundle(actor, bundle) {
         const pid = childOf(row);
         if (!pid) continue;
         const existing = db.prepare(`SELECT id FROM ${table} WHERE patient_id = ?`).get(pid);
-        const vals = cols.map((c) => (row[c] === undefined ? null : row[c]));
+        const vals = cols.map((c) => fillColumn(table, c, row[c]));
         if (existing) {
           db.prepare(`UPDATE ${table} SET ${cols.map((c) => c + '=?').join(', ')} WHERE id=?`).run(...vals, existing.id);
         } else {
@@ -1976,7 +2052,7 @@ function importClinicBundle(actor, bundle) {
         if (!pid) continue;
         const uid = row.uid || crypto.randomUUID();
         const existing = db.prepare(`SELECT id FROM ${table} WHERE uid = ?`).get(uid);
-        const vals = cols.map((c) => (row[c] === undefined ? null : row[c]));
+        const vals = cols.map((c) => fillColumn(table, c, row[c]));
         if (existing) {
           db.prepare(`UPDATE ${table} SET ${cols.map((c) => c + '=?').join(', ')} WHERE id=?`).run(...vals, existing.id);
         } else {
@@ -2186,7 +2262,21 @@ function reportRollup(scope) {
   }
   for (const ev of wanted) {
     const n = db.prepare('SELECT COUNT(*) AS n FROM patients WHERE event_id = ?').get(ev.id).n;
-    if (n > 0) {
+    const keptRec = keptBy.get(ev.id);
+    const keptSeen = keptRec && keptRec.summary ? (Number(keptRec.summary.patients_seen) || 0) : 0;
+    if (n > 0 && keptSeen > n) {
+      // The clinic has a kept report covering MORE people than are on this
+      // computer right now — a partial restore, or someone checked in after the
+      // clinic was finished. Counting only the live rows made a six-patient
+      // clinic report as one, discarding the correct figure sitting in
+      // event_reports. The kept report wins; the live rows are a subset of it.
+      parts.push(keptRec.summary || {});
+      kept_events.push({
+        id: ev.id, name: ev.name, location: ev.location,
+        finished_at: keptRec.finished_at, finished_by_name: keptRec.finished_by_name,
+        patients_seen: keptRec.patients_seen || 0, partial_live: n,
+      });
+    } else if (n > 0) {
       // Records are still here: count them, which also refreshes anything a
       // stale kept summary would have got wrong.
       parts.push(buildEventSummary(ev.id));
@@ -2231,7 +2321,16 @@ function reportRollup(scope) {
 function captureEventSummary(actor, eventId) {
   const evId = eventId || Number(getSetting('active_event_id'));
   const summary = buildEventSummary(evId);
-  const existing = db.prepare('SELECT id FROM event_reports WHERE event_id = ?').get(evId);
+  const existing = db.prepare('SELECT id, summary, patients_seen FROM event_reports WHERE event_id = ?').get(evId);
+  // A kept report is a HIGH-WATER MARK of what the clinic saw, and attendance
+  // never goes down. Re-running a capture on a clinic whose records have already
+  // been removed counts an empty database and produced a report of zeros —
+  // which is exactly what happened when an admin used "Finish clinic" and then
+  // the "Delete this clinic's patient data" button on the same clinic. The
+  // totals were destroyed and the zeros were pushed to every other laptop.
+  if (existing && (existing.patients_seen || 0) > summary.patients_seen) {
+    return safeJson(existing.summary, summary);
+  }
   if (existing) {
     db.prepare('UPDATE event_reports SET summary=?, patients_seen=?, finished_at=?, finished_by_name=?, updated_at=?, synced_rev=NULL, content_rev=NULL WHERE id=?')
       .run(JSON.stringify(summary), summary.patients_seen, now(), (actor && actor.full_name) || null, now(), existing.id);
@@ -2329,7 +2428,10 @@ function purgeEventPatients(actor, eventId) {
   // active meant the first new walk-in made the event look live again, which hid
   // the kept report and restarted the count from one.
   db.prepare('UPDATE events SET active = 0 WHERE id = ?').run(evId);
-  resolveActiveEvent();
+  db.prepare("UPDATE events SET selected_at = NULL WHERE id = ?").run(evId);
+  setSetting('active_event_cleared_at', stampNow());
+  persistStamp();
+  resolveActiveEvent({ strict: true });
   audit(actor, 'purge', 'event', evId, `${patients.length} patient record(s) removed`);
   return { ok: true, removed: patients.length, event_uid: ev.uid || null };
 }
@@ -2342,7 +2444,10 @@ function finishEvent(actor, eventId) {
   const summary = captureEventSummary(actor, evId);
   const purged = purgeEventPatients(actor, evId);
   db.prepare('UPDATE events SET active = 0 WHERE id = ?').run(evId);
-  resolveActiveEvent();
+  db.prepare("UPDATE events SET selected_at = NULL WHERE id = ?").run(evId);
+  setSetting('active_event_cleared_at', stampNow());
+  persistStamp();
+  resolveActiveEvent({ strict: true });
   audit(actor, 'finish', 'event', evId, `${purged.removed} record(s) purged; report kept`);
   return { ok: true, summary, removed: purged.removed, event_uid: ev.uid || null };
 }
@@ -2440,6 +2545,40 @@ function buildData(entity, row) {
     }
   }
   return out;
+}
+
+// What a column must hold when the incoming row simply does not have it — an
+// export or a sync payload written by an older build that predates the column.
+// Writing NULL into a NOT NULL column threw, which took out the WHOLE restore
+// (zero patients came back from an older backup) and silently dropped synced
+// charts one row at a time. Cached: the schema does not change at runtime.
+const _colInfo = {};
+function columnDefaults(table) {
+  if (_colInfo[table]) return _colInfo[table];
+  const map = {};
+  for (const c of db.prepare(`PRAGMA table_info(${table})`).all()) {
+    if (!c.notnull || c.pk) continue;
+    // A column's DEFAULT only applies when the column is OMITTED from the
+    // INSERT — passing an explicit NULL still violates NOT NULL. So every
+    // not-null column needs a value here, using its declared default when it
+    // has one (unwrapping SQLite's quoting) and a type-appropriate empty when
+    // it does not.
+    if (c.dflt_value !== null && c.dflt_value !== undefined) {
+      const d = String(c.dflt_value);
+      map[c.name] = /^'.*'$/.test(d) ? d.slice(1, -1) : (/^-?\d+(\.\d+)?$/.test(d) ? Number(d) : d);
+    } else {
+      map[c.name] = /INT|REAL|NUM/i.test(c.type || '') ? 0 : '';
+    }
+  }
+  _colInfo[table] = map;
+  return map;
+}
+// Value to write for `col`, substituting a safe default only where NULL is not
+// allowed. A column that permits NULL still gets NULL, so nothing is invented.
+function fillColumn(table, col, value) {
+  if (value !== undefined && value !== null) return value;
+  const d = columnDefaults(table);
+  return Object.prototype.hasOwnProperty.call(d, col) ? d[col] : null;
 }
 
 // Give every syncable row a uid (once). Cheap, idempotent.
@@ -2599,7 +2738,24 @@ function applyRemoteRows(remoteRows) {
     const parentGone = (uid) => !!(uid && db.prepare('SELECT 1 FROM tombstones WHERE uid = ?').get(uid));
     const noParent = (uid) => { if (parentGone(uid)) { skipped++; return 'skip'; } deferred++; deferredRows.push(env); return 'defer'; };
     let parentCol = null, parentId = null;
-    if (entity === 'patient' || entity === 'report') { parentCol = 'event_id'; parentId = localIdByUid('events', env.event_uid); if (!parentId) { noParent(env.event_uid); return; } }
+    if (entity === 'patient' || entity === 'report') {
+      parentCol = 'event_id'; parentId = localIdByUid('events', env.event_uid);
+      if (!parentId) { noParent(env.event_uid); return; }
+      // event_reports carries UNIQUE(event_id), and every station mints its own
+      // uid when it finishes a clinic. Two stations finishing the same clinic
+      // therefore collided, the INSERT was swallowed as a skip, and the two
+      // laptops kept permanently different grant figures. Adopt the local row
+      // (same rule 'user' and 'staffdir' already use) and let last-write-wins
+      // reconcile the contents.
+      if (entity === 'report' && !existing) {
+        const dupe = db.prepare('SELECT id, updated_at FROM event_reports WHERE event_id = ?').get(parentId);
+        if (dupe) {
+          if (dupe.updated_at && env.updated_at && String(dupe.updated_at) >= String(env.updated_at)) { skipped++; return; }
+          db.prepare('UPDATE event_reports SET uid = ? WHERE id = ?').run(env.uid, dupe.id);
+          return applyOne(env);
+        }
+      }
+    }
     else if (entity === 'user') {
       // A staff account is parented to an event (NULL for a global admin). Defer a
       // scoped account whose event hasn't synced here yet; a NULL parent is fine.
@@ -2638,7 +2794,14 @@ function applyRemoteRows(remoteRows) {
       }
     }
     const cols = [...SYNC_COLS[entity]];
-    const vals = cols.map((c) => data[c]);
+    // A payload from a laptop on an older build simply has no value for a column
+    // added since. Writing NULL there failed the NOT NULL constraint, the row was
+    // swallowed by the per-row catch as a plain "skipped", and the cursor moved
+    // on — so the chart was never retried. The patient arrived with no complaint,
+    // no vitals and no route: present on one station, blank on another.
+    // rowSig is deliberately computed from `data` above, NOT from these values,
+    // so the content hash still matches the origin's and the row stays clean.
+    const vals = cols.map((c) => fillColumn(table, c, data[c]));
     const extraCols = ['uid', 'updated_at', 'synced_rev', 'content_rev'];
     const extraVals = [env.uid, env.updated_at, rowSig, rowSig];
     if (parentCol) { extraCols.push(parentCol); extraVals.push(parentId); }

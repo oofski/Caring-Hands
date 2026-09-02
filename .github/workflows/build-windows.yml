@@ -50,16 +50,41 @@ jobs:
       - name: Publish downloadable release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.7.2-build.${{ github.run_number }}
-          name: Caring Hands v1.7.2 (build ${{ github.run_number }})
+          tag_name: v1.7.3-build.${{ github.run_number }}
+          name: Caring Hands v1.7.3 (build ${{ github.run_number }})
           prerelease: false
           make_latest: true
           body: |
-            ## Caring Hands Worldwide — Practice Management Software (v1.7.2)
+            ## Caring Hands Worldwide — Practice Management Software (v1.7.3)
 
             Offline-first dental clinic app for Windows. **Download the installer once — it auto-updates from here on.**
 
-            **New in v1.7.2 — a dead pre-registration link now tells you why**
+            **New in v1.7.3 — a full back-end audit: 13 bugs found and fixed**
+            Every one of these was reproduced with a runnable script before it was fixed, and every one now has a regression test.
+
+            *Data that was being destroyed*
+            - **Fixed: “Finish clinic” followed by “Delete this clinic’s patient data” wiped the clinic’s report.** The totals were recounted against an empty clinic and overwritten with zeros — and the zeros were then pushed to every other computer. **This is the report loss originally reported**, reachable by that exact button order. A kept report is now a high-water mark: nothing can reduce it.
+            - **Fixed: a backup made by an older version restored NOTHING.** The restore hit a database error partway and rolled the whole thing back — zero patients, zero consents, zero x-rays. This is the only way to get a clinic back after its data is removed, so it mattered enormously. Older backups now restore in full, charts included.
+            - **Fixed: loading a patient from a USB stick could overwrite a completely different patient.** It matched on the *other* laptop’s internal row number, so an unrelated person’s name, date of birth and history were replaced. It now matches on the patient’s permanent id.
+            - **Fixed: a REFUSED staff deletion still deleted the account everywhere else.** Deleting your own account (or the last administrator) was correctly refused on screen — but the deletion had already been published, so every other computer removed it on the next sync. An administrator could lock themselves out of every station with no visible error.
+
+            *Patient safety and consent*
+            - **Fixed: an unsigned patient could reach the dentist.** The consent check only existed on the Arrivals screen, and Arrivals can be skipped — the vitals station sent patients straight to a clinician without it. Every route is now gated, including an admin moving someone, and an extraction still requires the oral-surgery consent.
+            - **Fixed: an unsigned consent printed as “Signed”.** The record now says **NOT SIGNED** and shows “No signature on file” where the signature belongs.
+            - **Fixed: the shared front-desk and check-out logins were deleted by “Start fresh for next event”.** They were being quietly re-scoped to the current clinic on every launch, so the sweep took them with it and both stations lost their logins.
+
+            *Records that went missing or disagreed between computers*
+            - **Fixed: a patient’s chart could arrive blank on another computer.** A chart sent by a laptop on an older version was silently rejected and never retried — the patient appeared with no complaint, no vitals and no station. Charts now arrive complete.
+            - **Fixed: after “Finish clinic” the app silently switched to a PREVIOUS clinic**, and the next walk-in was filed there. It now leaves no clinic open and says so plainly at check-in until you choose or create one.
+            - **Fixed: one late patient made a whole clinic’s report read as 1.** A patient arriving after a clinic was finished — or a partial restore from backup — replaced the correct kept total with the handful of records on that computer.
+            - **Fixed: two computers could permanently disagree** about a finished clinic’s figures. Each kept its own report and rejected the other’s, so the grant number depended on which laptop you read it from.
+            - **Fixed: USB imports duplicated every consent** on a new record and **discarded** them on an existing one — including a chairside oral-surgery consent with its signature.
+            - **Fixed: deleted shared logins kept reappearing** in the staff list after every restart.
+            - **Fixed: the exported workbook reported a cleaning for patients who had not had one.**
+
+            *No clinic-server update is needed for this release — the server is still v1.7.2.*
+
+            **From v1.7.2 — a dead pre-registration link now tells you why**
             - **A link for a clinic that was DELETED now says so**, instead of the same “link not found” message shown when a link was simply never valid. Those are different problems with different fixes, and one message for both made a live incident far harder to diagnose than it should have been.
             - **New diagnostic:** `GET /v1/events` on the clinic server (clinic key required) lists every clinic the server holds, its current pre-registration link, and whether that link works. Clinic names and dates only — never patient data.
             - Deleting a clinic event in **Admin → Events** permanently kills its pre-registration link, because deletions are permanent across every computer by design. If you need a clinic's data gone but its link alive, use **Finish clinic** or **Delete this clinic's patient data** instead — both remove the records and keep the event.
@@ -339,8 +364,8 @@ jobs:
 
             Includes everything from v1.0.2–1.1.1 (optional Cloud Sync, triage-free flow, per-event staff, Oregon consent, USB workflow, accountability, Russian, in-app auto-update).
 
-            - **Caring-Hands-Setup-1.7.2.exe** — installer (recommended; required for auto-update).
-            - **Caring-Hands-Portable-1.7.2.exe** — portable (no auto-update).
+            - **Caring-Hands-Setup-1.7.3.exe** — installer (recommended; required for auto-update).
+            - **Caring-Hands-Portable-1.7.3.exe** — portable (no auto-update).
 
             First sign-in: `admin / admin` — then create your staff accounts. All clinical data stays on the device unless you enable Cloud Sync.
           files: |

@@ -94,7 +94,10 @@ function clinicSheets(bundle) {
       p.last_name, p.first_name,
       extractions.length, extractions.map((e) => e.tooth).filter(Boolean).join(', '),
       fillings.length, fillings.map((f) => [f.tooth, (f.surfaces || []).join(',')].filter(Boolean).join(' ')).filter(Boolean).join(', '),
-      cleaning && Object.keys(cleaning).length ? 'Yes' : '',
+      // Same rule the app's own totals use: 'quad_detail' and 'teeth' are notes
+      // attached to a cleaning, not evidence that one happened, and a key set to
+      // false is not a procedure either.
+      cleaning && Object.entries(cleaning).some(([k, v]) => v && k !== 'quad_detail' && k !== 'teeth') ? 'Yes' : '',
       anes.map((x) => [x.agent, x.carps && x.carps + ' carp(s)', x.tooth && 'tooth ' + x.tooth].filter(Boolean).join(' ')).join('; '),
       t.other_procedures, t.clinical_notes, t.provider_name, t.completed_at,
       t.locked ? 'Signed off' : '',
