@@ -734,3 +734,9 @@ select.input{ appearance:none; background-image:linear-gradient(45deg,transparen
    taller than its neighbours for no reason. The table scrolls horizontally if
    they genuinely do not fit, which is tidier than a ragged row. */
 .data-table td:last-child > .inline-row{ flex-wrap:nowrap; }
+
+/* A validation message told the patient what to fix while sitting on top of
+   the Next button they had just pressed — the kiosk's nav bar and the toast
+   both live in the bottom-right corner. Lift the toast clear of it. */
+body:has(.kiosk) .toast-host,
+body:has(.kiosk-gate) .toast-host{ bottom:96px; }
