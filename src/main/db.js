@@ -58,6 +58,12 @@ function migrate() {
       end_date     TEXT,
       languages    TEXT NOT NULL DEFAULT 'en,es',
       active       INTEGER NOT NULL DEFAULT 1,
+      -- v1.9.0: whether this clinic's PUBLIC pre-registration link accepts
+      -- sign-ups. Deliberately separate from "active": active names the one
+      -- clinic that is running right now (where a walk-in is filed), while any
+      -- number of clinics may be taking sign-ups ahead of time. Open by default
+      -- so a clinic that has never touched the setting behaves as it always has.
+      prereg_open  INTEGER NOT NULL DEFAULT 1,
       created_at   TEXT NOT NULL
     );
 
@@ -214,6 +220,10 @@ function migrate() {
   // still turned on, is the active event everywhere). Before this, "Set active" was
   // a local-only setting, so laptops could sit on different events and split the queue.
   addColumn('events', 'selected_at', 'TEXT');
+  // v1.9.0: the public pre-registration link is now its own switch, so several
+  // clinics can collect sign-ups at once while exactly one clinic is live.
+  // Existing clinics migrate to OPEN, which is what they were before it existed.
+  addColumn('events', 'prereg_open', 'INTEGER NOT NULL DEFAULT 1');
   addColumn('patients', 'dismissed_by_name', 'TEXT');
   // v1.5.24: the front desk confirms the patient is physically here and ready to
   // be seen (consents checked, station assigned). Pre-registered patients can sit
@@ -965,6 +975,21 @@ function setEventActive(actor, id, active) {
   db.prepare('UPDATE events SET active = ? WHERE id = ?').run(active ? 1 : 0, id);
   resolveActiveEvent();
   audit(actor, active ? 'activate' : 'deactivate', 'event', id, e.name);
+  return db.prepare('SELECT * FROM events WHERE id = ?').get(id);
+}
+
+// v1.9.0: open or close a clinic's PUBLIC pre-registration link on its own.
+// This is the deliberate control the link has always needed. It is NOT the same
+// decision as "which clinic is running": a clinic three weeks out can be taking
+// sign-ups while today's clinic is the one live on the stations, and closing a
+// link never changes which clinic a walk-in is filed into.
+function setEventPreregOpen(actor, id, open) {
+  const e = db.prepare('SELECT * FROM events WHERE id = ?').get(id);
+  if (!e) throw new Error('Event not found.');
+  db.prepare('UPDATE events SET prereg_open = ? WHERE id = ?').run(open ? 1 : 0, id);
+  // No dirty-marking needed: prereg_open is in SYNC_COLS.event, so the next
+  // collectSyncRows sees a different content signature and pushes the row.
+  audit(actor, open ? 'prereg_open' : 'prereg_close', 'event', id, e.name);
   return db.prepare('SELECT * FROM events WHERE id = ?').get(id);
 }
 
@@ -2445,10 +2470,16 @@ function finishEvent(actor, eventId) {
   const purged = purgeEventPatients(actor, evId);
   db.prepare('UPDATE events SET active = 0 WHERE id = ?').run(evId);
   db.prepare("UPDATE events SET selected_at = NULL WHERE id = ?").run(evId);
+  // A finished clinic stops taking sign-ups — anyone registering after this
+  // point would land in a clinic nobody is watching. This is safe where the
+  // v1.6.6 rule was not: that one INFERRED "closed" from a synced `active`
+  // flag and took live clinics down with it. This is one deliberate act on one
+  // named clinic, and an admin can reopen the link in a single click.
+  db.prepare('UPDATE events SET prereg_open = 0 WHERE id = ?').run(evId);
   setSetting('active_event_cleared_at', stampNow());
   persistStamp();
   resolveActiveEvent({ strict: true });
-  audit(actor, 'finish', 'event', evId, `${purged.removed} record(s) purged; report kept`);
+  audit(actor, 'finish', 'event', evId, `${purged.removed} record(s) purged; report kept; pre-registration closed`);
   return { ok: true, summary, removed: purged.removed, event_uid: ev.uid || null };
 }
 
@@ -2484,7 +2515,7 @@ const ENTITY_TABLE = { event: 'events', staffdir: 'staff_directory', user: 'user
 const APPLY_ORDER = ['event', 'staffdir', 'user', 'report', 'patient', 'triage', 'treatment', 'consent', 'xray'];
 // Syncable payload columns per entity (fixed order -> stable content hash).
 const SYNC_COLS = {
-  event: ['name', 'location', 'start_date', 'end_date', 'languages', 'active', 'created_at', 'selected_at'],
+  event: ['name', 'location', 'start_date', 'end_date', 'languages', 'active', 'created_at', 'selected_at', 'prereg_open'],
   // Staff account. salt+hash travel so the account can sign in on every laptop;
   // event scoping travels via event_uid (the parent), NULL for global admins.
   user: ['username', 'full_name', 'role', 'salt', 'hash', 'active', 'created_at'],
@@ -2916,7 +2947,7 @@ module.exports = {
   login, listUsers, createUser, updateUser, deleteUser, clearEventStaff,
   listStaffDirectory, addStaffFromDirectory, forgetStaff,
   ensureClinicAccounts, resetClinicAccountPassword, isClinicAccount, CLINIC_ACCOUNT_PASSWORD,
-  listEvents, createEvent, updateEvent, setActiveEvent, setEventActive, deleteEvent, getActiveEvent,
+  listEvents, createEvent, updateEvent, setActiveEvent, setEventActive, setEventPreregOpen, deleteEvent, getActiveEvent,
   createPatient, startVisitFromExisting, updatePatient, deletePatient, getPatient, listPatients, searchAllPatients, patientHistory,
   listIncompletePatients, deleteIncompletePatients,
   saveVitals, routePatient, updateConsentTeeth, addPatientConsent, dismissPatient, adminMovePatient, patientAudit, importPatientFromPortable,

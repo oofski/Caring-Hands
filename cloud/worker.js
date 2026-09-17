@@ -15,7 +15,7 @@
 // See ./SYNC_CONTRACT.md for the exact API + schema this implements.
 
 const SERVICE = 'caring-hands-sync';
-const VERSION = '1.7.2';
+const VERSION = '1.9.0';
 // Smallest believable signature image. A 1x1 pixel is ~70 bytes and an empty
 // canvas of any size compresses to a few hundred; a real drawn signature is
 // comfortably above this. Deliberately conservative — the job here is to reject
@@ -190,9 +190,11 @@ async function handleEventList(url, env) {
       start_date: d.start_date || null,
       active: d.active === undefined ? null : !(d.active === 0 || d.active === false || d.active === '0'),
       deleted: !!r.deleted,
+      // Absent means open, same rule the link itself uses.
+      prereg_open: !(d.prereg_open === 0 || d.prereg_open === false || d.prereg_open === '0'),
       // The one thing the clinic actually needs: does this link work right now?
       prereg_link: base + '/checkin/' + r.uid,
-      prereg_link_works: !r.deleted,
+      prereg_link_works: !r.deleted && !(d.prereg_open === 0 || d.prereg_open === false || d.prereg_open === '0'),
       updated_at: r.updated_at,
     };
   });
@@ -355,7 +357,15 @@ async function getEventRow(env, uid) {
     // a clinic is far worse than one that stays open after it, so the link is
     // served whenever the event exists. Closing it is a deliberate act and
     // belongs behind an explicit control, not a synced flag.
-    return { name: typeof data.name === 'string' && data.name ? data.name : 'the clinic' };
+    // v1.9.0: the deliberate control this comment asked for. `prereg_open` is
+    // set only by an admin pressing the switch (or by finishing that clinic),
+    // never inferred from another flag — which is what made the old rule
+    // dangerous. It is ABSENT for clinics last pushed by an app older than
+    // v1.9.0, and absent must mean OPEN: a link that dies because a laptop has
+    // not updated yet would be the v1.6.6 outage all over again. Only an
+    // explicit 0/false closes a link.
+    const open = !(data.prereg_open === 0 || data.prereg_open === false || data.prereg_open === '0');
+    return { name: typeof data.name === 'string' && data.name ? data.name : 'the clinic', open };
   } catch (_e) {
     return null;
   }
@@ -365,6 +375,10 @@ async function handleCheckinGet(eventUid, env, url) {
   const ev = await getEventRow(env, eventUid);
   if (!ev) return htmlResponse(checkinErrorPage('missing'), 404);
   if (ev.deleted) return htmlResponse(checkinErrorPage('deleted'), 404);
+  // Closed on purpose: a real clinic, a real link, just not accepting sign-ups
+  // right now. 410 (Gone) rather than 404, and its own wording, so this stays
+  // distinguishable from a bad link and from a deleted clinic.
+  if (!ev.open) return htmlResponse(checkinErrorPage('closed', ev.name), 410);
   const lang = (url && url.searchParams && url.searchParams.get('lang') === 'es') ? 'es' : 'en';
   return htmlResponse(checkinFormPage(eventUid, ev.name, lang));
 }
@@ -372,6 +386,11 @@ async function handleCheckinGet(eventUid, env, url) {
 async function handleCheckinPost(eventUid, request, env) {
   const ev = await getEventRow(env, eventUid);
   if (!ev || ev.deleted) return json({ ok: false, error: 'This pre-registration link is not valid.' }, 404);
+  // Checked again on submit, not only on load: a form opened before the clinic
+  // closed its link would otherwise still post an hour later.
+  if (!ev.open) {
+    return json({ ok: false, error: 'This clinic is no longer accepting online pre-registration. Please ask the clinic for their current link.' }, 410);
+  }
 
   let body;
   try { body = await request.json(); } catch (_e) { return json({ ok: false, error: 'Invalid submission.' }, 400); }
@@ -787,7 +806,14 @@ function htmlResponse(html, status) {
     headers: { 'content-type': 'text/html; charset=utf-8', ...CORS_HEADERS },
   });
 }
-function checkinErrorPage(why) {
+function checkinErrorPage(why, name) {
+  if (why === 'closed') {
+    const who = name && name !== 'the clinic' ? htmlEscape(name) : 'This clinic';
+    return checkinShell('Pre-registration closed',
+      '<h1>' + who + ' is not taking online sign-ups right now</h1>' +
+      '<p>The clinic has closed pre-registration for this event. You may still be able to register in person — please contact the clinic.</p>' +
+      '<p lang="es">La clínica ha cerrado el pre-registro para este evento. Es posible que aún pueda registrarse en persona — comuníquese con la clínica.</p>');
+  }
   if (why === 'deleted') {
     return checkinShell('Link no longer available',
       '<h1>This pre-registration link is no longer available</h1>' +

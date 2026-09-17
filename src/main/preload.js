@@ -8,7 +8,7 @@ const CHANNELS = [
   'users:list', 'users:create', 'users:update', 'users:delete', 'users:clearEventStaff',
   'staff:directory', 'staff:add', 'staff:forget', 'staff:resetClinicPassword',
   'events:list', 'events:active', 'events:create', 'events:update',
-  'events:setActive', 'events:setState', 'events:delete',
+  'events:setActive', 'events:setState', 'events:setPrereg', 'events:delete',
   'patients:create', 'patients:newVisit', 'patients:update', 'patients:delete', 'patients:get', 'patients:list',
   'patients:records', 'patients:searchAll', 'patients:history',
   'patients:incomplete', 'patients:cleanupIncomplete',

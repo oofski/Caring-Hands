@@ -51,7 +51,7 @@ let currentUser = null;
 const PERMS = {
   'usersList': ['admin'], 'usersCreate': ['admin'], 'usersUpdate': ['admin'], 'usersDelete': ['admin'],
   'usersClearEventStaff': ['admin'],
-  'eventsCreate': ['admin'], 'eventsUpdate': ['admin'], 'eventsSetActive': ['admin'], 'eventsSetState': ['admin'], 'eventsDelete': ['admin'],
+  'eventsCreate': ['admin'], 'eventsUpdate': ['admin'], 'eventsSetActive': ['admin'], 'eventsSetState': ['admin'], 'eventsSetPrereg': ['admin'], 'eventsDelete': ['admin'],
   'patientsUpdate': ['admin', 'triage', 'doctor'], 'patientsGet': ['admin', 'doctor', 'triage', 'emt', 'checkout', 'hygienist'],
   'patientsList': ['admin', 'doctor', 'triage', 'emt', 'checkout', 'hygienist', 'registration'], 'patientsRecords': ['admin', 'doctor'],
   'patientsSearchAll': ['admin', 'doctor', 'triage', 'emt', 'checkout', 'hygienist'], 'patientsHistory': ['admin', 'doctor', 'triage', 'emt', 'checkout', 'hygienist'],
@@ -95,6 +95,7 @@ window.api = {
   eventsUpdate: okWrap(({ id, ...r }) => db.updateEvent(currentUser, id, r), 'eventsUpdate'),
   eventsSetActive: okWrap((id) => db.setActiveEvent(currentUser, id), 'eventsSetActive'),
   eventsSetState: okWrap(({ id, active }) => db.setEventActive(currentUser, id, active), 'eventsSetState'),
+  eventsSetPrereg: okWrap(({ id, open }) => db.setEventPreregOpen(currentUser, id, open), 'eventsSetPrereg'),
   eventsDelete: okWrap(({ id, force }) => db.deleteEvent(currentUser, id, { force }), 'eventsDelete'),
   patientsCreate: okWrap((p) => db.createPatient(currentUser, p)), // ungated (kiosk + any role)
   patientsUpdate: okWrap(({ id, ...d }) => db.updatePatient(currentUser, id, d), 'patientsUpdate'),
@@ -2447,6 +2448,140 @@ async function main() {
     await tick(); await tick(); await tick();
     const stray = Array.from(repRoot.childNodes).some((n) => n.nodeType === 3 && n.nodeValue.trim() === 'null');
     log(!stray, 'v1.8.0: the reports view no longer prints a stray "null" under its heading');
+  }
+
+  // ---- v1.9.0: the pre-registration link is its own switch ----
+  {
+    currentUser = db.login('admin', 'admin');
+    const store = (await import('../src/renderer/js/store.js')).store;
+    store.setUser(currentUser);
+
+    // Two clinics. Only ONE is ever live; both may collect sign-ups.
+    const cA = db.createEvent(currentUser, { name: 'Prereg A', location: 'A' });
+    const cB = db.createEvent(currentUser, { name: 'Prereg B', location: 'B' });
+    const ev = (id) => db.listEvents().find((e) => e.id === id);
+    const liveId = () => { const a = db.getActiveEvent(); return a ? a.id : null; };
+
+    log(ev(cA.id).prereg_open === 1 && ev(cB.id).prereg_open === 1,
+      'v1.9.0: a new clinic takes online sign-ups by default');
+
+    // Closing one link must not touch the other, nor which clinic is live.
+    const liveBefore = liveId();
+    db.setEventPreregOpen(currentUser, cA.id, false);
+    log(ev(cA.id).prereg_open === 0 && ev(cB.id).prereg_open === 1,
+      'v1.9.0: closing one clinic\'s link leaves the other clinic open');
+    log(liveId() === liveBefore, 'v1.9.0: ...and does not change which clinic is live');
+
+    // Both open at once is the whole point of the feature.
+    db.setEventPreregOpen(currentUser, cA.id, true);
+    log(ev(cA.id).prereg_open === 1 && ev(cB.id).prereg_open === 1,
+      'v1.9.0: two clinics can collect sign-ups at the same time');
+
+    // Switching the live clinic must leave both links exactly as they were.
+    db.setActiveEvent(currentUser, cA.id);
+    log(liveId() === cA.id && ev(cA.id).prereg_open === 1 && ev(cB.id).prereg_open === 1,
+      'v1.9.0: changing which clinic is live does not touch either link');
+
+    // Finishing a clinic stops it taking sign-ups nobody is watching.
+    db.finishEvent(currentUser, cA.id);
+    log(ev(cA.id).prereg_open === 0, 'v1.9.0: finishing a clinic closes its own link');
+    log(ev(cB.id).prereg_open === 1, 'v1.9.0: ...and leaves every other clinic alone');
+
+    // Reopening has to work, or a clinic closed by mistake is stuck.
+    db.setEventPreregOpen(currentUser, cA.id, true);
+    log(ev(cA.id).prereg_open === 1, 'v1.9.0: a closed link can be reopened');
+
+    // The switch is worthless if it never reaches the server.
+    const payload = db.collectSyncRows(500);
+    // Tombstones ride along as event rows with an empty body by design, so only
+    // the live rows are expected to carry fields.
+    const evRows = (Array.isArray(payload) ? payload : (payload && payload.rows) || [])
+      .filter((r) => r.entity === 'event' && !r.deleted);
+    log(evRows.length > 0 && evRows.every((r) => 'prereg_open' in r.data),
+      `v1.9.0: the switch travels to the other stations in the event payload (${evRows.length} row(s))`);
+
+    // Only an admin may open or close a public sign-up link.
+    db.createUser(currentUser, { username: 'preregdoc', full_name: 'Dr P', role: 'doctor', password: 'x' });
+    const asDoc = await window.api.authLogin({ username: 'preregdoc', password: 'x' });
+    log(asDoc.ok, 'v1.9.0: (setup) a non-admin can sign in');
+    const denied = await window.api.eventsSetPrereg({ id: cB.id, open: false });
+    log(denied.ok === false && /permission/i.test(denied.error || ''),
+      'v1.9.0: a non-admin cannot open or close a pre-registration link');
+    currentUser = db.login('admin', 'admin');
+    store.setUser(currentUser);
+
+    // The Events screen has to SHOW the state, or an admin cannot tell which
+    // clinics are collecting sign-ups without opening each one.
+    const { renderAdmin } = await import('../src/renderer/js/views/admin.js');
+    const evRoot = renderAdmin({ navigate: () => {}, toast: () => {}, store }, { section: 'events' });
+    document.body.append(evRoot);
+    await tick(); await tick(); await tick();
+    const headText = $all('th', evRoot).map((h) => h.textContent).join('|');
+    log(/Online sign-ups/i.test(headText), 'v1.9.0: the Events screen has an online sign-ups column');
+    const bodyText = evRoot.textContent;
+    log(/Open/.test(bodyText) || /Closed/.test(bodyText) || /Not synced/.test(bodyText),
+      'v1.9.0: ...and each clinic shows whether its link is open');
+  }
+
+  // ---- v1.9.0: the clinic flow, end to end ----
+  // check-in -> vitals -> dentist/hygienist -> check-out, asserting the gates
+  // between stations rather than only that each screen renders.
+  {
+    currentUser = db.login('admin', 'admin');
+    db.createEvent(currentUser, { name: 'Flow Check', location: 'Flow' });
+    const mkP = (o) => db.createPatient(currentUser, { demographics: {}, medical_history: {}, dental_history: {}, consents: SIGNED, ...o });
+
+    const fp = mkP({ first_name: 'Flow', last_name: 'One', dental_history: { reason: 'Toothache' }, route: 'dentist' });
+    log(db.getPatient(fp.id).status === 'checked_in', 'v1.9.0 flow: a check-in starts at the vitals station');
+
+    let gated = false;
+    try { db.routePatient(currentUser, fp.id, 'dentist'); } catch (e) { gated = /vitals/i.test(e.message); }
+    log(gated, 'v1.9.0 flow: no vitals means no clinician');
+
+    db.saveVitals(currentUser, fp.id, { bp_systolic: 128, bp_diastolic: 82, heart_rate: 72 });
+    db.routePatient(currentUser, fp.id, 'dentist');
+    const routed = db.getPatient(fp.id);
+    log(routed.triage.route === 'dentist' && !!routed.triage.emt_signed_off && routed.status === 'triaged',
+      'v1.9.0 flow: vitals then sign-off moves them to the dentist');
+
+    db.saveTreatment(currentUser, fp.id, { fillings: [{ tooth: '19', surfaces: 'O' }], clinical_notes: 'x', provider_name: 'Dr F' }, true);
+    log(db.getPatient(fp.id).status === 'completed', 'v1.9.0 flow: completing the visit sends them to check-out');
+    db.dismissPatient(currentUser, fp.id);
+    const out = db.getPatient(fp.id);
+    log(out.status === 'dismissed' && !!out.dismissed_at && !!out.dismissed_by_name,
+      'v1.9.0 flow: check-out stamps who checked them out and when');
+
+    // The hygienist branch reaches check-out the same way.
+    const hp = mkP({ first_name: 'Flow', last_name: 'Two', dental_history: { reason: 'Cleaning' }, route: 'hygienist' });
+    db.saveVitals(currentUser, hp.id, { bp_systolic: 118, bp_diastolic: 74, heart_rate: 64 });
+    db.routePatient(currentUser, hp.id, 'hygienist');
+    db.saveTreatment(currentUser, hp.id, { cleaning: { quadrants: ['UR'] }, provider_name: 'RDH' }, true);
+    db.dismissPatient(currentUser, hp.id);
+    log(db.getPatient(hp.id).status === 'dismissed', 'v1.9.0 flow: the cleaning branch reaches check-out too');
+
+    // Check-out cannot be reached before the EMT has seen them.
+    const jp = mkP({ first_name: 'Flow', last_name: 'Jump', dental_history: { reason: 'Pain' }, route: 'dentist' });
+    let jumpBlocked = false;
+    try { db.dismissPatient(currentUser, jp.id); } catch (e) { jumpBlocked = true; }
+    log(jumpBlocked, 'v1.9.0 flow: a patient the EMT never saw cannot be checked out');
+
+    // An extraction is gated on the surgery consent, by visit_type — the same
+    // signal the online form sets when an extraction is chosen.
+    const xp = db.createPatient(currentUser, { first_name: 'Flow', last_name: 'Ext', demographics: {}, medical_history: {},
+      dental_history: { reason: 'Extraction', visit_type: 'extraction_pain' }, route: 'dentist', consents: SIGNED });
+    db.saveVitals(currentUser, xp.id, { bp_systolic: 120, bp_diastolic: 78, heart_rate: 70 });
+    let surgGated = false;
+    try { db.routePatient(currentUser, xp.id, 'dentist'); } catch (e) { surgGated = /surgery|consent/i.test(e.message); }
+    log(surgGated, 'v1.9.0 flow: an extraction without the surgery consent is refused');
+    db.addPatientConsent(currentUser, xp.id, { type: 'oral_surgery', signer_name: 'Flow Ext', signature_png: 'data:image/png;base64,BBBB' });
+    db.routePatient(currentUser, xp.id, 'dentist');
+    log(db.getPatient(xp.id).triage.route === 'dentist', 'v1.9.0 flow: ...and allowed once it is signed');
+
+    // Walking a patient BACK keeps the clinical facts and drops only the workflow.
+    db.adminMovePatient(currentUser, xp.id, 'emt');
+    const rewound = db.getPatient(xp.id);
+    log(rewound.status === 'checked_in' && !rewound.triage.emt_signed_off && rewound.triage.bp_systolic === 120,
+      'v1.9.0 flow: sending someone back to vitals keeps their vitals');
   }
 
   await tick();

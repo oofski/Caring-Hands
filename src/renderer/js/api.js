@@ -30,6 +30,7 @@ export const api = {
   updateEvent: (p) => call('eventsUpdate', p),
   setActiveEvent: (id) => call('eventsSetActive', id),
   setEventState: (id, active) => call('eventsSetState', { id, active }),
+  setEventPrereg: (id, open) => call('eventsSetPrereg', { id, open }),
   deleteEvent: (id, force) => call('eventsDelete', { id, force }),
 
   createPatient: (p) => call('patientsCreate', p),

@@ -173,7 +173,7 @@ async function main() {
       h.data &&
       h.data.ok === true &&
       h.data.service === 'caring-hands-sync' &&
-      h.data.version === '1.7.2' &&
+      h.data.version === '1.9.0' &&
       h.data.seq === true &&
       typeof h.data.time === 'string'
   );
@@ -805,6 +805,70 @@ async function main() {
       && list.data.events.some((e) => e.uid === 'evt-1' && e.prereg_link_works === true));
     check('v1.7.2: and it hands back the full link for each clinic',
       list.data.events.every((e) => typeof e.prereg_link === 'string' && e.prereg_link.includes('/checkin/')));
+  }
+
+  // --- v1.9.0: the pre-registration link is its own switch ---
+  {
+    // Two clinics can take sign-ups at the same time; only one is ever "active".
+    // Closing a link is deliberate and must not depend on the active flag.
+    const openUid = 'evt-prereg-open';
+    const shutUid = 'evt-prereg-shut';
+    await call(env, 'POST', '/v1/push', {
+      auth: CLINIC_KEY,
+      body: { device_id: 'd1', rows: [
+        // active:0 — a clinic that is NOT the one running still takes sign-ups.
+        { entity: 'event', uid: openUid, event_uid: null, updated_at: '2026-09-10T00:00:00.000Z',
+          data: { name: 'Spring Clinic', active: 0, prereg_open: 1 } },
+        { entity: 'event', uid: shutUid, event_uid: null, updated_at: '2026-09-10T00:00:00.000Z',
+          data: { name: 'Autumn Clinic', active: 1, prereg_open: 0 } },
+      ] },
+    });
+
+    const openRes = await worker.fetch(new Request('https://sync.example.com/checkin/' + openUid), env, {});
+    check('v1.9.0: a clinic that is not the active one still serves its link',
+      openRes.status === 200);
+
+    const shutRes = await worker.fetch(new Request('https://sync.example.com/checkin/' + shutUid), env, {});
+    const shutText = await shutRes.text();
+    check('v1.9.0: a closed link says so, and is 410 rather than 404',
+      shutRes.status === 410 && /not taking online sign-ups/i.test(shutText));
+    check('v1.9.0: ...and names the clinic instead of reading as a broken link',
+      /Autumn Clinic/.test(shutText) && !/no longer available/i.test(shutText) && !/not been synced/i.test(shutText));
+
+    // A form already open in a tab must not slip a submission past a closed link.
+    const late = await worker.fetch(new Request('https://sync.example.com/checkin/' + shutUid, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ first_name: 'Late', last_name: 'Submitter' }),
+    }), env, {});
+    check('v1.9.0: a submission to a closed link is refused on POST too', late.status === 410);
+
+    // COMPATIBILITY: a clinic last pushed by an app older than v1.9.0 has no
+    // prereg_open field at all. Absent must mean OPEN — a link going dark
+    // because one laptop has not updated yet would be the v1.6.6 outage again.
+    const legacyUid = 'evt-prereg-legacy';
+    await call(env, 'POST', '/v1/push', {
+      auth: CLINIC_KEY,
+      body: { device_id: 'd1', rows: [{ entity: 'event', uid: legacyUid, event_uid: null,
+        updated_at: '2026-09-10T00:00:00.000Z', data: { name: 'Legacy Clinic', active: 1 } }] },
+    });
+    const legacy = await worker.fetch(new Request('https://sync.example.com/checkin/' + legacyUid), env, {});
+    check('v1.9.0: a clinic with no prereg_open field keeps working (absent = open)',
+      legacy.status === 200);
+
+    // Reopening must actually reopen it.
+    await call(env, 'POST', '/v1/push', {
+      auth: CLINIC_KEY,
+      body: { device_id: 'd1', rows: [{ entity: 'event', uid: shutUid, event_uid: null,
+        updated_at: '2026-09-11T00:00:00.000Z', data: { name: 'Autumn Clinic', active: 1, prereg_open: 1 } }] },
+    });
+    const reopened = await worker.fetch(new Request('https://sync.example.com/checkin/' + shutUid), env, {});
+    check('v1.9.0: reopening the link serves the form again', reopened.status === 200);
+
+    // The diagnostic has to report the switch, or a closed link looks broken.
+    const list2 = await call(env, 'GET', '/v1/events', { auth: CLINIC_KEY });
+    const shutRow = list2.data.events.find((e) => e.uid === openUid);
+    check('v1.9.0: the clinic list reports prereg_open per clinic',
+      !!shutRow && shutRow.prereg_open === true && shutRow.prereg_link_works === true);
   }
 
   // --- summary ---

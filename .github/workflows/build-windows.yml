@@ -52,16 +52,38 @@ jobs:
         continue-on-error: true
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.8.0-build.${{ github.run_number }}
-          name: Caring Hands v1.8.0 (build ${{ github.run_number }})
+          tag_name: v1.9.0-build.${{ github.run_number }}
+          name: Caring Hands v1.9.0 (build ${{ github.run_number }})
           prerelease: false
           make_latest: true
           body: |
-            ## Caring Hands Worldwide — Practice Management Software (v1.8.0)
+            ## Caring Hands Worldwide — Practice Management Software (v1.9.0)
 
             Offline-first dental clinic app for Windows. **Download the installer once — it auto-updates from here on.**
 
-            **New in v1.8.0 — the interface, redone**
+            **New in v1.9.0 — several clinics can take sign-ups at once**
+
+            *The new switch*
+            - **Each clinic now has its own Online sign-ups switch**, separate from which clinic is live. Admin → Events has a new **Online sign-ups** column showing **Open** or **Closed** for every clinic, with one button to change it and one to show the link.
+            - **Only one clinic is ever the live clinic** — the one walk-ins are filed into — exactly as before. Opening or closing a pre-registration link never changes that, and switching the live clinic never changes any link.
+            - **A patient always lands in the clinic whose link they used.** Someone signing up through the Spring clinic link is filed to the Spring clinic even while the Autumn clinic is the one running today.
+            - **A closed link says so.** Patients see "this clinic is not taking online sign-ups right now" naming the clinic — not the "link not found" page, which means something entirely different and sent us chasing the wrong problem once before.
+            - **A form already open in a browser tab cannot slip a submission through** after the link closes; it is checked again on submit.
+            - **Finishing a clinic closes its own link**, so nobody registers into a clinic that is over and nobody is watching. It leaves every other clinic alone, and an admin can reopen it in one click.
+            - **Clinics you have not touched stay open.** Anything that existed before this release keeps working exactly as it did, including while some of your laptops are still on an older version.
+
+            *The clinic flow, checked end to end*
+            The whole path — check-in → vitals → dentist or hygienist → check-out — was walked against the real database, asserting the rules between stations rather than just that each screen loads. **No faults were found.** Confirmed working, and now covered by permanent tests so it stays that way:
+            - No vitals means no clinician, on both the dentist and hygienist branches.
+            - An unsigned patient cannot reach a clinician, and an admin override cannot walk them past it either.
+            - An extraction visit is refused until the oral-surgery consent is signed; a filling or cleaning is not asked for one. The online form and the front desk agree on what counts as an extraction.
+            - A patient the EMT has never seen cannot be checked out.
+            - Check-out records who checked the patient out and when.
+            - Sending a patient back to vitals undoes the sign-off but **keeps their recorded vitals** — those are clinical facts, not workflow state.
+            - Nobody disappears between stations, and the dashboard counts everyone.
+
+            **⚠️ This release needs the clinic server refreshed (now v1.9.0)** — the same one-time paste your admin has done before. Until it is pasted, every pre-registration link stays open regardless of the switch. Nothing else in this release depends on it.
+            **From v1.8.0 — the interface, redone**
             The whole app was walked through screen by screen at two laptop sizes. Six things were genuinely broken; the rest is a rebuilt look that applies everywhere at once.
 
             *Things that were broken*
@@ -134,8 +156,8 @@ jobs:
             Every release from v1.0.2 to v1.6.9 — pre-registration, cloud sync, the reporting rebuild, the A–Z patient lists, per-event staff, the USB workflow and the rest — is listed with its full notes at
             https://github.com/oofski/Caring-Hands/releases
 
-            - **Caring-Hands-Setup-1.8.0.exe** — installer (recommended; required for auto-update).
-            - **Caring-Hands-Portable-1.8.0.exe** — portable (no auto-update).
+            - **Caring-Hands-Setup-1.9.0.exe** — installer (recommended; required for auto-update).
+            - **Caring-Hands-Portable-1.9.0.exe** — portable (no auto-update).
 
             First sign-in: `admin / admin` — then create your staff accounts. All clinical data stays on the device unless you enable Cloud Sync.
           files: |
@@ -159,7 +181,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          tag="v1.8.0-build.${{ github.run_number }}"
+          tag="v1.9.0-build.${{ github.run_number }}"
           for attempt in 1 2 3; do
             missing=0
             for f in release/*.exe release/latest.yml release/*.blockmap; do
@@ -185,7 +207,7 @@ jobs:
       - name: Verify both installers are on the release
         shell: bash
         run: |
-          tag="v1.8.0-build.${{ github.run_number }}"
+          tag="v1.9.0-build.${{ github.run_number }}"
           api="https://api.github.com/repos/${{ github.repository }}/releases/tags/$tag"
           json=$(curl -sS -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" "$api")
           names=$(echo "$json" | grep -o '"name": *"[^"]*\.exe"' || true)

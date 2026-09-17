@@ -460,7 +460,6 @@ export function renderAdmin(ctx, params = {}) {
       const isActive = active && active.id === e.id;
       const actions = el('div', { class: 'inline-row', style: 'margin:0; justify-content:flex-end;' });
       if (e.active && !isActive) actions.append(el('button', { class: 'btn btn--ghost btn--sm', onClick: () => setActive(e) }, ['Set active']));
-      if (e.prereg_url) actions.append(el('button', { class: 'btn btn--ghost btn--sm', title: 'Patient pre-registration link', onClick: () => preregLink(e) }, [icon('globe', { size: 14 }), 'Pre-reg link']));
       actions.append(el('button', { class: 'btn btn--ghost btn--sm', onClick: () => editEvent(e) }, [icon('pen', { size: 14 }), 'Edit']));
       // Close a clinic: keep the figures for reporting, remove the patients.
       actions.append(el('button', {
@@ -485,6 +484,34 @@ export function renderAdmin(ctx, params = {}) {
       if (e.active) actions.append(el('button', { class: 'btn btn--ghost btn--sm', onClick: () => setState(e, false) }, ['Turn off']));
       else actions.append(el('button', { class: 'btn btn--ghost btn--sm', onClick: () => setState(e, true) }, ['Reactivate']));
       actions.append(el('button', { class: 'btn btn--danger btn--sm', onClick: () => delEvent(e) }, [icon('trash', { size: 14 })]));
+      // Online sign-ups are their own decision, so they get their own column
+      // rather than another button in the row. "Active" is which clinic is
+      // RUNNING (one at a time, where a walk-in is filed); this is whether the
+      // public link is collecting sign-ups, and any number may be open at once.
+      const open = e.prereg_open !== 0 && e.prereg_open !== false;
+      const signup = el('div', { class: 'inline-row', style: 'margin:0; gap:8px;' });
+      if (!e.prereg_url) {
+        signup.append(el('span', { class: 'subtle small', title: 'This clinic has not reached the clinic cloud yet, so it has no public link.' }, ['Not synced']));
+      } else {
+        signup.append(
+          el('span', { class: 'pill ' + (open ? 'pill--success' : 'pill--neutral') }, [
+            open ? el('span', { class: 'pill-dot' }) : null, open ? 'Open' : 'Closed',
+          ]),
+          el('button', {
+            class: 'btn btn--ghost btn--sm',
+            title: open
+              ? 'Stop this clinic’s public link accepting new sign-ups. Patients already registered are unaffected.'
+              : 'Let this clinic’s public link accept sign-ups again.',
+            onClick: () => setPrereg(e, !open),
+          }, [open ? 'Close' : 'Open']),
+          el('button', {
+            class: 'btn btn--ghost btn--sm btn--icon',
+            title: 'Show the pre-registration link',
+            'aria-label': `Pre-registration link for ${e.name}`,
+            onClick: () => preregLink(e),
+          }, [icon('globe', { size: 14 })]),
+        );
+      }
       return el('tr', { class: isActive ? 'row--active' : '' }, [
         el('td', {}, [el('strong', {}, [e.name]),
           isActive ? el('span', { class: 'pill pill--success', style: 'margin-left:6px' }, [el('span', { class: 'pill-dot' }), 'Active'])
@@ -492,6 +519,7 @@ export function renderAdmin(ctx, params = {}) {
         el('td', {}, [e.location || '—']),
         el('td', {}, [e.start_date || '—']),
         el('td', { class: 'num' }, [String(e.patient_count)]),
+        el('td', {}, [signup]),
         el('td', {}, [actions]),
       ]);
     });
@@ -505,7 +533,7 @@ export function renderAdmin(ctx, params = {}) {
         el('p', { class: 'view-sub', style: 'margin:0 0 var(--space-4);' }, ['Each event has its own team, patients, and language packs. Set one active to make it the current clinic.']),
         el('div', { class: 'data-table-wrap' }, [
           el('table', { class: 'data-table' }, [
-            el('thead', {}, [el('tr', {}, ['Event', 'Location', 'Start', 'Patients', ''].map((h) => el('th', {}, [h])))]),
+            el('thead', {}, [el('tr', {}, ['Event', 'Location', 'Start', 'Patients', 'Online sign-ups', ''].map((h) => el('th', {}, [h])))]),
             el('tbody', {}, rows),
           ]),
         ]),
@@ -538,6 +566,16 @@ export function renderAdmin(ctx, params = {}) {
         ]),
         confirmText: 'Done',
       });
+    }
+    // Open or close ONE clinic's public link. Deliberately not tied to which
+    // clinic is active: a clinic weeks away can be gathering sign-ups while a
+    // different clinic is the one live on the stations today.
+    async function setPrereg(e, open) {
+      try {
+        await api.setEventPrereg(e.id, open);
+        toast(open ? `Online sign-ups opened for “${e.name}”` : `Online sign-ups closed for “${e.name}”`, 'success');
+        paint();
+      } catch (err) { toast(err.message, 'error'); }
     }
     async function setState(e, on) {
       try { await api.setEventState(e.id, on); store.setEvent(await api.activeEvent()); toast(on ? 'Event reactivated' : 'Event turned off', 'success'); paint(); } catch (err) { toast(err.message, 'error'); }

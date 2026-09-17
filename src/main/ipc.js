@@ -40,6 +40,7 @@ const PERMS = {
   'events:update': ['admin'],
   'events:setActive': ['admin'],
   'events:setState': ['admin'],
+  'events:setPrereg': ['admin'],
   'events:delete': ['admin'],
   'patients:delete': ['admin'],
   // 'registration' is a front-desk check-in role. patients:create is registered
@@ -249,6 +250,7 @@ function register(getMainWindow) {
   handle('events:update', ({ id, ...rest }) => db.updateEvent(currentUser, id, rest));
   handle('events:setActive', (id) => db.setActiveEvent(currentUser, id));
   handle('events:setState', ({ id, active }) => db.setEventActive(currentUser, id, active));
+  handle('events:setPrereg', ({ id, open }) => db.setEventPreregOpen(currentUser, id, open));
   handle('events:delete', ({ id, force }) => db.deleteEvent(currentUser, id, { force }));
 
   /* ---- Patient delete (admin) ---- */
