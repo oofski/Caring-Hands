@@ -117,7 +117,7 @@
 
   /* Layout chrome */
   --sidebar-w:244px; --topbar-h:62px; --panel-pad:18px;
-  --control-height:38px; --row-height:46px; --row-height-sm:34px;
+  --control-height:38px; --control-height-sm:32px; --row-height:46px; --row-height-sm:34px;
   /* Keeps a data screen readable on a 27" monitor instead of stretching a
      six-column table across three feet of glass. */
   --content-max:1560px;

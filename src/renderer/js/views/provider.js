@@ -835,7 +835,14 @@ export function renderProvider(ctx, params = {}) {
       // Visit bar (paper top row) — the dentist is the planning hub now.
       panel('clipboard', 'Visit & treatment plan',
         el('div', { class: 'field-row', style: 'margin-bottom:10px' }, [
-          el('div', {}, [el('span', { class: 'field-label' }, ['Total x-rays']), el('div', { style: 'padding-top:6px' }, [xrayCountEl])]),
+          // Both halves are .field so they share one label gap and their
+          // contents sit on the same line. The count used to be a bare div
+          // nudged down 6px by hand, which put it a few pixels off from the
+          // input beside it.
+          el('div', { class: 'field', style: 'margin:0' }, [
+            el('span', { class: 'field-label' }, ['Total x-rays']),
+            el('div', { class: 'xray-count-line' }, [xrayCountEl]),
+          ]),
           el('label', { class: 'field', style: 'margin:0;max-width:130px' }, [el('span', { class: 'field-label' }, ['X-ray station #']), station.node]),
         ]),
         el('label', { class: 'field' }, [el('span', { class: 'field-label' }, ['Chief complaint']), complaint.node]),

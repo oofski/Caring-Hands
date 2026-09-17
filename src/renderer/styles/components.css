@@ -68,7 +68,7 @@
 .input:focus{ outline:none; border-color:var(--border-focus); box-shadow:var(--focus-ring); }
 .input::placeholder{ color:var(--text-subtle); }
 .input:disabled{ background:var(--surface-sunken); color:var(--text-muted); cursor:not-allowed; }
-.input--sm{ height:32px; padding:6px 10px; font-size:var(--fs-sm); }
+.input--sm{ height:var(--control-height-sm); padding:6px 10px; font-size:var(--fs-sm); }
 .textarea{ resize:vertical; min-height:64px; height:auto; line-height:var(--lh-normal); }
 /* Every dropdown gets the same chevron. Targeting `select.input` as well as
    the explicit class means a select that was built without `.select` (the
@@ -740,3 +740,7 @@ select.input{ appearance:none; background-image:linear-gradient(45deg,transparen
    both live in the bottom-right corner. Lift the toast clear of it. */
 body:has(.kiosk) .toast-host,
 body:has(.kiosk-gate) .toast-host{ bottom:96px; }
+
+/* The x-ray count sits beside an input; give it the same height so the two
+   line up instead of being nudged into place by hand. */
+.xray-count-line{ display:flex; align-items:center; height:var(--control-height-sm); }
