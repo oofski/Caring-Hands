@@ -1,4 +1,4 @@
-import { el, clear, toast, modal } from '../dom.js';
+import { el, clear, toast, modal, add } from '../dom.js';
 import { t, languageList } from '../i18n.js';
 import { api } from '../api.js';
 import { store } from '../store.js';
@@ -41,12 +41,9 @@ export function renderAdmin(ctx, params = {}) {
   function paint() {
     clear(root);
     const [title, sub] = SECTION_META[tab] || ['Admin', ''];
-    root.append(
+    add(root,
       el('div', { class: 'view-head' }, [
         el('div', {}, [
-          el('div', {
-            style: 'font-size:var(--fs-2xs); text-transform:uppercase; letter-spacing:var(--tracking-eyebrow); color:var(--teal-deep); font-weight:var(--fw-semibold); margin-bottom:var(--space-1);',
-          }, ['Helping hands for healthy living']),
           el('h1', {}, [title]),
           el('p', { class: 'view-sub' }, [sub]),
         ]),

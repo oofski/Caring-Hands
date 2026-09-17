@@ -2392,6 +2392,63 @@ async function main() {
       'v1.7.3: ...and still shows a real signature as signed');
   }
 
+  // ---- v1.8.0: the interface refresh ----
+  {
+    currentUser = db.login('admin', 'admin');
+    const store = (await import('../src/renderer/js/store.js')).store;
+    store.setUser(currentUser);
+
+    // 1. Management's five station-override buttons became one "Move to…"
+    // select. Every destination must still be reachable and must still move
+    // the patient — a tidier screen that quietly dropped an override would be
+    // a far worse bug than the wall of buttons it replaced.
+    const { renderManagement } = await import('../src/renderer/js/views/management.js');
+    const mp = db.createPatient(currentUser, {
+      first_name: 'Move', last_name: 'Me', demographics: {}, medical_history: {},
+      dental_history: { reason: 'x' }, consents: SIGNED,
+    });
+    // Vitals first: moving TO a chair still obeys the vitals gate, so without
+    // them the override is correctly refused and the test would be asserting
+    // the wrong thing.
+    db.saveVitals(currentUser, mp.id, { bp_systolic: 118, bp_diastolic: 74, pulse: 66 });
+    const mgRoot = renderManagement({ navigate: () => {}, toast: () => {}, store }, {});
+    document.body.append(mgRoot);
+    await tick(); await tick();
+    const sel = $all('.move-select', mgRoot)[0];
+    const opts = sel ? $all('option', sel).map((o) => o.value).filter(Boolean) : [];
+    log(!!sel, 'v1.8.0: management offers a single "Move to…" control per patient');
+    log(['checkin', 'emt', 'dentist', 'hygienist', 'dismiss'].every((v) => opts.includes(v)),
+      'v1.8.0: ...and it still offers every station override (got: ' + opts.join(',') + ')');
+
+    // Driving it must actually move the patient.
+    const rowSel = $all('.move-select', mgRoot).find((s) => s.getAttribute('aria-label') === 'Move Move Me to another station');
+    if (rowSel) {
+      setInput(rowSel, 'hygienist');
+      await tick(); await tick();
+      log(db.getPatient(mp.id).triage.route === 'hygienist', 'v1.8.0: choosing a station from it actually moves the patient');
+      log(rowSel.selectedIndex === 0, 'v1.8.0: ...and the control snaps back to the prompt afterwards');
+    } else {
+      log(false, 'v1.8.0: could not find the move control for the test patient');
+    }
+
+    // 2. A null child appended straight to a container used to render the
+    // literal text "null" on screen — that is what sat under the Reports
+    // heading. The helper every view now uses must drop it.
+    const { add, el: mkEl } = await import('../src/renderer/js/dom.js');
+    const probe = mkEl('div', {}, []);
+    add(probe, mkEl('span', {}, ['a']), null, undefined, false, mkEl('span', {}, ['b']));
+    log(probe.textContent === 'ab', 'v1.8.0: appending a null branch renders nothing, not the word "null"');
+
+    // And the screen that showed it must be clean for a clinic with no kept
+    // totals, which is the state that produced it.
+    const { renderReports } = await import('../src/renderer/js/views/reports.js');
+    const repRoot = renderReports({ navigate: () => {}, toast: () => {}, store }, {});
+    document.body.append(repRoot);
+    await tick(); await tick(); await tick();
+    const stray = Array.from(repRoot.childNodes).some((n) => n.nodeType === 3 && n.nodeValue.trim() === 'null');
+    log(!stray, 'v1.8.0: the reports view no longer prints a stray "null" under its heading');
+  }
+
   await tick();
   if (errors.length) errors.forEach((e) => log(false, 'RUNTIME: ' + e));
   const failed = results.filter((r) => !r[0]).length;

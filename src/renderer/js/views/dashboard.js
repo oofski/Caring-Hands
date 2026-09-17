@@ -200,14 +200,12 @@ export function renderDashboard(ctx) {
       ]),
       el('div', { class: 'crm-col-body' }, groups[s.key].length ? groups[s.key].map(crmCard) : [el('div', { class: 'crm-empty' }, ['No patients here.'])]),
     ])));
+    const boardWrap = el('div', { class: 'card crm-card-wrap' }, [board]);
 
     // mount() clears + skips null children.
     mount(root,
       el('div', { class: 'view-head' }, [
         el('div', {}, [
-          el('div', {
-            style: 'font-size:var(--fs-2xs); letter-spacing:var(--tracking-eyebrow); text-transform:uppercase; font-weight:var(--fw-semibold); color:var(--accent-text); margin-bottom:var(--space-1);',
-          }, ['Helping hands for healthy living']),
           el('h1', {}, [t('dash.title')]),
           el('p', { class: 'view-sub' }, [
             event ? `${t('dash.event')}: ` : '',
@@ -240,9 +238,22 @@ export function renderDashboard(ctx) {
         el('h2', { class: 'section-title' }, ['Patient flow']),
         el('span', { class: 'live-badge' }, [el('span', { class: 'dot' }), 'Live']),
       ]),
-      el('div', { class: 'card crm-card-wrap' }, [board]),
+      boardWrap,
       !patients.length ? el('p', { class: 'muted', style: 'margin-top:10px' }, ['No patients checked in yet — tap “Start patient check-in” to begin.']) : null,
     );
+
+    // The stage columns share the width and only scroll when they truly cannot
+    // fit. When they do, fade the right edge so it is visible that the last
+    // stage continues past the edge rather than simply ending there.
+    const markOverflow = () => {
+      boardWrap.classList.toggle('crm-card-wrap--overflow', board.scrollWidth - board.clientWidth > 4);
+    };
+    board.addEventListener('scroll', markOverflow);
+    if (typeof window.ResizeObserver === 'function') {
+      const ro = new window.ResizeObserver(markOverflow);
+      ro.observe(board);
+    }
+    requestAnimationFrame(markOverflow);
   }
 
   load().catch((e) => ctx.toast(e.message, 'error'));

@@ -50,16 +50,37 @@ jobs:
       - name: Publish downloadable release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.7.3-build.${{ github.run_number }}
-          name: Caring Hands v1.7.3 (build ${{ github.run_number }})
+          tag_name: v1.8.0-build.${{ github.run_number }}
+          name: Caring Hands v1.8.0 (build ${{ github.run_number }})
           prerelease: false
           make_latest: true
           body: |
-            ## Caring Hands Worldwide — Practice Management Software (v1.7.3)
+            ## Caring Hands Worldwide — Practice Management Software (v1.8.0)
 
             Offline-first dental clinic app for Windows. **Download the installer once — it auto-updates from here on.**
 
-            **New in v1.7.3 — a full back-end audit: 13 bugs found and fixed**
+            **New in v1.8.0 — the interface, redone**
+            The whole app was walked through screen by screen at two laptop sizes. Six things were genuinely broken; the rest is a rebuilt look that applies everywhere at once.
+
+            *Things that were broken*
+            - **Fixed: the Reports screen printed the word `null`** under its heading, on every clinic with no kept totals. Harmless, but it looked like something had crashed. The underlying cause could have put stray text on any screen, so it is fixed once, centrally, and covered by a test.
+            - **Fixed: the last column of the patient-flow board was sliced off.** On a 1600px laptop the six stage columns were pinned too wide to fit, so **Checked out** — the column that tells you a patient is done — sat past the right edge with nothing to suggest it existed. The columns now share the width, and when they genuinely cannot fit, the edge fades so it is obvious there is more.
+            - **Fixed: collapsed sections looked like dead headings.** `USB tools` on Check-Out and `At the hygienist` on the Dentist screen are expandable, but nothing on screen said so — no arrow, no hint. Every collapsible section now carries a chevron that turns as it opens.
+            - **Fixed: two identical-looking search boxes on Records.** One filters the list in front of you; the other searches every clinic you have ever run. They were indistinguishable. The filter now sits in a labelled bar above the table, and the cross-clinic finder is a separate, named tool.
+            - **Fixed: Management did not fit on a laptop screen.** Each of the eight rows carried six same-sized buttons; at 1280px the row wrapped three deep and the table ran off the edge of the pane. **Open** is now the one prominent action and the five station overrides are a single **Move to…** picker beside it. Nothing was removed — every destination is still one gesture away, and there is a test that proves each one still moves the patient.
+            - **Fixed: a marketing tagline sat above the heading on 3 of the 14 screens** and nowhere else. Removed from the app; it still belongs on the sign-in screen.
+
+            *The new look*
+            - **Cards, dialogs and the page now sit on distinct layers** instead of every panel being the same flat grey box, so what matters looks like it matters.
+            - **Card headings are readable sentences** rather than 11px shouted capitals.
+            - **Everything clickable responds** — to the mouse, to a press, and to the keyboard, with a visible focus ring on every control. All of it backs off if the computer is set to reduce motion.
+            - **Patient lists are easier to work**: taller rows, the heading stays put while you scroll a long queue, and the row under the cursor is marked so you can see which one you are about to open.
+            - **Bigger targets on the patient-facing check-in screen** — taller boxes, a larger signature pad, and a progress bar visible from arm's length.
+            - **Numbers line up** in every column that compares them.
+            - On a large monitor the content **stays a readable width** instead of stretching a six-column table across the whole screen.
+
+            *Nothing about how the app works changed*, apart from the Management picker above. Same accounts, same passwords, same flow, same data. **No clinic-server update is needed for this release — the server is still v1.7.2.**
+            **From v1.7.3 — a full back-end audit: 13 bugs found and fixed**
             Every one of these was reproduced with a runnable script before it was fixed, and every one now has a regression test.
 
             *Data that was being destroyed*
@@ -364,8 +385,8 @@ jobs:
 
             Includes everything from v1.0.2–1.1.1 (optional Cloud Sync, triage-free flow, per-event staff, Oregon consent, USB workflow, accountability, Russian, in-app auto-update).
 
-            - **Caring-Hands-Setup-1.7.3.exe** — installer (recommended; required for auto-update).
-            - **Caring-Hands-Portable-1.7.3.exe** — portable (no auto-update).
+            - **Caring-Hands-Setup-1.8.0.exe** — installer (recommended; required for auto-update).
+            - **Caring-Hands-Portable-1.8.0.exe** — portable (no auto-update).
 
             First sign-in: `admin / admin` — then create your staff accounts. All clinical data stays on the device unless you enable Cloud Sync.
           files: |

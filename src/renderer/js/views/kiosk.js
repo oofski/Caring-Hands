@@ -1,4 +1,4 @@
-import { el, clear, toast } from '../dom.js';
+import { el, clear, toast, add } from '../dom.js';
 import { icon } from '../icons.js';
 import { t, tRaw, getLang, setLang, languageList, conditions, allergies, referrals, visitTypes, visitTypeLabel, speak, stopSpeaking } from '../i18n.js';
 import { textField, textArea, selectField, yesNo, chipGrid, limitDigits } from '../forms.js';
@@ -42,7 +42,7 @@ export function renderKiosk(ctx) {
   function renderGate() {
     stopSpeaking();
     clear(root);
-    root.append(
+    add(root,
       el('div', { class: 'kiosk-gate' }, [
         el('img', { class: 'kiosk-gate-logo', src: '../../assets/logo.svg', alt: 'Caring Hands' }),
         el('div', { class: 'kiosk-welcome' }, [t('intake.welcome')]),
@@ -104,7 +104,7 @@ export function renderKiosk(ctx) {
         : el('button', { class: 'btn btn--primary btn--lg', onClick: submit }, [icon('check', { size: 18 }), t('common.submit')]),
     ]);
 
-    root.append(progress, header, body, nav);
+    add(root, progress, header, body, nav);
   }
 
   /* ---------------- Steps ---------------- */
@@ -777,7 +777,7 @@ export function renderKiosk(ctx) {
       }
     });
 
-    root.append(el('div', { class: 'kiosk-thanks' }, [
+    add(root, el('div', { class: 'kiosk-thanks' }, [
       el('div', { class: 'thanks-check' }, [icon('check', { size: 44, stroke: 2.2 })]),
       el('h1', {}, [t('intake.thanks')]),
       el('p', {}, [t('intake.thanksSub')]),

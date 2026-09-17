@@ -1,4 +1,4 @@
-import { el, clear, toast, modal } from '../dom.js';
+import { el, clear, toast, modal, add } from '../dom.js';
 import { api } from '../api.js';
 import { icon } from '../icons.js';
 import { store } from '../store.js';
@@ -23,12 +23,9 @@ export function renderManagement(ctx) {
     const live = patients.filter((p) => p.status !== 'dismissed');
     const done = patients.filter((p) => p.status === 'dismissed');
     clear(root);
-    root.append(
+    add(root,
       el('div', { class: 'view-head' }, [
         el('div', {}, [
-          el('div', {
-            style: 'font-size:var(--fs-2xs); text-transform:uppercase; letter-spacing:var(--tracking-eyebrow); color:var(--teal-deep); font-weight:var(--fw-semibold); margin-bottom:var(--space-1);',
-          }, ['Helping hands for healthy living']),
           el('h1', {}, ['Management']),
           el('p', { class: 'view-sub' }, ['Oversee every patient in the clinic and override the flow when you need to.']),
         ]),
@@ -81,7 +78,7 @@ export function renderManagement(ctx) {
       el('div', { class: 'data-table-wrap' }, [
         el('table', { class: 'data-table' }, [
           el('thead', {}, [el('tr', {}, ['Patient', 'Age', 'Stage', 'Going to', 'Manage'].map((h) => el('th', {}, [h])))]),
-          el('tbody', {}, rows.length ? rows : [el('tr', {}, [el('td', { colspan: 5, class: 'empty' }, ['No patients.'])])]),
+          el('tbody', {}, rows.length ? rows : [el('tr', {}, [el('td', { colspan: 5, class: 'empty' }, ['Nobody is in the clinic right now.'])])]),
         ]),
       ]),
     ]);
@@ -93,28 +90,42 @@ export function renderManagement(ctx) {
       catch (e) { toast(e.message, 'error'); }
     };
     const btn = (ic, label, onClick, cls) => el('button', { class: `btn ${cls || 'btn--ghost'} btn--sm`, onClick }, [icon(ic, { size: 14 }), label]);
-    const wrap = el('div', { class: 'inline-row', style: 'margin:0; gap:6px; flex-wrap:wrap; justify-content:flex-end;' });
-    // Open the patient in the station that matches their stage.
-    wrap.append(btn('chevron', 'Open', () => ctx.navigate(stationFor(p), { id: p.id })));
-    // Backward moves first (walking a patient back up the flow), then forward.
-    // "Check-in" is the full rewind: not confirmed present, not signed off, not
-    // assigned onward — their recorded vitals are kept.
-    const backToCheckin = btn('clipboard', 'Check-in', () => move('checkin', 'sent back to check-in'), 'btn--soft');
-    backToCheckin.title = 'Send all the way back to the front desk — the patient must be confirmed present again. Recorded vitals are kept.';
-    if (isDone) {
-      wrap.append(
-        btn('refresh', 'Re-open', () => move('reopen', 're-opened for editing'), 'btn--soft'),
-        backToCheckin,
-      );
-    } else {
-      wrap.append(
-        backToCheckin,
-        btn('syringe', 'EMT', () => move('emt', 'sent back to vitals')),
-        btn('tooth', 'Dentist', () => move('dentist', 'sent to the dentist')),
-        btn('sparkle', 'Hygienist', () => move('hygienist', 'sent to the hygienist')),
-        btn('checkCircle', 'Check out', () => move('dismiss', 'checked out'), 'btn--soft'),
-      );
-    }
+    const wrap = el('div', { class: 'inline-row', style: 'margin:0; gap:8px; flex-wrap:wrap; justify-content:flex-end;' });
+    // Open the patient in the station that matches their stage. This is the
+    // action taken nine times out of ten, so it is the only one carrying weight.
+    wrap.append(btn('chevron', 'Open', () => ctx.navigate(stationFor(p), { id: p.id }), 'btn--primary'));
+
+    // The overrides used to sit beside it as five more buttons of the same
+    // size. Eight rows of that is fifty-six buttons on one screen, and at
+    // laptop width they did not fit at all — the row wrapped three deep and
+    // the table ran off the edge of the pane. They are one decision ("where
+    // should this patient be instead?"), so they are now one control. Every
+    // destination is still one gesture away and nothing was removed.
+    // Backward moves come first (walking a patient back up the flow), then
+    // forward. "Check-in" is the full rewind: not confirmed present, not
+    // signed off, not assigned onward — their recorded vitals are kept.
+    const TARGETS = isDone
+      ? [['reopen', 'Re-open for editing', 're-opened for editing'],
+         ['checkin', 'Back to check-in', 'sent back to check-in']]
+      : [['checkin', 'Back to check-in', 'sent back to check-in'],
+         ['emt', 'Back to vitals (EMT)', 'sent back to vitals'],
+         ['dentist', 'To the dentist', 'sent to the dentist'],
+         ['hygienist', 'To the hygienist', 'sent to the hygienist'],
+         ['dismiss', 'Check out', 'checked out']];
+    const moveSel = el('select', {
+      class: 'input input--sm select move-select',
+      title: 'Move this patient to another station. Recorded vitals are always kept.',
+      'aria-label': `Move ${p.first_name} ${p.last_name} to another station`,
+      onChange: (e) => {
+        const t = TARGETS.find((x) => x[0] === e.target.value);
+        e.target.selectedIndex = 0; // always snap back to the prompt
+        if (t) move(t[0], t[2]);
+      },
+    }, [
+      el('option', { value: '' }, ['Move to…']),
+      ...TARGETS.map(([value, label]) => el('option', { value }, [label])),
+    ]);
+    wrap.append(moveSel);
     wrap.append(el('button', {
       class: 'btn btn--danger btn--sm', title: 'Delete this patient record',
       onClick: async () => {

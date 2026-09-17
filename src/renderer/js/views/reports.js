@@ -1,4 +1,4 @@
-import { el, clear, toast } from '../dom.js';
+import { el, clear, toast, add } from '../dom.js';
 import { conditions } from '../i18n.js';
 import { api } from '../api.js';
 import { icon } from '../icons.js';
@@ -91,7 +91,7 @@ export function renderReports(ctx) {
       : [rollup.event ? rollup.event.name : (sm.event_name || 'Clinic'), rollup.event && rollup.event.location].filter(Boolean).join(' · ');
 
     clear(root);
-    root.append(
+    add(root,
       el('div', { class: 'view-head' }, [
         el('div', {}, [el('h1', {}, ['Reports & analytics']), el('p', { class: 'view-sub' }, [subtitle])]),
         el('div', { class: 'view-head-actions' }, [

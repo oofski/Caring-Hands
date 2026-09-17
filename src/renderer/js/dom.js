@@ -30,7 +30,21 @@ export function clear(node) {
 
 export function mount(node, ...children) {
   clear(node);
-  children.flat().forEach((c) => c != null && c !== false && node.append(c.nodeType ? c : document.createTextNode(String(c))));
+  return add(node, ...children);
+}
+
+// Append children WITHOUT clearing, skipping nullish/false entries.
+// `el()` already filters its children, but a bare `node.append(x)` does NOT:
+// the DOM spec stringifies a non-Node, so appending a null branch renders the
+// literal text "null" on screen. Views build headers as
+// `root.append(head, maybeBanner, ...)` where `maybeBanner` is conditional, so
+// every such call site needs this filter — that is what printed a stray "null"
+// under the Reports heading whenever no clinic had kept totals.
+export function add(node, ...children) {
+  children.flat().forEach((c) => {
+    if (c == null || c === false) return;
+    node.append(c.nodeType ? c : document.createTextNode(String(c)));
+  });
   return node;
 }
 

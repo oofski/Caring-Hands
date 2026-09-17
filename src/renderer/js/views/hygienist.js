@@ -1,4 +1,4 @@
-import { el, clear, mount, toast, modal } from '../dom.js';
+import { el, clear, mount, toast, modal, add } from '../dom.js';
 import { t } from '../i18n.js';
 import { api } from '../api.js';
 import { icon } from '../icons.js';
@@ -46,7 +46,7 @@ export function renderHygienist(ctx, params = {}) {
       el('td', {}, [el('button', { class: 'btn btn--primary btn--sm', onClick: (e) => { e.stopPropagation(); detail(p.id); } }, ['Open', icon('chevron', { size: 15 })])]),
     ]));
     clear(root);
-    root.append(
+    add(root,
       el('div', { class: 'view-head' }, [
         el('div', {}, [el('h1', {}, ['Cleanings']), el('p', { class: 'view-sub' }, [`${forCleaning.length} routed for cleaning · ${live.length} patient(s) in clinic`])]),
         el('button', { class: 'btn btn--ghost btn--sm', onClick: queue }, [icon('refresh', { size: 15 }), 'Refresh']),

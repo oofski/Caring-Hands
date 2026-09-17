@@ -1,4 +1,4 @@
-import { el, clear, toast, modal } from '../dom.js';
+import { el, clear, toast, modal, add } from '../dom.js';
 import { limitDigits } from '../forms.js';
 import { t, conditions, allergies, referralLabel, languageList, visitTypeLabel } from '../i18n.js';
 import { api } from '../api.js';
@@ -42,7 +42,7 @@ export function renderRecords(ctx, params = {}) {
     ctx.setDetail && ctx.setDetail(false);
     const events = await api.listEvents();
     const searchInput = el('input', { class: 'input search-input', placeholder: 'Search by name, DOB, phone…' });
-    const allInput = el('input', { class: 'input search-input', placeholder: 'Returning patient lookup (all events)…' });
+    const allInput = el('input', { class: 'input search-input', placeholder: 'Type a name, date of birth or phone…' });
     // Default to ALL events so records are always visible regardless of which
     // event is currently active.
     const eventSel = el('select', { class: 'input select' });
@@ -81,14 +81,21 @@ export function renderRecords(ctx, params = {}) {
     }, 250));
 
     clear(root);
-    root.append(
+    add(root,
       el('div', { class: 'view-head' }, [el('div', {}, [el('h1', {}, [t('nav.records')]), el('p', { class: 'view-sub' }, ['All patient records across events'])])]),
       el('div', { class: 'card' }, [
-        el('div', { class: 'lookup-row' }, [
-          el('div', {}, [el('span', { class: 'field-label' }, ['Event']), eventSel]),
-          el('div', {}, [el('span', { class: 'field-label' }, ['Search']), searchInput]),
+        // Two searches live on this screen and used to sit in identical boxes,
+        // so it was never clear which one did what. The filter bar narrows the
+        // table below it; the returning-patient finder is a separate tool that
+        // reaches across every clinic, so it is now visibly a separate tool.
+        el('div', { class: 'filter-bar' }, [
+          el('div', { class: 'field field--inline' }, [el('span', { class: 'field-label' }, ['Clinic']), eventSel]),
+          el('div', { class: 'field field--grow' }, [el('span', { class: 'field-label' }, ['Filter this list']), searchInput]),
         ]),
-        el('div', { style: 'margin-bottom:12px' }, [el('span', { class: 'field-label' }, ['Returning patient lookup (all events)']), allInput, allResults]),
+        el('details', { class: 'finder' }, [
+          el('summary', {}, [icon('search', { size: 15 }), 'Find a returning patient from any past clinic']),
+          el('div', { class: 'finder-body' }, [allInput, allResults]),
+        ]),
         el('div', { class: 'data-table-wrap' }, [
           el('table', { class: 'data-table' }, [
             el('thead', {}, [el('tr', {}, ['Patient', 'DOB', 'Age', 'Event', 'Status', ''].map((h) => el('th', {}, [h])))]),
@@ -149,7 +156,7 @@ export function renderRecords(ctx, params = {}) {
     });
 
     clear(root);
-    root.append(
+    add(root,
       el('div', { class: 'view-head' }, [
         el('div', {}, [
           el('button', { class: 'btn btn--ghost btn--sm', onClick: () => ctx.navigate('records') }, [icon('back', { size: 15 }), t('common.back')]),

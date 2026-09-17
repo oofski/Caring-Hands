@@ -1,4 +1,4 @@
-import { el, clear, toast, modal } from '../dom.js';
+import { el, clear, toast, modal, add } from '../dom.js';
 import { t } from '../i18n.js';
 import { api } from '../api.js';
 import { icon } from '../icons.js';
@@ -89,8 +89,9 @@ export function renderEmt(ctx, params = {}) {
       el('td', {}, [el('div', { style: 'display:flex;gap:var(--space-1);justify-content:flex-end;align-items:center' }, [
         // C3: export a summary PDF straight from the list, without opening the row.
         el('button', {
-          class: 'btn btn--ghost btn--sm',
+          class: 'btn btn--ghost btn--sm btn--icon',
           title: 'Patient summary PDF',
+          'aria-label': `Patient summary PDF for ${p.last_name}, ${p.first_name}`,
           onClick: (e) => { e.stopPropagation(); exportSummary(p.id); },
         }, [icon('records', { size: 15 })]),
         el('button', {
@@ -100,7 +101,7 @@ export function renderEmt(ctx, params = {}) {
       ])]),
     ]));
     clear(root);
-    root.append(
+    add(root,
       el('div', { class: 'view-head' }, [
         el('div', {}, [
           el('h1', {}, ['Vitals & Routing']),
@@ -114,7 +115,7 @@ export function renderEmt(ctx, params = {}) {
         el('div', { class: 'data-table-wrap' }, [
           el('table', { class: 'data-table' }, [
             el('thead', {}, [el('tr', {}, ['Patient', 'Age', 'Complaint', 'Vitals', 'Next', 'Status', ''].map((h) => el('th', {}, [h])))]),
-            el('tbody', {}, rows.length ? rows : [el('tr', {}, [el('td', { colspan: 7, class: 'empty' }, ['No patients.'])])]),
+            el('tbody', {}, rows.length ? rows : [el('tr', {}, [el('td', { colspan: 7, class: 'empty' }, ['Nobody is waiting for vitals right now.'])])]),
           ]),
         ]),
       ]),
@@ -419,7 +420,7 @@ export function renderEmt(ctx, params = {}) {
     ]);
 
     clear(root);
-    root.append(el('div', {}, [
+    add(root, el('div', {}, [
       el('div', { class: 'view-head' }, [
         el('div', {}, [
           el('button', { class: 'btn btn--ghost btn--sm', onClick: () => queue() }, [icon('back', { size: 15 }), t('common.back')]),

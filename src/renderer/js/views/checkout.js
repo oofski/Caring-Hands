@@ -1,4 +1,4 @@
-import { el, clear, mount, toast, modal } from '../dom.js';
+import { el, clear, mount, toast, modal, add } from '../dom.js';
 import { t } from '../i18n.js';
 import { api } from '../api.js';
 import { icon } from '../icons.js';
@@ -97,7 +97,7 @@ export function renderCheckout(ctx, params = {}) {
     const canDismiss = p.status !== 'dismissed' && p.status !== 'checked_in';
 
     clear(root);
-    root.append(
+    add(root,
       el('div', { class: 'view-head' }, [
         el('div', {}, [
           el('button', { class: 'btn btn--ghost btn--sm', onClick: () => queue() }, [icon('back', { size: 15 }), t('common.back')]),

@@ -1,36 +1,47 @@
-/* ===== Buttons ===== */
+/* ===== Buttons =====
+   Every button answers three things now: the cursor (hover), the press
+   (a 1px physical dip) and the keyboard (a ring). Sizes went up slightly —
+   these get tapped on touchscreen laptops with gloves on. */
 .btn{
-  display:inline-flex; align-items:center; justify-content:center; gap:6px;
+  display:inline-flex; align-items:center; justify-content:center; gap:7px;
   border:1px solid transparent; border-radius:var(--radius-sm); cursor:pointer;
   font-family:inherit; font-size:var(--fs-sm); font-weight:var(--fw-semibold);
-  height:var(--control-height); padding:0 14px; line-height:1; white-space:nowrap;
-  transition:background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+  height:var(--control-height); padding:0 15px; line-height:1; white-space:nowrap;
+  transition:background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease),
+             color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease),
+             transform var(--dur-fast) var(--ease);
 }
 .btn .icon{ flex:none; }
 .btn:focus-visible{ outline:none; box-shadow:var(--focus-ring); }
-.btn:disabled,.btn.is-busy{ opacity:.55; cursor:not-allowed; }
-.btn--primary,.btn--success{ background:var(--accent); color:var(--text-on-accent); }
-.btn--primary:hover,.btn--success:hover{ background:var(--accent-hover); }
-.btn--primary:active,.btn--success:active{ background:var(--accent-active); }
-.btn--ghost{ background:var(--surface); color:var(--text); border-color:var(--border-strong); }
-.btn--ghost:hover{ background:var(--surface-hover); }
+.btn:active:not(:disabled){ transform:translateY(1px); }
+.btn:disabled,.btn.is-busy{ opacity:.5; cursor:not-allowed; box-shadow:none; }
+.btn--primary,.btn--success{ background:var(--accent); color:var(--text-on-accent); box-shadow:var(--shadow-sm); }
+.btn--primary:hover,.btn--success:hover{ background:var(--accent-hover); box-shadow:var(--shadow-md); }
+.btn--primary:active,.btn--success:active{ background:var(--accent-active); box-shadow:var(--shadow-xs); }
+.btn--ghost{ background:var(--surface); color:var(--text); border-color:var(--border-strong); box-shadow:var(--shadow-xs); }
+.btn--ghost:hover{ background:var(--surface-hover); border-color:var(--text-subtle); }
 .btn--soft,.btn--read{ background:var(--accent-soft); color:var(--accent-text); border-color:var(--accent-border); border-radius:var(--radius-sm); }
 .btn--soft:hover,.btn--read:hover{ background:var(--accent-soft-2); }
 .btn--danger{ background:var(--surface); color:var(--danger); border-color:var(--danger-border); }
-.btn--danger:hover{ background:var(--danger-soft); }
-.btn--sm{ height:28px; padding:0 10px; font-size:var(--fs-xs); }
-.btn--lg{ height:44px; padding:0 20px; font-size:var(--fs-base); border-radius:var(--radius-md); }
+.btn--danger:hover{ background:var(--danger-soft); border-color:var(--danger); }
+.btn--danger:focus-visible{ box-shadow:var(--focus-ring-danger); }
+.btn--sm{ height:32px; padding:0 11px; font-size:var(--fs-xs); }
+.btn--lg{ height:46px; padding:0 22px; font-size:var(--fs-base); border-radius:var(--radius-md); }
 .btn--block{ width:100%; }
 .btn--icon{ width:var(--control-height); padding:0; }
+.btn--sm.btn--icon{ width:32px; }
 .action-row{ display:flex; gap:8px; flex-wrap:wrap; margin-top:var(--space-3); }
 .action-stack{ display:flex; flex-direction:column; gap:8px; }
 .inline-row{ display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:8px; }
 
 /* ===== Cards / panels ===== */
-.card{ background:var(--surface); border:var(--border-line); border-radius:var(--radius-md); padding:var(--space-4); margin-bottom:var(--space-4); }
-.card--alert{ border-left:2px solid var(--danger); }
-.card-title{ font-size:var(--fs-2xs); text-transform:uppercase; letter-spacing:var(--tracking-eyebrow); color:var(--text-subtle); font-weight:var(--fw-semibold); margin-bottom:var(--space-3); display:flex; align-items:center; gap:7px; }
-.card-title .icon{ color:var(--text-subtle); }
+.card{ background:var(--surface); border:var(--border-line); border-radius:var(--radius-lg); padding:var(--space-5); margin-bottom:var(--space-4); box-shadow:var(--shadow-sm); }
+.card--alert{ border-left:3px solid var(--danger); }
+/* A card heading is a heading: sentence case, readable size, real colour.
+   It used to be 11px of shouted grey capitals, which made every card look
+   like fine print and none of them look more important than the others. */
+.card-title{ font-size:var(--fs-h3); font-family:var(--font-display); letter-spacing:var(--tracking-tight); color:var(--text-strong); font-weight:var(--fw-semibold); margin:0 0 var(--space-3); display:flex; align-items:center; gap:9px; text-transform:none; }
+.card-title .icon{ color:var(--teal-deep); }
 .card-head-row{ display:flex; align-items:center; justify-content:space-between; margin-bottom:var(--space-2); }
 .card-head-row .card-title{ margin:0; }
 .split{ display:grid; grid-template-columns:1fr 1fr; gap:var(--space-4); align-items:start; }
@@ -52,11 +63,19 @@
 .field-label{ font-size:var(--fs-xs); font-weight:var(--fw-semibold); color:var(--text-muted); }
 .field-hint{ font-size:var(--fs-xs); color:var(--text-subtle); }
 .req{ color:var(--danger); font-style:normal; }
-.input{ width:100%; padding:9px 12px; border:1px solid var(--border-strong); border-radius:var(--radius-sm); font-family:inherit; font-size:var(--fs-base); background:var(--surface); color:var(--text); height:var(--control-height); transition:border-color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease); }
+.input{ width:100%; padding:9px 12px; border:1px solid var(--border-strong); border-radius:var(--radius-sm); font-family:inherit; font-size:var(--fs-base); background:var(--surface); color:var(--text); height:var(--control-height); transition:border-color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease); }
+.input:hover:not(:focus):not(:disabled){ border-color:var(--text-subtle); }
 .input:focus{ outline:none; border-color:var(--border-focus); box-shadow:var(--focus-ring); }
-.input--sm{ height:30px; padding:6px 9px; font-size:var(--fs-sm); }
+.input::placeholder{ color:var(--text-subtle); }
+.input:disabled{ background:var(--surface-sunken); color:var(--text-muted); cursor:not-allowed; }
+.input--sm{ height:32px; padding:6px 10px; font-size:var(--fs-sm); }
 .textarea{ resize:vertical; min-height:64px; height:auto; line-height:var(--lh-normal); }
-.select{ appearance:none; background-image:linear-gradient(45deg,transparent 50%,var(--text-subtle) 50%),linear-gradient(135deg,var(--text-subtle) 50%,transparent 50%); background-position:calc(100% - 17px) 52%,calc(100% - 12px) 52%; background-size:5px 5px; background-repeat:no-repeat; padding-right:30px; }
+/* Every dropdown gets the same chevron. Targeting `select.input` as well as
+   the explicit class means a select that was built without `.select` (the
+   station picker on Arrivals, the X-ray area picker) no longer shows the
+   operating system's own arrow next to ones that don't. */
+.select,
+select.input{ appearance:none; background-image:linear-gradient(45deg,transparent 50%,var(--text-subtle) 50%),linear-gradient(135deg,var(--text-subtle) 50%,transparent 50%); background-position:calc(100% - 17px) 52%,calc(100% - 12px) 52%; background-size:5px 5px; background-repeat:no-repeat; padding-right:32px; cursor:pointer; }
 .form-grid{ display:grid; grid-template-columns:1fr 1fr; gap:0 var(--space-4); }
 .form-grid .span-2{ grid-column:1 / -1; }
 .highlight-field{ background:var(--accent-soft); border:1px solid var(--accent-border); border-radius:var(--radius-md); padding:12px 14px; margin-top:var(--space-2); }
@@ -80,16 +99,21 @@
 .med-row{ display:grid; grid-template-columns:1.4fr 1fr 1.4fr auto; gap:7px; }
 .tx-row{ display:grid; grid-template-columns:repeat(auto-fit,minmax(110px,1fr)) auto; gap:7px; align-items:center; }
 
-/* ===== Tables ===== */
+/* ===== Tables =====
+   Patient queues are the screen people stare at all day. Rows got taller
+   (easier to hit, easier to track across), the header sticks while you
+   scroll a long list, and the hovered row is marked on its leading edge so
+   you can see which one you are about to open. */
 .data-table{ width:100%; border-collapse:collapse; }
-.data-table-wrap{ border:var(--border-line); border-radius:var(--radius-md); overflow:hidden; }
-.data-table th{ text-align:left; font-size:var(--fs-2xs); text-transform:uppercase; letter-spacing:var(--tracking-eyebrow); color:var(--text-subtle); font-weight:var(--fw-semibold); padding:10px 12px; background:var(--surface-header); border-bottom:var(--table-head-rule); }
-.data-table td{ padding:10px 12px; border-bottom:var(--divider); vertical-align:middle; font-size:var(--fs-sm); }
+.data-table-wrap{ border:var(--border-line); border-radius:var(--radius-md); overflow:auto; background:var(--surface); max-height:none; }
+.data-table th{ text-align:left; font-size:var(--fs-2xs); text-transform:uppercase; letter-spacing:var(--tracking-eyebrow); color:var(--text-muted); font-weight:var(--fw-bold); padding:12px 14px; background:var(--surface-header); border-bottom:var(--table-head-rule); position:sticky; top:0; z-index:1; }
+.data-table td{ padding:13px 14px; border-bottom:var(--divider); vertical-align:middle; font-size:var(--fs-sm); }
 .data-table tbody tr:last-child td{ border-bottom:none; }
-.data-table tbody tr:hover{ background:var(--surface-hover); }
-.data-table--mini td,.data-table--mini th{ padding:7px 10px; }
-.row--active{ background:var(--accent-soft) !important; box-shadow:inset 2px 0 0 var(--accent); }
-.empty{ text-align:center; color:var(--text-subtle); padding:28px !important; }
+.data-table tbody tr{ transition:background var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease); }
+.data-table tbody tr:hover{ background:var(--surface-hover); box-shadow:inset 3px 0 0 var(--teal); }
+.data-table--mini td,.data-table--mini th{ padding:8px 11px; }
+.row--active{ background:var(--accent-soft) !important; box-shadow:inset 3px 0 0 var(--accent) !important; }
+.empty{ text-align:center; color:var(--text-subtle); padding:36px 24px !important; }
 .num{ font-family:var(--font-mono); font-variant-numeric:var(--num-tabular); }
 
 /* key-value */
@@ -386,9 +410,20 @@
 .live-badge .dot{ width:8px; height:8px; border-radius:50%; background:var(--success); animation:livepulse 1.8s ease-in-out infinite; }
 @keyframes livepulse{ 0%,100%{ opacity:.3 } 50%{ opacity:1 } }
 
-.crm-card-wrap{ padding:14px; }
-.crm-board{ display:flex; gap:14px; overflow-x:auto; padding-bottom:6px; }
-.crm-col{ flex:0 0 236px; width:236px; background:var(--surface-sunken); border:1px solid var(--border-subtle); border-radius:var(--radius-md); display:flex; flex-direction:column; max-height:62vh; }
+.crm-card-wrap{ padding:16px; position:relative; }
+/* The six stage columns were pinned at 236px, so on a 1600px laptop the last
+   one ("Checked out" — the column that says the patient is done) was sliced
+   off the right edge with nothing to suggest it was there. They now share the
+   space and only scroll when they genuinely cannot fit, and when they do
+   scroll the edge fades so it is obvious there is more. */
+.crm-board{ display:flex; gap:14px; overflow-x:auto; padding-bottom:8px; scroll-snap-type:x proximity; }
+.crm-col{ flex:1 1 200px; min-width:196px; background:var(--surface-sunken); border:1px solid var(--border-subtle); border-radius:var(--radius-md); display:flex; flex-direction:column; max-height:62vh; scroll-snap-align:start; }
+.crm-card-wrap::after{
+  content:''; position:absolute; top:16px; right:16px; bottom:24px; width:34px; pointer-events:none;
+  background:linear-gradient(to right, rgba(255,255,255,0), var(--surface));
+  opacity:0; transition:opacity var(--dur) var(--ease);
+}
+.crm-card-wrap--overflow::after{ opacity:1; }
 .crm-col-head{ display:flex; align-items:center; gap:8px; padding:10px 12px; border-bottom:1px solid var(--border-subtle); }
 .crm-col-dot{ width:9px; height:9px; border-radius:50%; flex:none; }
 .crm-col-label{ font-size:var(--fs-2xs); text-transform:uppercase; letter-spacing:.04em; font-weight:var(--fw-bold); color:var(--text-strong); }
@@ -583,3 +618,113 @@
 .signup-bar .bar-track{ flex:1; }
 .signup-pct{ font-weight:var(--fw-semibold); color:var(--text-strong); min-width:38px; text-align:right; }
 @media (max-width:900px){ .signup-row{ grid-template-columns:1fr auto auto; } .signup-bar{ grid-column:1 / -1; } }
+
+/* ============================================================
+   v1.8.0 — additions from the interface refresh
+   ============================================================ */
+
+/* ---- Filter bar (Records) ----
+   Records had two identical-looking search boxes doing two different jobs.
+   The filter bar narrows the table under it; the finder below is a separate,
+   clearly-labelled tool that reaches across every past clinic. */
+.filter-bar{
+  display:flex; gap:var(--space-4); align-items:flex-end; flex-wrap:wrap;
+  padding:var(--space-4); margin-bottom:var(--space-4);
+  background:var(--surface-sunken); border:var(--border-line); border-radius:var(--radius-md);
+}
+.filter-bar .field{ margin-bottom:0; }
+.field--grow{ flex:1 1 260px; min-width:0; }
+.field--inline{ flex:0 0 auto; min-width:190px; }
+
+.finder{ border:var(--border-line); border-radius:var(--radius-md); background:var(--surface); margin-bottom:var(--space-4); overflow:hidden; }
+.finder > summary{
+  display:flex; align-items:center; gap:9px; padding:12px 16px;
+  font-size:var(--fs-sm); font-weight:var(--fw-semibold); color:var(--text);
+  transition:background var(--dur-fast) var(--ease);
+}
+.finder > summary:hover{ background:var(--surface-hover); }
+.finder > summary .icon{ color:var(--teal-deep); }
+.finder > summary::after{
+  content:''; margin-left:auto; flex:none; width:7px; height:7px;
+  border-right:2px solid var(--text-subtle); border-bottom:2px solid var(--text-subtle);
+  transform:rotate(45deg) translate(-2px,-2px); transition:transform var(--dur) var(--ease);
+}
+.finder[open] > summary{ border-bottom:var(--divider); }
+.finder[open] > summary::after{ transform:rotate(-135deg) translate(-2px,-2px); }
+.finder-body{ padding:16px; }
+
+/* ---- Empty states ----
+   "No patients." set in small grey type looked like something had failed to
+   load. An empty queue is normal and usually good news, so give it room and
+   set it like a sentence someone meant to write. */
+.empty{ font-size:var(--fs-sm); line-height:1.6; }
+.empty > *{ display:inline-block; max-width:52ch; }
+.crm-empty{ padding:22px 8px; }
+
+/* ---- Interaction polish on the existing clickable surfaces ---- */
+.qa-card{ box-shadow:var(--shadow-sm); }
+.qa-card:hover{ border-color:var(--teal); box-shadow:var(--shadow-md); transform:translateY(-2px); }
+.qa-card:active{ transform:translateY(0); box-shadow:var(--shadow-xs); }
+.qa-card--primary:hover{ border-color:var(--accent); }
+.stat-card--link:hover{ border-color:var(--teal); transform:translateY(-2px); box-shadow:var(--shadow-md); }
+.stat-card--link:active{ transform:translateY(0); }
+.crm-card{ transition:border-color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease); }
+.crm-card:hover{ border-color:var(--teal); box-shadow:var(--shadow-sm); transform:translateY(-1px); }
+.crm-card:active{ transform:translateY(0); }
+.chip-btn:active,.chip-select:active,.lang-card:active,.arrival-tab:active{ transform:translateY(1px); }
+.chip-btn,.chip-select{ transition:background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease); }
+.lookup-item{ transition:background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease); }
+.arrival-row{ box-shadow:var(--shadow-xs); transition:border-color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease); }
+.arrival-row:hover{ border-color:var(--border-strong); box-shadow:var(--shadow-sm); }
+.tab{ border-radius:var(--radius-sm) var(--radius-sm) 0 0; transition:color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease); }
+.tab:hover{ color:var(--text-strong); background:var(--surface-hover); }
+
+/* Panels that carry their own elevation, matched to the new card scale. */
+.kpi{ border-radius:var(--radius-lg); box-shadow:var(--shadow-sm); padding:18px 20px; }
+.kpi--accent{ box-shadow:var(--shadow-md); }
+.modal-card{ border-radius:var(--radius-xl); }
+.modal-title{ font-family:var(--font-display); font-size:var(--fs-h2); font-weight:var(--fw-bold); padding:18px 22px; letter-spacing:var(--tracking-tight); }
+.modal-body{ padding:22px; }
+.modal-actions{ padding:16px 22px; background:var(--surface-header); }
+.toast{ border-radius:var(--radius-md); box-shadow:var(--shadow-lg); }
+.history-details,.collapse{ box-shadow:var(--shadow-xs); }
+.history-summary{ font-family:var(--font-display); font-size:var(--fs-h3); }
+
+/* ---- Kiosk: this is the screen a patient holds ----
+   Bigger targets, a wider column and a progress bar that is actually visible
+   from arm's length. */
+.kiosk-body{ max-width:1000px; padding:26px 40px; }
+.kiosk .input{ height:48px; font-size:var(--fs-h3); }
+.kiosk .field-label{ font-size:var(--fs-sm); color:var(--text); }
+.kiosk .chip-btn{ padding:13px 18px; font-size:var(--fs-base); }
+.kiosk-nav{ padding:16px 40px; box-shadow:0 -1px 0 var(--border), var(--shadow-md); }
+.kiosk-nav .btn{ height:48px; padding:0 26px; font-size:var(--fs-base); border-radius:var(--radius-md); }
+.kp-dot{ width:44px; height:6px; border-radius:var(--radius-full); transition:background var(--dur) var(--ease); }
+.lang-card{ box-shadow:var(--shadow-sm); transition:border-color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease); }
+.lang-card:hover{ box-shadow:var(--shadow-md); transform:translateY(-2px); }
+.big-check{ width:24px; height:24px; }
+.agree-row{ padding:15px 18px; border-radius:var(--radius-md); }
+.sigpad-canvas{ height:190px; border-radius:var(--radius-md); border-width:2px; border-style:dashed; }
+
+/* ---- Sign-in: the hero panel had a hole in the middle of it ---- */
+.auth-hero{ justify-content:space-between; gap:32px; }
+.auth-hero-body{ flex:0 1 auto; justify-content:center; padding:32px 0; }
+.auth-headline{ text-wrap:balance; }
+.auth-title{ font-family:var(--font-display); letter-spacing:var(--tracking-tight); }
+
+
+/* Controls that sit in a view header must not stretch to the full width the
+   flex row offers — a clinic-name dropdown spanning half the screen pushed
+   Refresh and Export onto a second line. */
+.view-head-actions{ flex:0 0 auto; }
+.view-head-actions .input,
+.view-head-actions .select{ width:auto; min-width:190px; max-width:280px; }
+
+/* Stage headings wrap when a label is long ("Ready for treatment"). Give the
+   heads one shared height so the six columns still line up when one does. */
+.crm-col-head{ min-height:48px; align-items:center; }
+.crm-col-label{ letter-spacing:.02em; line-height:1.25; }
+
+/* The station overrides are one select, not five buttons — see management.js. */
+.move-select{ width:auto; min-width:150px; }
+.inline-row{ align-items:center; }
