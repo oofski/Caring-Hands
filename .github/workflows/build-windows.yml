@@ -48,6 +48,8 @@ jobs:
           retention-days: 30
 
       - name: Publish downloadable release
+        id: publish
+        continue-on-error: true
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v1.8.0-build.${{ github.run_number }}
@@ -142,3 +144,55 @@ jobs:
             release/*.blockmap
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # GitHub's release-asset endpoint drops one large .exe every few runs
+      # ("Error uploading" / "Error saving asset"), leaving the release a draft
+      # with a file missing and failing the build even though the installers
+      # were produced correctly — three runs in a row died that way.
+      #
+      # This re-uploads only the MISSING assets, with `gh`, which touches the
+      # files and nothing else. Re-running the release action instead would
+      # re-send the whole release and risk rewriting its notes.
+      - name: Retry any dropped release assets
+        if: steps.publish.outcome == 'failure'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="v1.8.0-build.${{ github.run_number }}"
+          for attempt in 1 2 3; do
+            missing=0
+            for f in release/*.exe release/latest.yml release/*.blockmap; do
+              [ -e "$f" ] || continue
+              name=$(basename "$f")
+              if gh release view "$tag" --json assets --jq '.assets[].name' | grep -qx "$name"; then
+                echo "ok      $name"
+              else
+                echo "missing $name — uploading (attempt $attempt)"
+                gh release upload "$tag" "$f" --clobber || missing=1
+              fi
+            done
+            [ "$missing" -eq 0 ] && break
+            echo "retrying in 20s"; sleep 20
+          done
+          # A failed publish leaves the release as an unpublished DRAFT, which
+          # nobody can download. Once its files are all present, publish it.
+          gh release edit "$tag" --draft=false --latest
+
+      # The release is only usable if BOTH installers actually landed. Fail the
+      # build loudly if one is missing, instead of leaving a half-published
+      # release that looks green.
+      - name: Verify both installers are on the release
+        shell: bash
+        run: |
+          tag="v1.8.0-build.${{ github.run_number }}"
+          api="https://api.github.com/repos/${{ github.repository }}/releases/tags/$tag"
+          json=$(curl -sS -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" "$api")
+          names=$(echo "$json" | grep -o '"name": *"[^"]*\.exe"' || true)
+          echo "assets on $tag:"; echo "$names"
+          echo "$names" | grep -q 'Caring-Hands-Setup' || { echo "::error::installer missing from the release"; exit 1; }
+          echo "$names" | grep -q 'Caring-Hands-Portable' || { echo "::error::portable exe missing from the release"; exit 1; }
+          # A draft is not downloadable, so a draft is not a release.
+          echo "$json" | grep -q '"draft": *false' || { echo "::error::release is still a draft"; exit 1; }
+          echo "both installers present and the release is published"
+
