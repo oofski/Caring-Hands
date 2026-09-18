@@ -224,6 +224,7 @@ function progressNoteBody(p) {
     <div><span class="label">Anesthetic</span><div class="chips">${anesthetic}</div></div>
     ${t.other_procedures ? `<div class="box"><span class="label">Other procedures</span><br>${esc(t.other_procedures)}</div>` : ''}
     ${t.clinical_notes ? `<div class="box"><span class="label">Clinical notes</span><br>${esc(t.clinical_notes)}</div>` : ''}
+    ${addendaHtml(t, esc)}
 
     <h2>Provider Sign-Off</h2>
     <div class="two">
@@ -474,9 +475,23 @@ function summaryBody(p) {
     ${t.other_procedures ? `<div class="box"><span class="label">Other procedures</span><br>${esc(t.other_procedures)}</div>` : ''}
 
     ${t.clinical_notes ? `<h2>Clinical / Dental Notes</h2><div class="box">${esc(t.clinical_notes)}</div>` : ''}
+    ${addendaHtml(t, esc)}
 
     <h2>X-Rays</h2>
     ${xrays ? `<div class="xrays">${xrays}</div>` : '<span class="muted">No x-rays on file</span>'}`;
+}
+
+// v1.10.0: notes added after the visit was completed. They print BELOW the
+// signed clinical note, each stamped with who wrote it and when, so the chart
+// the patient takes away is the whole account — not just what was known at the
+// moment the record was signed.
+function addendaHtml(t, esc) {
+  let list = t && t.addenda;
+  if (typeof list === 'string') { try { list = JSON.parse(list); } catch (_e) { list = []; } }
+  if (!Array.isArray(list) || !list.length) return '';
+  const when = (v) => { const d = new Date(v); return isNaN(d.getTime()) ? String(v || '') : d.toLocaleString(); };
+  const items = list.map((a) => `<div class="box"><span class="label">${esc(a.by_name || 'Unknown')} · ${esc(when(a.at))}</span><br>${esc(a.note || '')}</div>`).join('');
+  return `<h2>Added after completion</h2>${items}`;
 }
 
 function buildHtml(p, format) {

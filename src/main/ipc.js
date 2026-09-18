@@ -64,7 +64,12 @@ const PERMS = {
   'patients:route': ['admin', 'doctor', 'triage', 'emt'],
   'treatment:save': ['admin', 'doctor', 'hygienist'],
   'consent:setTeeth': ['admin', 'doctor'],
-  'consent:add': ['admin', 'doctor'],
+  // The front desk and the vitals station both meet the patient BEFORE a
+  // clinician does, and a returning patient's consent has to be taken
+  // somewhere they can actually be reached — see components/consentCapture.js.
+  'consent:add': ['admin', 'doctor', 'registration', 'emt', 'triage', 'hygienist'],
+  'treatment:note': ['admin', 'doctor', 'hygienist'],
+  'treatment:reopen': ['admin', 'doctor', 'hygienist'],
   'xray:add': ['admin', 'doctor', 'triage', 'emt'],
   'xray:setTooth': ['admin', 'doctor'],
   'xray:folderList': ['admin', 'doctor'],
@@ -289,6 +294,8 @@ function register(getMainWindow) {
   handle('patients:route', ({ patientId, route }) => db.routePatient(currentUser, patientId, route));
   handle('consent:setTeeth', ({ consentId, tooth_numbers }) => db.updateConsentTeeth(currentUser, consentId, tooth_numbers));
   handle('consent:add', ({ patientId, consent }) => db.addPatientConsent(currentUser, patientId, consent));
+  handle('treatment:note', ({ patientId, note }) => db.addTreatmentNote(currentUser, patientId, note));
+  handle('treatment:reopen', ({ patientId }) => db.reopenTreatment(currentUser, patientId));
   handle('patients:dismiss', (id) => db.dismissPatient(currentUser, id));
   handle('patients:move', ({ id, target }) => db.adminMovePatient(currentUser, id, target));
   handle('patients:audit', (id) => db.patientAudit(id));

@@ -8,7 +8,10 @@ import { patientHistoryCards, incompleteBanner } from '../components/patientHist
 import { sortedByName } from '../patientSort.js';
 import { store } from '../store.js';
 import { statusPill } from './dashboard.js';
-import { bloodThinnerStatus, bloodThinnerText, bpStatus } from '../medFlags.js';
+import { bloodThinnerStatus, bpStatus } from '../medFlags.js';
+import { vitalsStrip as sharedVitalsStrip } from '../components/vitalsStrip.js';
+import { captureConsent as sharedCaptureConsent } from '../components/consentCapture.js';
+import { visitNotesPanel } from '../components/visitNotes.js';
 
 const QUADRANTS = [['UR', 'UR'], ['UL', 'UL'], ['LR', 'LR'], ['LL', 'LL']];
 const fmtWhen = (ts) => { if (!ts) return ''; const d = new Date(ts); return isNaN(d) ? String(ts) : d.toLocaleString(); };
@@ -36,6 +39,12 @@ export function renderProvider(ctx, params = {}) {
     // the hygienist wait in a collapsed list below — they may come back later.
     const dentistQueue = sortedByName(ready.filter((p) => p.route === 'dentist' || p.route === 'both' || p.route == null));
     const atHygienist = sortedByName(ready.filter((p) => p.route === 'hygienist'));
+    // Finishing a visit used to be a one-way door: the patient dropped out of
+    // this queue and there was no route back to the record, so a note the
+    // dentist thought of a minute later had nowhere to go. They stay listed
+    // here for the rest of the clinic.
+    const finished = sortedByName(patients.filter((p) => ['completed', 'dismissed'].includes(p.status)
+      && (p.route === 'dentist' || p.route === 'both' || p.route == null)));
     const row = (p) => el('tr', {}, [
       el('td', {}, [el('strong', {}, [`${p.last_name}, ${p.first_name}`]),
         p.on_thinner ? el('span', { class: 'pill pill--danger', style: 'margin-left:8px' }, ['Blood thinner']) : null,
@@ -58,6 +67,10 @@ export function renderProvider(ctx, params = {}) {
         ghostBtn('refresh', 'Refresh', queue),
       ]),
       el('div', { class: 'card' }, [table(dentistQueue, 'No patients in the dentist queue yet — the EMT station sends patients here after vitals.')]),
+      finished.length ? el('details', { class: 'collapse' }, [
+        el('summary', {}, [`Finished today (${finished.length}) — open one to add a note or correct it`]),
+        el('div', { class: 'collapse-body' }, [table(finished, '')]),
+      ]) : null,
       atHygienist.length ? el('details', { class: 'collapse' }, [
         el('summary', {}, [`At the hygienist (${atHygienist.length})`]),
         el('div', { class: 'collapse-body' }, [table(atHygienist, '')]),
@@ -93,43 +106,9 @@ export function renderProvider(ctx, params = {}) {
     const thinnerStatus = bloodThinnerStatus(p);
 
     /* ---------- EMT vitals + routing strip (read-only) ---------- */
-    // Compact one-line summary of what the EMT station recorded before sending
-    // the patient here. Rendered only when vitals or a route exist.
-    function vitalsStrip() {
-      const hasVitals = tr.bp_systolic != null || tr.bp_diastolic != null || tr.heart_rate != null;
-      if (!hasVitals && !tr.route) return null;
-      // BP renders as its own element so a hypertensive-crisis reading (systolic
-      // over 180 or diastolic over 100) shows RED here, same as the EMT screen.
-      const bp = bpStatus(tr.bp_systolic, tr.bp_diastolic);
-      const bpEl = (tr.bp_systolic != null || tr.bp_diastolic != null)
-        ? el('span', { class: bp.high ? 'pill pill--danger' : 'small' }, [
-            bp.high ? el('span', { class: 'pill-dot' }) : null,
-            `BP ${tr.bp_systolic != null ? tr.bp_systolic : '—'}/${tr.bp_diastolic != null ? tr.bp_diastolic : '—'}${bp.high ? ' — HIGH' : ''}`,
-          ])
-        : null;
-      // Any BP re-checks the EMT recorded (shown red if still high).
-      const recheckEls = (Array.isArray(tr.bp_rechecks) ? tr.bp_rechecks : []).map((r) => {
-        const st = bpStatus(r.bp_systolic, r.bp_diastolic);
-        return el('span', { class: st.high ? 'pill pill--danger' : 'small' }, [
-          st.high ? el('span', { class: 'pill-dot' }) : null,
-          `re-check ${r.bp_systolic != null ? r.bp_systolic : '—'}/${r.bp_diastolic != null ? r.bp_diastolic : '—'}${st.high ? ' — HIGH' : ''}`,
-        ]);
-      });
-      const rest = [];
-      if (tr.heart_rate != null) rest.push(`HR ${tr.heart_rate}`);
-      if (p.vitals_by_name) rest.push(`recorded by ${p.vitals_by_name}`);
-      // Blood-thinner wording comes from the ONE shared helper so it always
-      // matches the danger banner and every other screen (no "No" vs "Yes" mismatch).
-      const bt = bloodThinnerText(p);
-      return el('div', { class: 'card', style: 'display:flex;flex-wrap:wrap;align-items:center;gap:var(--space-2) var(--space-3);padding:var(--space-3) var(--space-4)' }, [
-        icon('syringe', { size: 14 }),
-        bpEl,
-        ...recheckEls,
-        rest.length ? el('span', { class: 'small' }, [rest.join(' · ')]) : null,
-        el('span', { class: bt.level === 'danger' ? 'pill pill--danger' : 'subtle small' }, [bt.text]),
-        tr.route ? el('span', { class: 'subtle small' }, [p.routed_by_name ? `Sent here by ${p.routed_by_name}` : 'Routed by the EMT station']) : null,
-      ]);
-    }
+    // Shared with the hygienist so the two clinicians can never be shown
+    // different vitals — see components/vitalsStrip.js.
+    const vitalsStrip = () => sharedVitalsStrip(p);
 
     /* ---------- Visit row (paper: top of sheet) ---------- */
     const complaint = input(tr.complaint || p.dental_history.reason || '', 'Chief complaint', locked);
@@ -579,37 +558,9 @@ export function renderProvider(ctx, params = {}) {
     // patient complete it here — with the tooth number(s) — before treating. Also
     // used to capture a general consent the intake missed (gates treatment below).
     async function captureConsent(type) {
-      const isSurgery = type === 'oral_surgery';
-      const paras = isSurgery ? t('consent.oralSurgeryFull') : t('consent.generalFull');
-      const list = Array.isArray(paras) ? paras : [paras];
-      const textBox = el('div', { style: 'max-height:40vh;overflow:auto;border:var(--border-line);border-radius:var(--radius-sm);padding:var(--space-3);background:var(--surface);margin-bottom:var(--space-3)' },
-        list.map((para, i) => el('p', { style: 'margin:0 0 var(--space-2);font-size:var(--fs-sm)' }, [isSurgery ? para : `${i + 1}. ${para}`])));
-      const agree = el('input', { type: 'checkbox', class: 'big-check' });
-      const signer = el('input', { class: 'input', placeholder: 'Patient / guardian name', value: `${p.first_name || ''} ${p.last_name || ''}`.trim() });
-      const teeth = isSurgery ? el('input', { class: 'input', placeholder: 'e.g. 18, 19', value: '' }) : null;
-      const sig = SignaturePad();
-      const body = el('div', {}, [
-        textBox,
-        isSurgery ? el('label', { class: 'field' }, [el('span', { class: 'field-label' }, ['Tooth number(s) for this consent']), teeth]) : null,
-        el('label', { class: 'agree-row' }, [agree, el('span', {}, [t('consent.agree')])]),
-        el('label', { class: 'field' }, [el('span', { class: 'field-label' }, ['Patient / guardian name']), signer]),
-        el('div', { class: 'field' }, [el('span', { class: 'field-label' }, ['Signature']), sig.node]),
-        el('p', { class: 'field-hint' }, ['Signature optional — the patient may sign on the screen or leave it blank.']),
-      ]);
-      const ok = await modal({ title: isSurgery ? t('consent.surgeryTitle') : t('consent.generalTitle'), body, confirmText: 'Save consent', cancelText: 'Cancel' });
-      if (!ok) return;
-      if (!agree.checked) { toast('Please check the agreement box to record consent.', 'error'); return; }
-      if (!signer.value.trim()) { toast('Enter the patient / guardian name.', 'error'); return; }
-      try {
-        await api.addConsent(id, {
-          type, language: 'en',
-          signer_name: signer.value.trim(),
-          signature_png: sig.isEmpty() ? null : sig.getDataUrl(),
-          tooth_numbers: isSurgery ? teeth.value.trim() : undefined,
-        });
-        toast('Consent recorded', 'success');
-        detail(id);
-      } catch (e) { toast(e.message, 'error'); }
+      // Shared with the front desk: the same document, the same required
+      // signature, wherever it is taken. See components/consentCapture.js.
+      if (await sharedCaptureConsent(p, type)) detail(id);
     }
 
     // Consent status + "complete it here" actions, shown right under patient history.
@@ -831,6 +782,10 @@ export function renderProvider(ctx, params = {}) {
       // Consents — right under patient history so the dentist can have a missing
       // consent (esp. oral surgery, with tooth numbers) completed at the chair.
       consentsPanel(),
+
+      // Anything added after this visit was completed, plus the way to add more
+      // or re-open it for correction. Renders nothing mid-visit.
+      visitNotesPanel(p, { onChange: () => detail(id) }),
 
       // Visit bar (paper top row) — the dentist is the planning hub now.
       panel('clipboard', 'Visit & treatment plan',

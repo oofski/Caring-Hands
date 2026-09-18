@@ -51,6 +51,8 @@ export const api = {
   routePatient: (patientId, route) => call('patientsRoute', { patientId, route }),
   setConsentTeeth: (consentId, tooth_numbers) => call('consentSetTeeth', { consentId, tooth_numbers }),
   addConsent: (patientId, consent) => call('consentAdd', { patientId, consent }),
+  addTreatmentNote: (patientId, note) => call('treatmentNote', { patientId, note }),
+  reopenTreatment: (patientId) => call('treatmentReopen', { patientId }),
   // Front-desk arrivals (v1.5.24)
   arrivalCheck: (id) => call('patientsArrivalCheck', id),
   confirmArrival: (id, route) => call('patientsConfirmArrival', { id, route }),

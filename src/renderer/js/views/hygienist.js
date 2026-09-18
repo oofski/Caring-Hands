@@ -8,6 +8,8 @@ import { patientHistoryPanel } from '../components/patientHistory.js';
 import { bloodThinnerText } from '../medFlags.js';
 import { store } from '../store.js';
 import { statusPill } from './dashboard.js';
+import { vitalsStrip } from '../components/vitalsStrip.js';
+import { visitNotesPanel } from '../components/visitNotes.js';
 import { sortedByName } from '../patientSort.js';
 
 // Cleaning options a hygienist performs (mirrors the provider's cleaning set).
@@ -37,6 +39,17 @@ export function renderHygienist(ctx, params = {}) {
     // has signed them off into a clinical queue (status 'triaged'/'in_treatment')
     // AND they were routed to the hygienist. Checked-in patients stay with the EMT.
     const forCleaning = sortedByName(live.filter((p) => routedToHygienist(p) && ['triaged', 'in_treatment'].includes(p.status)));
+    // Same reason as the dentist queue: a finished cleaning used to vanish from
+    // this screen, so there was no way back to the record to add a note.
+    const finished = sortedByName(patients.filter((p) => routedToHygienist(p) && ['completed', 'dismissed'].includes(p.status)));
+    const rowFor = (p) => el('tr', { style: 'cursor:pointer', onClick: () => detail(p.id) }, [
+      el('td', {}, [el('strong', {}, [`${p.last_name}, ${p.first_name}`])]),
+      el('td', { class: 'num' }, [p.age != null ? String(p.age) : '—']),
+      el('td', {}, [p.complaint || '—']),
+      el('td', {}, [routedToHygienist(p) ? el('span', { class: 'pill pill--teal' }, [icon('sparkle', { size: 12 }), 'Cleaning']) : el('span', { class: 'subtle small' }, ['—'])]),
+      el('td', {}, [statusPill(p.status)]),
+      el('td', {}, [el('button', { class: 'btn btn--primary btn--sm', onClick: (e) => { e.stopPropagation(); detail(p.id); } }, ['Open', icon('chevron', { size: 15 })])]),
+    ]);
     const rows = forCleaning.map((p) => el('tr', { style: 'cursor:pointer', onClick: () => detail(p.id) }, [
       el('td', {}, [el('strong', {}, [`${p.last_name}, ${p.first_name}`])]),
       el('td', { class: 'num' }, [p.age != null ? String(p.age) : '—']),
@@ -60,6 +73,17 @@ export function renderHygienist(ctx, params = {}) {
           ]),
         ]),
       ]),
+      finished.length ? el('details', { class: 'collapse' }, [
+        el('summary', {}, [`Finished today (${finished.length}) — open one to add a note or correct it`]),
+        el('div', { class: 'collapse-body' }, [
+          el('div', { class: 'data-table-wrap' }, [
+            el('table', { class: 'data-table' }, [
+              el('thead', {}, [el('tr', {}, ['Patient', 'Age', 'Complaint', 'Cleaning', 'Status', ''].map((h) => el('th', {}, [h])))]),
+              el('tbody', {}, finished.map(rowFor)),
+            ]),
+          ]),
+        ]),
+      ]) : null,
     );
   }
 
@@ -195,6 +219,11 @@ export function renderHygienist(ctx, params = {}) {
         ]),
       ]),
 
+      // The hygienist decides whether it is safe to scale this person. Blood
+      // pressure and the blood-thinner status are exactly what that turns on,
+      // and this screen used to show neither.
+      vitalsStrip(p),
+
       locked ? el('div', { class: 'banner banner--locked' }, [icon('lock', { size: 16 }), 'This record is signed off and locked.']) : null,
       alsoDoctor && !locked ? el('div', { class: 'banner banner--info' }, [icon('tooth', { size: 16 }), 'This patient is also flagged for the doctor (extraction/filling). Save your cleaning and leave sign-off to the provider.']) : null,
 
@@ -203,6 +232,10 @@ export function renderHygienist(ctx, params = {}) {
         el('div', { class: 'card-title' }, [icon('tooth', { size: 15 }), 'Odontogram — tap teeth cleaned']),
         odo.node, bulkClean,
       ]),
+
+      // Anything added after the visit was completed, plus the way to add more
+      // or re-open it. Renders nothing while the visit is still in progress.
+      visitNotesPanel(p, { onChange: () => detail(id) }),
 
       // Cleaning options — full width, directly under the odontogram.
       el('div', { class: 'card' }, [

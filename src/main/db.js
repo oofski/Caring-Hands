@@ -125,6 +125,11 @@ function migrate() {
       provider_name      TEXT,
       provider_signature TEXT,                        -- data URL
       locked             INTEGER NOT NULL DEFAULT 0,
+      -- v1.10.0: notes added AFTER the visit was completed. Append-only, each
+      -- one stamped with who wrote it and when. A signed clinical note is a
+      -- record of what was done at the time; correcting it by overwriting
+      -- destroys that, so later thoughts are added beside it instead.
+      addenda            TEXT NOT NULL DEFAULT '[]',  -- JSON
       completed_by       INTEGER REFERENCES users(id),
       completed_at       TEXT
     );
@@ -224,6 +229,8 @@ function migrate() {
   // clinics can collect sign-ups at once while exactly one clinic is live.
   // Existing clinics migrate to OPEN, which is what they were before it existed.
   addColumn('events', 'prereg_open', 'INTEGER NOT NULL DEFAULT 1');
+  // v1.10.0: addenda to a completed visit — see the treatments schema above.
+  addColumn('treatments', 'addenda', "TEXT NOT NULL DEFAULT '[]'");
   addColumn('patients', 'dismissed_by_name', 'TEXT');
   // v1.5.24: the front desk confirms the patient is physically here and ready to
   // be seen (consents checked, station assigned). Pre-registered patients can sit
@@ -1327,6 +1334,7 @@ function getPatient(id) {
         extractions: safeJson(t.extractions, []),
         cleaning: safeJson(t.cleaning, {}),
         anesthetic: safeJson(t.anesthetic, []),
+        addenda: safeJson(t.addenda, []),
       }
     : null;
   p.xrays = db.prepare('SELECT id, station, note, created_at FROM xrays WHERE patient_id = ?').all(id);
@@ -1705,7 +1713,20 @@ function listPatients({ eventId, search } = {}) {
       // consents this visit needs are actually signed.
       arrived_at: p.arrived_at || null,
       visit_type: (pt.dental_history && pt.dental_history.visit_type) || null,
-      consents_ok: (() => { try { const r = arrivalReadiness(p.id); return r.general_signed && r.surgery_signed; } catch { return false; } })(),
+      // Which consents are outstanding, not just whether any are — the front
+      // desk has to know WHICH one to take, and a returning patient arrives
+      // with none of them (consent is per visit).
+      ...(() => {
+        try {
+          const r = arrivalReadiness(p.id);
+          return {
+            consents_ok: r.general_signed && r.surgery_signed,
+            general_signed: r.general_signed,
+            needs_surgery_consent: r.needs_surgery_consent,
+            surgery_signed: r.surgery_signed,
+          };
+        } catch { return { consents_ok: false, general_signed: false, needs_surgery_consent: false, surgery_signed: true }; }
+      })(),
       // Stage timestamps for the live board's "total time" + "time at stage" tags.
       vitals_at: tr ? tr.vitals_at : null,
       routed_at: tr ? tr.routed_at : null,
@@ -1811,6 +1832,56 @@ function saveTriage(actor, patientId, data) {
 /* ------------------------------------------------------------------ */
 /*  Treatment                                                          */
 /* ------------------------------------------------------------------ */
+
+// v1.10.0: add a note to a visit that is already finished.
+//
+// A clinician remembers something, or needs to correct the picture, after the
+// patient has been marked complete and often after they have walked out. Until
+// now there was nothing to do: a completed record could still be edited but the
+// patient had vanished from the clinician's queue, and a LOCKED one refused
+// every change outright.
+//
+// An addendum is APPEND-ONLY and works even on a locked record. That is
+// deliberate: a signed clinical note records what was done at the time, and
+// rewriting it later destroys the account it exists to give. The new thought is
+// added beside it, stamped with who wrote it and when, exactly as a paper chart
+// would take one.
+function addTreatmentNote(actor, patientId, note) {
+  const text = String(note == null ? '' : note).trim();
+  if (!text) throw new Error('Write the note before adding it.');
+  const existing = db.prepare('SELECT * FROM treatments WHERE patient_id = ?').get(patientId);
+  if (!existing) throw new Error('This patient has no treatment record to add a note to.');
+  const list = safeJson(existing.addenda, []) || [];
+  list.push({
+    note: text.slice(0, 4000),
+    by: actor ? actor.id : null,
+    by_name: actor ? actor.full_name : null,
+    at: now(),
+  });
+  db.prepare('UPDATE treatments SET addenda = ? WHERE patient_id = ?').run(JSON.stringify(list), patientId);
+  audit(actor, 'treatment_note', 'patient', patientId, text.slice(0, 120));
+  return getPatient(patientId);
+}
+
+// Re-open a finished visit for editing: unlock the record and put the patient
+// back in the clinician's queue. This is the "reverse it" half — for when the
+// note is wrong rather than merely incomplete. The correction is visible in the
+// audit log, and anything already written stays until the clinician changes it.
+function reopenTreatment(actor, patientId) {
+  const p = db.prepare('SELECT * FROM patients WHERE id = ?').get(patientId);
+  if (!p) throw new Error('Patient not found.');
+  const existing = db.prepare('SELECT * FROM treatments WHERE patient_id = ?').get(patientId);
+  if (!existing) throw new Error('This patient has no treatment record to re-open.');
+  db.prepare('UPDATE treatments SET locked = 0 WHERE patient_id = ?').run(patientId);
+  // Back into treatment so the clinician can find them again. A patient who had
+  // already been checked out is un-dismissed, which is the only way to correct
+  // a record after they have left.
+  db.prepare("UPDATE patients SET status='in_treatment', dismissed_by=NULL, dismissed_by_name=NULL, dismissed_at=NULL, updated_at=? WHERE id=?")
+    .run(now(), patientId);
+  db.prepare("UPDATE triage SET status='in_treatment' WHERE patient_id = ? AND status='completed'").run(patientId);
+  audit(actor, 'treatment_reopen', 'patient', patientId, null);
+  return getPatient(patientId);
+}
 
 function saveTreatment(actor, patientId, data, finalize) {
   const existing = db.prepare('SELECT * FROM treatments WHERE patient_id = ?').get(patientId);
@@ -2525,7 +2596,7 @@ const SYNC_COLS = {
   staffdir: ['username', 'full_name', 'role', 'salt', 'hash', 'last_event_name', 'last_used_at', 'times_served', 'created_at'],
   patient: ['language', 'first_name', 'last_name', 'dob', 'gender', 'phone', 'email', 'demographics', 'medical_history', 'dental_history', 'status', 'created_at', 'dismissed_at', 'dismissed_by_name', 'arrived_at', 'arrived_by_name'],
   triage: ['complaint', 'flags', 'checklist', 'teeth', 'teeth_notes', 'notes', 'xray_count', 'xray_station', 'assigned_to', 'status', 'triage_signature', 'triage_signer_name', 'triaged_at', 'bp_systolic', 'bp_diastolic', 'heart_rate', 'vitals_at', 'blood_thinner', 'blood_thinner_detail', 'route', 'routed_at', 'emt_review', 'emt_signed_off', 'bp_rechecks', 'triaged_by_name', 'vitals_by_name', 'routed_by_name'],
-  treatment: ['fillings', 'extractions', 'cleaning', 'anesthetic', 'other_procedures', 'clinical_notes', 'provider_name', 'provider_signature', 'locked', 'completed_at', 'completed_by_name'],
+  treatment: ['fillings', 'extractions', 'cleaning', 'anesthetic', 'other_procedures', 'clinical_notes', 'provider_name', 'provider_signature', 'locked', 'addenda', 'completed_at', 'completed_by_name'],
   consent: ['type', 'version', 'language', 'signer_name', 'relationship', 'signature_png', 'signed_at', 'tooth_numbers', 'amended_by', 'amended_at'],
   xray: ['station', 'image_png', 'note', 'created_at', 'tooth'],
   // v1.6.0: the de-identified totals a finished clinic leaves behind. Event-
@@ -2948,6 +3019,7 @@ module.exports = {
   listStaffDirectory, addStaffFromDirectory, forgetStaff,
   ensureClinicAccounts, resetClinicAccountPassword, isClinicAccount, CLINIC_ACCOUNT_PASSWORD,
   listEvents, createEvent, updateEvent, setActiveEvent, setEventActive, setEventPreregOpen, deleteEvent, getActiveEvent,
+  addTreatmentNote, reopenTreatment,
   createPatient, startVisitFromExisting, updatePatient, deletePatient, getPatient, listPatients, searchAllPatients, patientHistory,
   listIncompletePatients, deleteIncompletePatients,
   saveVitals, routePatient, updateConsentTeeth, addPatientConsent, dismissPatient, adminMovePatient, patientAudit, importPatientFromPortable,

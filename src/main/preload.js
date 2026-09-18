@@ -9,6 +9,7 @@ const CHANNELS = [
   'staff:directory', 'staff:add', 'staff:forget', 'staff:resetClinicPassword',
   'events:list', 'events:active', 'events:create', 'events:update',
   'events:setActive', 'events:setState', 'events:setPrereg', 'events:delete',
+  'treatment:note', 'treatment:reopen',
   'patients:create', 'patients:newVisit', 'patients:update', 'patients:delete', 'patients:get', 'patients:list',
   'patients:records', 'patients:searchAll', 'patients:history',
   'patients:incomplete', 'patients:cleanupIncomplete',

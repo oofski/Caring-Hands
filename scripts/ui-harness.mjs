@@ -51,13 +51,14 @@ let currentUser = null;
 const PERMS = {
   'usersList': ['admin'], 'usersCreate': ['admin'], 'usersUpdate': ['admin'], 'usersDelete': ['admin'],
   'usersClearEventStaff': ['admin'],
-  'eventsCreate': ['admin'], 'eventsUpdate': ['admin'], 'eventsSetActive': ['admin'], 'eventsSetState': ['admin'], 'eventsSetPrereg': ['admin'], 'eventsDelete': ['admin'],
+  'eventsCreate': ['admin'], 'eventsUpdate': ['admin'], 'eventsSetActive': ['admin'], 'eventsSetState': ['admin'], 'eventsSetPrereg': ['admin'],
+  'treatmentNote': ['admin', 'doctor', 'hygienist'], 'treatmentReopen': ['admin', 'doctor', 'hygienist'], 'eventsDelete': ['admin'],
   'patientsUpdate': ['admin', 'triage', 'doctor'], 'patientsGet': ['admin', 'doctor', 'triage', 'emt', 'checkout', 'hygienist'],
   'patientsList': ['admin', 'doctor', 'triage', 'emt', 'checkout', 'hygienist', 'registration'], 'patientsRecords': ['admin', 'doctor'],
   'patientsSearchAll': ['admin', 'doctor', 'triage', 'emt', 'checkout', 'hygienist'], 'patientsHistory': ['admin', 'doctor', 'triage', 'emt', 'checkout', 'hygienist'],
   'patientsIncomplete': ['admin'], 'patientsCleanupIncomplete': ['admin'], 'patientsDelete': ['admin'],
   'patientsDismiss': ['admin', 'checkout'], 'patientsMove': ['admin'], 'patientsAudit': ['admin', 'doctor', 'checkout', 'hygienist'],
-  'vitalsSave': ['admin', 'doctor', 'triage', 'emt'], 'patientsRoute': ['admin', 'doctor', 'triage', 'emt'], 'consentSetTeeth': ['admin', 'doctor'], 'consentAdd': ['admin', 'doctor'],
+  'vitalsSave': ['admin', 'doctor', 'triage', 'emt'], 'patientsRoute': ['admin', 'doctor', 'triage', 'emt'], 'consentSetTeeth': ['admin', 'doctor'], 'consentAdd': ['admin', 'doctor', 'registration', 'emt', 'triage', 'hygienist'],
   'usbLoad': ['admin', 'doctor', 'triage', 'checkout'], 'usbUploadCheckout': ['admin', 'doctor', 'triage', 'checkout'], 'usbClear': ['admin', 'doctor', 'triage', 'checkout'],
   'triageSave': ['admin', 'doctor', 'triage'], 'treatmentSave': ['admin', 'doctor', 'hygienist'],
   'xrayAdd': ['admin', 'doctor', 'triage'], 'xraySetTooth': ['admin', 'doctor'], 'xrayGet': ['admin', 'doctor', 'triage', 'hygienist'], 'xrayList': ['admin', 'doctor', 'triage', 'hygienist'], 'xrayDelete': ['admin', 'doctor', 'triage'],
@@ -96,6 +97,8 @@ window.api = {
   eventsSetActive: okWrap((id) => db.setActiveEvent(currentUser, id), 'eventsSetActive'),
   eventsSetState: okWrap(({ id, active }) => db.setEventActive(currentUser, id, active), 'eventsSetState'),
   eventsSetPrereg: okWrap(({ id, open }) => db.setEventPreregOpen(currentUser, id, open), 'eventsSetPrereg'),
+  treatmentNote: okWrap(({ patientId, note }) => db.addTreatmentNote(currentUser, patientId, note), 'treatmentNote'),
+  treatmentReopen: okWrap(({ patientId }) => db.reopenTreatment(currentUser, patientId), 'treatmentReopen'),
   eventsDelete: okWrap(({ id, force }) => db.deleteEvent(currentUser, id, { force }), 'eventsDelete'),
   patientsCreate: okWrap((p) => db.createPatient(currentUser, p)), // ungated (kiosk + any role)
   patientsUpdate: okWrap(({ id, ...d }) => db.updatePatient(currentUser, id, d), 'patientsUpdate'),
@@ -2582,6 +2585,104 @@ async function main() {
     const rewound = db.getPatient(xp.id);
     log(rewound.status === 'checked_in' && !rewound.triage.emt_signed_off && rewound.triage.bp_systolic === 120,
       'v1.9.0 flow: sending someone back to vitals keeps their vitals');
+  }
+
+  // ---- v1.10.0: the three things the clinic reported ----
+  {
+    currentUser = db.login('admin', 'admin');
+    const store = (await import('../src/renderer/js/store.js')).store;
+    store.setUser(currentUser);
+    db.createEvent(currentUser, { name: 'Report Clinic', location: 'R' });
+    const mkP = (o) => db.createPatient(currentUser, { demographics: {}, medical_history: {}, dental_history: {}, consents: SIGNED, ...o });
+
+    // 1. The hygienist must SEE blood pressure. They decide whether it is safe
+    // to scale someone; the screen used to show no vitals at all.
+    const hp = mkP({ first_name: 'Hyg', last_name: 'Vitals', dental_history: { reason: 'Cleaning', visit_type: 'cleaning' }, route: 'hygienist' });
+    db.saveVitals(currentUser, hp.id, { bp_systolic: 176, bp_diastolic: 104, heart_rate: 88 });
+    db.routePatient(currentUser, hp.id, 'hygienist');
+    const { renderHygienist } = await import('../src/renderer/js/views/hygienist.js');
+    const hRoot = renderHygienist({ navigate: () => {}, toast: () => {}, store, setDetail: () => {} }, { id: hp.id });
+    document.body.append(hRoot);
+    await tick(); await tick(); await tick();
+    const hText = hRoot.textContent;
+    log(/176\/104/.test(hText), 'v1.10.0: the hygienist screen shows the blood pressure');
+    log(/HR 88/.test(hText), 'v1.10.0: ...and the heart rate');
+    log(/thinner/i.test(hText), 'v1.10.0: ...and the blood-thinner status');
+
+    // 2. A returning patient must be able to sign a consent SOMEWHERE. Before
+    // this the desk could not take one and routing refused them without it, so
+    // they could not be seen at all.
+    const first = mkP({ first_name: 'Retu', last_name: 'Rning', dob: '1979-03-03', dental_history: { reason: 'Cleaning', visit_type: 'cleaning' }, route: 'hygienist' });
+    db.saveVitals(currentUser, first.id, { bp_systolic: 120, bp_diastolic: 78, heart_rate: 70 });
+    db.routePatient(currentUser, first.id, 'hygienist');
+    db.saveTreatment(currentUser, first.id, { cleaning: { quadrants: ['UR'] }, provider_name: 'RDH' }, 'complete');
+    db.dismissPatient(currentUser, first.id);
+    const again = db.startVisitFromExisting(currentUser, first.id);
+    const arrRow = () => db.listPatients({}).find((x) => x.id === again.id);
+    log(arrRow().general_signed === false && arrRow().consents_ok === false,
+      'v1.10.0: a returning patient shows as needing the general consent');
+    // The front desk takes it — the channel must be open to registration.
+    const deskUser = db.createUser(currentUser, { username: 'deskclerk', full_name: 'Desk Clerk', role: 'registration', password: 'x' });
+    await window.api.authLogin({ username: 'deskclerk', password: 'x' });
+    const taken = await window.api.consentAdd({ patientId: again.id, consent: { type: 'general', signer_name: 'Retu Rning', signature_png: 'data:image/png;base64,AAAA' } });
+    log(taken.ok === true, 'v1.10.0: the FRONT DESK can record a consent');
+    currentUser = db.login('admin', 'admin'); store.setUser(currentUser);
+    log(arrRow().consents_ok === true, 'v1.10.0: ...and the patient is then consent-ok');
+    db.saveVitals(currentUser, again.id, { bp_systolic: 118, bp_diastolic: 76, heart_rate: 68 });
+    let wentThrough = false;
+    try { db.routePatient(currentUser, again.id, 'hygienist'); wentThrough = true; } catch (_e) { /* still blocked */ }
+    log(wentThrough, 'v1.10.0: ...and can now be sent through — the deadlock is gone');
+    log(deskUser && deskUser.id != null, '(setup) the desk account exists');
+
+    // 3. Notes after a visit is completed: append to a LOCKED record, and
+    // re-open when the record is actually wrong.
+    const tp = mkP({ first_name: 'Note', last_name: 'After', dental_history: { reason: 'Filling', visit_type: 'filling' }, route: 'dentist' });
+    db.saveVitals(currentUser, tp.id, { bp_systolic: 122, bp_diastolic: 80, heart_rate: 72 });
+    db.routePatient(currentUser, tp.id, 'dentist');
+    db.saveTreatment(currentUser, tp.id, { fillings: [{ tooth: '19' }], clinical_notes: 'Original signed note.', provider_name: 'Dr A' }, 'lock');
+    log(db.getPatient(tp.id).treatment.locked === true, '(setup) the record is locked');
+    const noted = await window.api.treatmentNote({ patientId: tp.id, note: 'Called next day — soreness settling.' });
+    log(noted.ok === true, 'v1.10.0: a note can be added to a LOCKED record');
+    const afterNote = db.getPatient(tp.id).treatment;
+    log(afterNote.clinical_notes === 'Original signed note.', 'v1.10.0: ...without altering the signed note');
+    log(afterNote.addenda.length === 1 && !!afterNote.addenda[0].by_name && !!afterNote.addenda[0].at,
+      'v1.10.0: ...and it records who wrote it and when');
+
+    // It must reach the printed record, or a later note never makes the chart.
+    const pdfMod2 = require('../src/main/pdf.js');
+    const full = pdfMod2.buildHtml(db.getPatient(tp.id), 'full');
+    log(/Called next day/.test(full) && /Original signed note/.test(full),
+      'v1.10.0: the printed record carries both the signed note and the addendum');
+
+    // Re-open puts a checked-out patient back so the record can be corrected.
+    db.dismissPatient(currentUser, tp.id);
+    const reopened = await window.api.treatmentReopen({ patientId: tp.id });
+    log(reopened.ok === true, 'v1.10.0: a finished visit can be re-opened');
+    const afterReopen = db.getPatient(tp.id);
+    log(afterReopen.treatment.locked === false && afterReopen.status === 'in_treatment',
+      'v1.10.0: ...which unlocks it and puts the patient back in the queue');
+    log(afterReopen.treatment.addenda.length === 1, 'v1.10.0: ...keeping the addenda');
+
+    // A finished patient has to be REACHABLE, or none of this can be used.
+    const { renderProvider } = await import('../src/renderer/js/views/provider.js');
+    db.saveTreatment(currentUser, tp.id, { fillings: [{ tooth: '19' }], clinical_notes: 'Corrected.', provider_name: 'Dr A' }, 'complete');
+    const provRoot = renderProvider({ navigate: () => {}, toast: () => {}, store, setDetail: () => {} }, {});
+    document.body.append(provRoot);
+    await tick(); await tick(); await tick();
+    log(/Finished today/i.test(provRoot.textContent),
+      'v1.10.0: the dentist queue lists finished patients so the record can be reached');
+
+    // Only a clinician may write a clinical note.
+    await window.api.authLogin({ username: 'deskclerk', password: 'x' });
+    const denied = await window.api.treatmentNote({ patientId: tp.id, note: 'front desk note' });
+    log(denied.ok === false && /permission/i.test(denied.error || ''),
+      'v1.10.0: the front desk cannot write a clinical note');
+    currentUser = db.login('admin', 'admin'); store.setUser(currentUser);
+
+    // An empty note is not a note.
+    let emptyRejected = false;
+    try { db.addTreatmentNote(currentUser, tp.id, '   '); } catch (_e) { emptyRejected = true; }
+    log(emptyRejected, 'v1.10.0: an empty note is refused');
   }
 
   await tick();

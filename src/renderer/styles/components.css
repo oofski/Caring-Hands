@@ -745,3 +745,14 @@ body:has(.kiosk-gate) .toast-host{ bottom:96px; }
 /* The x-ray count sits beside an input; give it the same height so the two
    line up instead of being nudged into place by hand. */
 .xray-count-line{ display:flex; align-items:center; height:var(--control-height-sm); }
+
+/* ---- Addenda: notes added after a visit was completed ----
+   Set apart from the signed clinical note so it is never mistaken for it —
+   each one carries who wrote it and when, like an entry in a paper chart. */
+.addendum-list{ display:flex; flex-direction:column; gap:var(--space-2); }
+.addendum{
+  border-left:3px solid var(--teal); background:var(--surface-sunken);
+  border-radius:0 var(--radius-sm) var(--radius-sm) 0; padding:10px 14px;
+}
+.addendum-meta{ font-size:var(--fs-2xs); font-weight:var(--fw-semibold); color:var(--text-muted); margin-bottom:3px; }
+.addendum-body{ font-size:var(--fs-sm); color:var(--text); white-space:pre-wrap; overflow-wrap:anywhere; }

@@ -120,6 +120,18 @@ export function renderCheckout(ctx, params = {}) {
               kv('Completed by', p.completed_by_name), kv('Dental notes', tx.clinical_notes ? 'Present' : '—'),
             ]),
             tx.clinical_notes ? el('div', { class: 'box', style: 'margin-top:8px' }, [el('span', { class: 'field-label' }, ['Dental notes']), el('p', {}, [tx.clinical_notes])]) : null,
+            // Anything the clinician added after signing off. Check-out is the
+            // last look at the record before the patient leaves, so a note
+            // written after completion has to be visible here too.
+            (Array.isArray(tx.addenda) && tx.addenda.length)
+              ? el('div', { style: 'margin-top:12px' }, [
+                el('span', { class: 'field-label' }, ['Added after completion']),
+                el('div', { class: 'addendum-list', style: 'margin-top:6px' }, tx.addenda.map((a) => el('div', { class: 'addendum' }, [
+                  el('div', { class: 'addendum-meta' }, [`${a.by_name || 'Unknown'} · ${fmtWhen(a.at)}`]),
+                  el('div', { class: 'addendum-body' }, [a.note || '']),
+                ]))),
+              ])
+              : null,
             tx.provider_signature ? el('img', { class: 'sig-locked', src: tx.provider_signature }) : null,
           ]),
         ]),

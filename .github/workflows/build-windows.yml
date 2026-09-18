@@ -52,16 +52,25 @@ jobs:
         continue-on-error: true
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.9.0-build.${{ github.run_number }}
-          name: Caring Hands v1.9.0 (build ${{ github.run_number }})
+          tag_name: v1.10.0-build.${{ github.run_number }}
+          name: Caring Hands v1.10.0 (build ${{ github.run_number }})
           prerelease: false
           make_latest: true
           body: |
-            ## Caring Hands Worldwide — Practice Management Software (v1.9.0)
+            ## Caring Hands Worldwide — Practice Management Software (v1.10.0)
 
             Offline-first dental clinic app for Windows. **Download the installer once — it auto-updates from here on.**
 
-            **New in v1.9.0 — several clinics can take sign-ups at once**
+            **New in v1.10.0 — three things the clinic asked for**
+
+            - **The hygienist can now see blood pressure.** Their screen showed no vitals at all — not the blood pressure, not the heart rate, not whether the patient is on a blood thinner. Those are exactly what decides whether it is safe to scale someone, and the dentist has always had them. Both screens now read from one shared panel, so they can never drift apart again.
+            - **A returning patient can now sign their consent.** Starting a new visit for someone seen before correctly asks for a fresh consent — but nothing anywhere could take one. The front desk could not, and the dentist's chair (the only screen that could) sat behind the very check that was blocking them. **A returning patient could not be seen at all.** The front desk can now take the consent on the Arrivals screen, where the patient is actually standing, and the "They're here" button says plainly that it is needed first.
+            - **Notes can be added to a finished visit, and a finished visit can be re-opened.** Once a visit was completed the patient dropped off the clinician's screen with no way back, and a signed-off record refused every change. Now: **Add a note** puts a new note beside the original — it works even on a locked record, and records who wrote it and when, exactly as a paper chart would. **Re-open to correct** unlocks the record and puts the patient back in the queue, for when what was written is wrong rather than merely incomplete. Both the dentist and the hygienist have a **Finished today** list so a completed patient can be opened again. Notes added afterwards appear at check-out and print on the patient's record.
+
+            *One more thing found while building this:* the chairside consent dialog said the signature was optional, while the rule that decides whether a consent counts requires a real one. A consent taken at the chair could therefore look saved and still leave the patient blocked — and print as NOT SIGNED. The signature is now required there too, which is what the check-in screen and the online form have both done since v1.7.0.
+
+            *No clinic-server update is needed for this release — the server is still v1.9.0.*
+            **From v1.9.0 — several clinics can take sign-ups at once**
 
             *The new switch*
             - **Each clinic now has its own Online sign-ups switch**, separate from which clinic is live. Admin → Events has a new **Online sign-ups** column showing **Open** or **Closed** for every clinic, with one button to change it and one to show the link.
@@ -156,8 +165,8 @@ jobs:
             Every release from v1.0.2 to v1.6.9 — pre-registration, cloud sync, the reporting rebuild, the A–Z patient lists, per-event staff, the USB workflow and the rest — is listed with its full notes at
             https://github.com/oofski/Caring-Hands/releases
 
-            - **Caring-Hands-Setup-1.9.0.exe** — installer (recommended; required for auto-update).
-            - **Caring-Hands-Portable-1.9.0.exe** — portable (no auto-update).
+            - **Caring-Hands-Setup-1.10.0.exe** — installer (recommended; required for auto-update).
+            - **Caring-Hands-Portable-1.10.0.exe** — portable (no auto-update).
 
             First sign-in: `admin / admin` — then create your staff accounts. All clinical data stays on the device unless you enable Cloud Sync.
           files: |
@@ -181,7 +190,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          tag="v1.9.0-build.${{ github.run_number }}"
+          tag="v1.10.0-build.${{ github.run_number }}"
           for attempt in 1 2 3; do
             missing=0
             for f in release/*.exe release/latest.yml release/*.blockmap; do
@@ -207,7 +216,7 @@ jobs:
       - name: Verify both installers are on the release
         shell: bash
         run: |
-          tag="v1.9.0-build.${{ github.run_number }}"
+          tag="v1.10.0-build.${{ github.run_number }}"
           api="https://api.github.com/repos/${{ github.repository }}/releases/tags/$tag"
           json=$(curl -sS -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" "$api")
           names=$(echo "$json" | grep -o '"name": *"[^"]*\.exe"' || true)

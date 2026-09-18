@@ -1,4 +1,5 @@
 import { el, mount, clear } from '../dom.js';
+import { captureConsent } from '../components/consentCapture.js';
 import { api } from '../api.js';
 import { icon } from '../icons.js';
 import { store } from '../store.js';
@@ -95,6 +96,28 @@ export function renderArrivals(ctx) {
         : el('span', { class: 'crm-chip crm-chip--warn', title: 'A required consent is not signed yet' }, ['Consent missing']));
       if (p.on_thinner) tags.push(el('span', { class: 'crm-chip crm-chip--warn', title: 'On a blood thinner' }, ['Thinner']));
 
+      // THE missing step. A returning patient starts a new visit with no
+      // consents — correctly, because consent is per visit — but nothing at the
+      // desk could take one, and routing refuses them without it. The only
+      // screen that could capture a consent sat behind that same refusal, so a
+      // returning patient could not be seen at all. Now the desk can take it,
+      // which is where the patient actually is.
+      const consentBtns = [];
+      if (!p.general_signed) {
+        consentBtns.push(el('button', {
+          class: 'btn btn--soft btn--sm',
+          title: 'Have the patient read and sign the general consent now',
+          onClick: async () => { if (await captureConsent(p, 'general')) load(); },
+        }, [icon('pen', { size: 14 }), 'Sign general consent']));
+      }
+      if (p.needs_surgery_consent && !p.surgery_signed) {
+        consentBtns.push(el('button', {
+          class: 'btn btn--soft btn--sm',
+          title: 'This visit is an extraction, so the oral-surgery consent is needed too',
+          onClick: async () => { if (await captureConsent(p, 'oral_surgery')) load(); },
+        }, [icon('pen', { size: 14 }), 'Sign surgery consent']));
+      }
+
       const confirmBtn = el('button', {
         class: 'btn btn--primary btn--sm',
         onClick: async () => {
@@ -109,6 +132,12 @@ export function renderArrivals(ctx) {
           }
         },
       }, [icon('checkCircle', { size: 15 }), 'They’re here — ready to go']);
+      // Confirming is refused while a consent is outstanding, so say so on the
+      // button rather than letting the desk find out by pressing it.
+      if (consentBtns.length) {
+        confirmBtn.disabled = true;
+        confirmBtn.title = 'Take the outstanding consent first — this patient cannot be sent through without it.';
+      }
 
       return el('div', { class: 'arrival-row' }, [
         el('div', { class: 'arrival-who' }, [
@@ -125,6 +154,7 @@ export function renderArrivals(ctx) {
             el('div', { class: 'subtle small' }, [STATION_LABEL[p.route] ? `Going to: ${STATION_LABEL[p.route]}` : 'No station set']),
           ])
           : el('div', { class: 'arrival-actions' }, [
+            ...consentBtns,
             el('label', { class: 'field field--inline' }, [
               el('span', { class: 'field-label' }, ['Station']),
               stationSel,
