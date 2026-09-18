@@ -85,7 +85,20 @@ export function renderDashboard(ctx) {
     // "Checked out" = the board's final column (completed + dismissed), so the
     // KPI tile and the board column always agree.
     const checkedOut = patients.filter((p) => p.status === 'completed' || p.status === 'dismissed').length;
+    // A clinician's first question is "how many are waiting for ME", and the
+    // clinic-wide tiles cannot answer it: "Ready for treatment" counts the
+    // dentist's queue too, so a hygienist reading it saw a number that had
+    // nothing to do with their chair. Give them their own count, first.
+    const mine = (route) => patients.filter((x) => ['triaged', 'in_treatment'].includes(x.status)
+      && (route === 'dentist' ? (x.route === 'dentist' || x.route === 'both' || x.route == null) : x.route === 'hygienist')).length;
+    const myCard = can('hygienist') && !store.is('admin')
+      ? { label: 'Waiting for you', value: mine('hygienist'), ic: 'sparkle', warn: mine('hygienist') > 0, kind: 'ready' }
+      : (can('doctor') && !store.is('admin')
+        ? { label: 'Waiting for you', value: mine('dentist'), ic: 'tooth', warn: mine('dentist') > 0, kind: 'ready' }
+        : null);
+
     const statCards = [
+      ...(myCard ? [myCard] : []),
       { label: t('dash.total'), value: stats.total, ic: 'users', kind: 'all' },
       { label: t('dash.waiting'), value: stats.waiting_triage, ic: 'syringe', warn: stats.waiting_triage > 0, kind: 'vitals' },
       { label: t('dash.triaged'), value: stats.triaged, ic: 'clipboard', kind: 'ready' },

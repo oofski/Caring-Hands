@@ -126,6 +126,20 @@ function initials(name) {
   return (name || '?').split(/\s+/).slice(0, 2).map((w) => w[0] || '').join('').toUpperCase();
 }
 
+// Is a sidebar group (Clinic / Admin) open?
+//
+// Default OPEN, remembering only a DELIBERATE collapse. This used to default
+// closed, which quietly hid people's work: everyone lands on the Dashboard,
+// which belongs to neither group, so no group held the active view and every
+// group stayed shut. A hygienist has exactly one clinic screen (Cleanings) and
+// saw a sidebar containing nothing but "Dashboard" — their only station hidden
+// behind an accordion they had no reason to suspect. The front desk, the vitals
+// station and check-out were all in the same position. An admin who wants a
+// tidy sidebar can collapse a group once and it stays collapsed.
+export function navGroupOpen(groupState, mod, hasActive) {
+  return !!hasActive || (groupState || {})[mod] !== false;
+}
+
 let shellActive = 'dashboard';
 let shellContent = null;
 function renderShell(active, contentNode) {
@@ -151,7 +165,7 @@ function renderShell(active, contentNode) {
     const items = Object.entries(VIEWS).filter(([, v]) => v.module === mod && v.roles.includes(store.user.role));
     if (!items.length) continue;
     const hasActive = items.some(([name]) => name === active);
-    const open = hasActive || groupState[mod] === true; // default collapsed unless saved-open or holds the active view
+    const open = navGroupOpen(groupState, mod, hasActive);
     navItems.push(el('button', {
       class: 'nav-group' + (open ? ' nav-group--open' : ''),
       onClick: () => { const s = navGroupsState(); s[mod] = !open; saveNavGroupsState(s); renderShell(shellActive, shellContent); },

@@ -52,16 +52,23 @@ jobs:
         continue-on-error: true
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.10.0-build.${{ github.run_number }}
-          name: Caring Hands v1.10.0 (build ${{ github.run_number }})
+          tag_name: v1.10.1-build.${{ github.run_number }}
+          name: Caring Hands v1.10.1 (build ${{ github.run_number }})
           prerelease: false
           make_latest: true
           body: |
-            ## Caring Hands Worldwide — Practice Management Software (v1.10.0)
+            ## Caring Hands Worldwide — Practice Management Software (v1.10.1)
 
             Offline-first dental clinic app for Windows. **Download the installer once — it auto-updates from here on.**
 
-            **New in v1.10.0 — three things the clinic asked for**
+            **New in v1.10.1 — the dashboard works for whoever is signed in**
+
+            - **Fixed: everyone except an administrator was shown a sidebar containing only "Dashboard".** The Clinic and Admin menus start collapsed, and everyone lands on the Dashboard — which is in neither menu — so nothing ever expanded them. A hygienist's only screen, **Cleanings**, was hidden behind a closed menu they had no reason to suspect; the same was true of **Arrivals** for the front desk, **Vitals** for the EMT, and **Check-Out**. The menus now start open, and if you collapse one it stays collapsed on that computer.
+            - **New: clinicians see their own queue first.** The dashboard tiles count the whole clinic, so "Ready for treatment" included the dentist's patients — a number that told a hygienist nothing about their own chair. A **Waiting for you** tile now leads the row for the dentist and the hygienist, counting only the patients routed to them, and opens their station. Administrators still see the clinic-wide view.
+            - Tiles for a station the signed-in role cannot open are no longer clickable, so nothing on the dashboard leads to a "you do not have access" message.
+
+            *No clinic-server update is needed for this release — the server is still v1.9.0.*
+            **From v1.10.0 — three things the clinic asked for**
 
             - **The hygienist can now see blood pressure.** Their screen showed no vitals at all — not the blood pressure, not the heart rate, not whether the patient is on a blood thinner. Those are exactly what decides whether it is safe to scale someone, and the dentist has always had them. Both screens now read from one shared panel, so they can never drift apart again.
             - **A returning patient can now sign their consent.** Starting a new visit for someone seen before correctly asks for a fresh consent — but nothing anywhere could take one. The front desk could not, and the dentist's chair (the only screen that could) sat behind the very check that was blocking them. **A returning patient could not be seen at all.** The front desk can now take the consent on the Arrivals screen, where the patient is actually standing, and the "They're here" button says plainly that it is needed first.
@@ -165,8 +172,8 @@ jobs:
             Every release from v1.0.2 to v1.6.9 — pre-registration, cloud sync, the reporting rebuild, the A–Z patient lists, per-event staff, the USB workflow and the rest — is listed with its full notes at
             https://github.com/oofski/Caring-Hands/releases
 
-            - **Caring-Hands-Setup-1.10.0.exe** — installer (recommended; required for auto-update).
-            - **Caring-Hands-Portable-1.10.0.exe** — portable (no auto-update).
+            - **Caring-Hands-Setup-1.10.1.exe** — installer (recommended; required for auto-update).
+            - **Caring-Hands-Portable-1.10.1.exe** — portable (no auto-update).
 
             First sign-in: `admin / admin` — then create your staff accounts. All clinical data stays on the device unless you enable Cloud Sync.
           files: |
@@ -190,7 +197,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          tag="v1.10.0-build.${{ github.run_number }}"
+          tag="v1.10.1-build.${{ github.run_number }}"
           for attempt in 1 2 3; do
             missing=0
             for f in release/*.exe release/latest.yml release/*.blockmap; do
@@ -216,7 +223,7 @@ jobs:
       - name: Verify both installers are on the release
         shell: bash
         run: |
-          tag="v1.10.0-build.${{ github.run_number }}"
+          tag="v1.10.1-build.${{ github.run_number }}"
           api="https://api.github.com/repos/${{ github.repository }}/releases/tags/$tag"
           json=$(curl -sS -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" "$api")
           names=$(echo "$json" | grep -o '"name": *"[^"]*\.exe"' || true)

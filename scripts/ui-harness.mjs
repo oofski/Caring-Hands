@@ -2685,6 +2685,96 @@ async function main() {
     log(emptyRejected, 'v1.10.0: an empty note is refused');
   }
 
+  // ---- v1.10.1: the dashboard has to work for the role looking at it ----
+  {
+    currentUser = db.login('admin', 'admin');
+    const store = (await import('../src/renderer/js/store.js')).store;
+    const ev = db.getActiveEvent();
+    db.createUser(currentUser, { username: 'dashhyg', full_name: 'Dash Hyg', role: 'hygienist', password: 'x' });
+    db.createUser(currentUser, { username: 'dashreg', full_name: 'Dash Reg', role: 'registration', password: 'x' });
+
+    // Put one patient in each clinician's queue so "Waiting for you" has
+    // something to count and cannot pass by being zero everywhere.
+    const hq = db.createPatient(currentUser, { first_name: 'Hyg', last_name: 'Queue', demographics: {}, medical_history: {}, dental_history: { reason: 'Cleaning', visit_type: 'cleaning' }, route: 'hygienist', consents: SIGNED });
+    db.saveVitals(currentUser, hq.id, { bp_systolic: 118, bp_diastolic: 74, heart_rate: 64 });
+    db.routePatient(currentUser, hq.id, 'hygienist');
+    const dq = db.createPatient(currentUser, { first_name: 'Den', last_name: 'Queue', demographics: {}, medical_history: {}, dental_history: { reason: 'Filling', visit_type: 'filling' }, route: 'dentist', consents: SIGNED });
+    db.saveVitals(currentUser, dq.id, { bp_systolic: 120, bp_diastolic: 76, heart_rate: 66 });
+    db.routePatient(currentUser, dq.id, 'dentist');
+
+    // THE SIDEBAR. Clinic/Admin are collapsible groups and they used to default
+    // CLOSED. Everyone lands on the Dashboard, which is not in either group, so
+    // for every non-admin the group stayed shut and their stations were
+    // invisible — a hygienist saw a sidebar containing only "Dashboard", with
+    // Cleanings, the single screen they can open, hidden behind an accordion
+    // they had no reason to suspect. Same for the front desk and check-out.
+    // THE SIDEBAR RULE. Everyone lands on the Dashboard, which belongs to
+    // neither collapsible group, so a rule of "open only when the group holds
+    // the active view" left every non-admin looking at a sidebar containing
+    // nothing but Dashboard — their stations hidden behind an accordion.
+    const { navGroupOpen } = await import('../src/renderer/js/app.js');
+    log(navGroupOpen({}, 'clinic', false) === true,
+      'v1.10.1: a sidebar group is OPEN by default, so no role loses its stations');
+    log(navGroupOpen({ clinic: false }, 'clinic', false) === false,
+      'v1.10.1: ...a deliberate collapse is remembered');
+    log(navGroupOpen({ clinic: false }, 'clinic', true) === true,
+      'v1.10.1: ...but the group holding the active view is always open');
+    log(navGroupOpen({ clinic: true }, 'clinic', false) === true,
+      'v1.10.1: ...and a saved-open group stays open');
+
+    const hygUser = await window.api.authLogin({ username: 'dashhyg', password: 'x' });
+    store.setUser(hygUser.data);
+    currentUser = db.login('dashhyg', 'x');
+
+    const { renderDashboard } = await import('../src/renderer/js/views/dashboard.js');
+    const dashRoot = renderDashboard({ navigate: () => {}, toast: () => {}, store });
+    document.body.append(dashRoot);
+    await tick(); await tick(); await tick();
+    const tiles = $all('.stat-card', dashRoot).map((n) => n.textContent.replace(/\s+/g, ' ').trim());
+    log(tiles.some((x) => /Waiting for you/.test(x)),
+      'v1.10.1: a hygienist\'s dashboard leads with "Waiting for you"');
+    // Expected count comes from the data, not a constant — earlier checks in
+    // this file leave their own patients behind.
+    const expectHyg = db.listPatients({}).filter((x) => ['triaged', 'in_treatment'].includes(x.status) && x.route === 'hygienist').length;
+    const hygTileText = tiles.find((x) => /Waiting for you/.test(x)) || '';
+    log(new RegExp('^' + expectHyg + '\\s*Waiting for you').test(hygTileText),
+      `v1.10.1: ...counting only patients routed to THEM (expected ${expectHyg}, tile: "${hygTileText}")`);
+    // Their own tile must open a screen they can actually reach.
+    const myTile = $all('.stat-card', dashRoot).find((n) => /Waiting for you/.test(n.textContent));
+    log(!!myTile && myTile.tagName === 'BUTTON', 'v1.10.1: ...and it is clickable');
+
+    // The clinic-wide tiles a hygienist cannot act on stay non-clickable.
+    const vitalsTile = $all('.stat-card', dashRoot).find((n) => /Waiting for vitals/.test(n.textContent));
+    log(!!vitalsTile && vitalsTile.tagName !== 'BUTTON',
+      'v1.10.1: a tile whose station the role cannot open is not a button');
+
+    // A doctor gets their own count, not the hygienist's.
+    db.createUser(db.login('admin', 'admin'), { username: 'dashdoc', full_name: 'Dash Doc', role: 'doctor', password: 'x' });
+    const docUser = await window.api.authLogin({ username: 'dashdoc', password: 'x' });
+    store.setUser(docUser.data);
+    currentUser = db.login('dashdoc', 'x');
+    const docRoot = renderDashboard({ navigate: () => {}, toast: () => {}, store });
+    document.body.append(docRoot);
+    await tick(); await tick(); await tick();
+    const docTile = $all('.stat-card', docRoot).map((n) => n.textContent.replace(/\s+/g, ' ').trim()).find((x) => /Waiting for you/.test(x));
+    const expectDoc = db.listPatients({}).filter((x) => ['triaged', 'in_treatment'].includes(x.status)
+      && (x.route === 'dentist' || x.route === 'both' || x.route == null)).length;
+    log(new RegExp('^' + expectDoc + '\\s*Waiting for you').test(docTile || ''),
+      `v1.10.1: a dentist sees their own queue in that tile (expected ${expectDoc}, tile: "${docTile || 'none'}")`);
+    log(expectHyg !== expectDoc || expectHyg === 0,
+      'v1.10.1: ...and the two clinicians are not just shown the same number');
+
+    // An ADMIN oversees the whole clinic, so the personal tile is not theirs.
+    currentUser = db.login('admin', 'admin');
+    store.setUser(currentUser);
+    const adminRoot = renderDashboard({ navigate: () => {}, toast: () => {}, store });
+    document.body.append(adminRoot);
+    await tick(); await tick(); await tick();
+    log(!$all('.stat-card', adminRoot).some((n) => /Waiting for you/.test(n.textContent)),
+      'v1.10.1: an administrator does not get a personal queue tile');
+    log(!!ev, '(setup) a clinic was active for these checks');
+  }
+
   await tick();
   if (errors.length) errors.forEach((e) => log(false, 'RUNTIME: ' + e));
   const failed = results.filter((r) => !r[0]).length;
