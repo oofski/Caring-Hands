@@ -45,7 +45,9 @@ export const api = {
   listIncomplete: () => call('patientsIncomplete'),
   cleanupIncomplete: () => call('patientsCleanupIncomplete'),
 
-  saveTriage: (patientId, data) => call('triageSave', { patientId, data }),
+  // `opts.attribute` marks this save as the triage dentist RECORDING their
+  // findings, which is the only thing that stamps who triaged the patient.
+  saveTriage: (patientId, data, opts) => call('triageSave', { patientId, data, opts }),
   saveTreatment: (patientId, data, finalize) => call('treatmentSave', { patientId, data, finalize }),
   saveVitals: (patientId, data) => call('vitalsSave', { patientId, data }),
   routePatient: (patientId, route) => call('patientsRoute', { patientId, route }),

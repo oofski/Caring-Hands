@@ -1783,49 +1783,89 @@ function searchAllPatients(term) {
 /*  Triage                                                             */
 /* ------------------------------------------------------------------ */
 
-function saveTriage(actor, patientId, data) {
+// Save triage findings.
+//
+// KEY-PRESENCE DRIVEN, like saveVitals above and for exactly the same reason.
+// This used to UPDATE every column unconditionally and stamp triaged_by /
+// triaged_at on every call. That was harmless while the dentist screen was the
+// only writer, but the clinic now runs a TRIAGE dentist who records findings
+// and a separate TREATMENT dentist who picks the patient up — and the treating
+// dentist's save silently overwrote the triage dentist's complaint, teeth,
+// per-tooth notes and notes, then signed its own name to them. There is one
+// triage row per patient and no history, so an overwritten finding was gone.
+//
+// A key that is not present is not in the statement at all.
+//
+// Attribution is written ONLY when opts.attribute is true — never inferred from
+// which keys arrived. Inference is what produced the bug; a smarter guess would
+// only produce a subtler one. `attribute` is a separate argument rather than a
+// field on `data` so that a future caller spreading an existing row
+// (`{ ...p.triage, notes }`) cannot smuggle it back in.
+function saveTriage(actor, patientId, data, opts) {
   const existing = db.prepare('SELECT id FROM triage WHERE patient_id = ?').get(patientId);
   const d = data || {};
+  const has = (k) => Object.prototype.hasOwnProperty.call(d, k);
+  const attribute = !!(opts && opts.attribute);
+
+  // column -> value, for the keys actually supplied
+  const COLS = [
+    ['complaint', () => d.complaint || null],
+    ['flags', () => JSON.stringify(d.flags || [])],
+    ['checklist', () => JSON.stringify(d.checklist || {})],
+    ['teeth', () => JSON.stringify(d.teeth || [])],
+    ['teeth_notes', () => JSON.stringify(d.teeth_notes || {})],
+    ['notes', () => d.notes || null],
+    ['xray_count', () => d.xray_count || 0],
+    ['xray_station', () => d.xray_station || null],
+    ['assigned_to', () => d.assigned_to || null],
+    ['status', () => d.status || 'ready'],
+    ['triage_signature', () => d.triage_signature || null],
+    ['triage_signer_name', () => d.triage_signer_name || null],
+  ];
+
   if (existing) {
-    db.prepare(
-      `UPDATE triage SET complaint=?, flags=?, checklist=?, teeth=?, teeth_notes=?, notes=?,
-         xray_count=?, xray_station=?, assigned_to=?, status=?,
-         triage_signature=?, triage_signer_name=?, triaged_by=?, triaged_at=?
-       WHERE patient_id=?`
-    ).run(
-      d.complaint || null,
-      JSON.stringify(d.flags || []),
-      JSON.stringify(d.checklist || {}),
-      JSON.stringify(d.teeth || []),
-      JSON.stringify(d.teeth_notes || {}),
-      d.notes || null,
-      d.xray_count || 0,
-      d.xray_station || null,
-      d.assigned_to || null,
-      d.status || 'ready',
-      d.triage_signature || null,
-      d.triage_signer_name || null,
-      actor ? actor.id : null,
-      now(),
-      patientId
-    );
+    const sets = [];
+    const vals = [];
+    for (const [col, get] of COLS) {
+      if (!has(col)) continue;
+      sets.push(col + '=?');
+      vals.push(get());
+    }
+    // Who made these findings, and when. Written only on an explicit sign-off,
+    // so a later save by anyone else leaves the attribution alone. The NAME is
+    // written directly rather than resolved later, so it survives the account
+    // being removed when the clinic ends — the same reason addTreatmentNote
+    // stamps by_name.
+    if (attribute) {
+      sets.push('triaged_by=?', 'triaged_at=?', 'triaged_by_name=?');
+      vals.push(actor ? actor.id : null, now(), actor ? actor.full_name : null);
+    }
+    if (sets.length) {
+      vals.push(patientId);
+      db.prepare(`UPDATE triage SET ${sets.join(', ')} WHERE patient_id=?`).run(...vals);
+    }
   } else {
+    // A brand-new row has nothing to preserve, so every column is written; the
+    // defaults below match what the old unconditional UPDATE produced.
     db.prepare(
       `INSERT INTO triage (patient_id, complaint, flags, checklist, teeth, teeth_notes, notes,
-          xray_count, xray_station, assigned_to, status, triage_signature, triage_signer_name, triaged_by, triaged_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+          xray_count, xray_station, assigned_to, status, triage_signature, triage_signer_name,
+          triaged_by, triaged_at, triaged_by_name)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
     ).run(
       patientId, d.complaint || null, JSON.stringify(d.flags || []),
       JSON.stringify(d.checklist || {}), JSON.stringify(d.teeth || []), JSON.stringify(d.teeth_notes || {}), d.notes || null,
       d.xray_count || 0, d.xray_station || null, d.assigned_to || null,
       d.status || 'ready', d.triage_signature || null, d.triage_signer_name || null,
-      actor ? actor.id : null, now()
+      attribute && actor ? actor.id : null,
+      attribute ? now() : null,
+      attribute && actor ? actor.full_name : null
     );
   }
   if (d.status === 'ready') {
     db.prepare('UPDATE patients SET status = ?, updated_at = ? WHERE id = ?').run('triaged', now(), patientId);
   }
-  audit(actor, 'triage', 'patient', patientId, d.status || 'saved');
+  audit(actor, 'triage', 'patient', patientId, (attribute ? 'findings · ' : '') + (d.status || 'saved'));
   return getPatient(patientId);
 }
 

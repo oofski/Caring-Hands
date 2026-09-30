@@ -110,7 +110,7 @@ window.api = {
   patientsHistory: okWrap((id) => db.patientHistory(id), 'patientsHistory'),
   patientsIncomplete: okWrap(() => db.listIncompletePatients(), 'patientsIncomplete'),
   patientsCleanupIncomplete: okWrap(() => db.deleteIncompletePatients(currentUser), 'patientsCleanupIncomplete'),
-  triageSave: okWrap(({ patientId, data }) => db.saveTriage(currentUser, patientId, data), 'triageSave'),
+  triageSave: okWrap(({ patientId, data, opts }) => db.saveTriage(currentUser, patientId, data, opts), 'triageSave'),
   treatmentSave: okWrap(({ patientId, data, finalize }) => db.saveTreatment(currentUser, patientId, data, finalize), 'treatmentSave'),
   vitalsSave: okWrap(({ patientId, data }) => db.saveVitals(currentUser, patientId, data), 'vitalsSave'),
   patientsRoute: okWrap(({ patientId, route }) => db.routePatient(currentUser, patientId, route), 'patientsRoute'),
@@ -2859,6 +2859,90 @@ async function main() {
     log(!!lName && lName.value === 'Dr Alpha',
       'v1.11.0: a LOCKED record still shows the dentist who signed it, not the reader');
     log(!!lName && lName.disabled === true, 'v1.11.0: ...and that field stays read-only');
+
+    currentUser = db.login('admin', 'admin');
+    store.setUser(currentUser);
+  }
+
+  // ---- v1.11.0: a treating dentist must not destroy the triage dentist's work ----
+  {
+    currentUser = db.login('admin', 'admin');
+    const store = (await import('../src/renderer/js/store.js')).store;
+    store.setUser(currentUser);
+    db.createEvent(currentUser, { name: 'Triage Clinic', location: 'T' });
+    // 'alpha' and 'beta' already exist from the signature block above.
+    const asDoc = async (u) => { const r = await window.api.authLogin({ username: u, password: 'x' }); currentUser = db.login(u, 'x'); store.setUser(r.data); return r; };
+    const triCtx = { navigate: () => {}, toast: () => {}, store, setDetail: () => {} };
+    const { renderProvider } = await import('../src/renderer/js/views/provider.js');
+
+    const tp = db.createPatient(currentUser, {
+      first_name: 'Tri', last_name: 'Handover', demographics: {}, medical_history: {},
+      dental_history: { reason: 'Lower left pain', visit_type: 'filling' }, route: 'dentist', consents: SIGNED,
+    });
+    db.saveVitals(currentUser, tp.id, { bp_systolic: 124, bp_diastolic: 78, heart_rate: 70 });
+    db.routePatient(currentUser, tp.id, 'dentist');
+
+    // Dr Alpha triages: findings + explicit attribution.
+    await asDoc('alpha');
+    db.saveTriage(currentUser, tp.id, {
+      complaint: 'Lower left pain',
+      teeth: ['19', '20'],
+      teeth_notes: { 19: 'deep caries', 20: 'watch' },
+      notes: 'Alpha: watch #20, likely needs extraction next visit',
+    }, { attribute: true });
+    const afterTriage = db.getPatient(tp.id).triage;
+    const triagedAtWas = afterTriage.triaged_at;
+    log(db.getPatient(tp.id).triaged_by_name === 'Dr Alpha',
+      'v1.11.0: triage findings are attributed to the dentist who recorded them');
+    log(!!triagedAtWas, 'v1.11.0: ...and stamped with when');
+
+    // Dr Beta treats the patient and marks the visit complete.
+    await asDoc('beta');
+    const bNode = renderProvider(triCtx, { id: tp.id });
+    document.body.append(bNode);
+    for (let i = 0; i < 16; i++) await tick();
+    // Beta fills a tooth Alpha did NOT flag. That matters: if the treating
+    // dentist only ever echoed the triage dentist's own teeth back, the
+    // overwrite would be invisible. Treating a different tooth makes the two
+    // lists diverge, so a clobber shows up as tooth 30 appearing in
+    // triage.teeth — which is exactly what the old code did.
+    const toothInputs = Array.from(bNode.querySelectorAll('input')).filter((i) => /tooth/i.test(i.placeholder || ''));
+    if (toothInputs.length) setInput(toothInputs[0], '30');
+    for (let i = 0; i < 4; i++) await tick();
+    const completeBtn = Array.from(bNode.querySelectorAll('button')).find((b) => /Mark visit complete/i.test(b.textContent));
+    if (completeBtn) { completeBtn.click(); for (let i = 0; i < 14; i++) await tick(); }
+
+    const after = db.getPatient(tp.id);
+    const tr2 = after.triage;
+    log(tr2.notes === 'Alpha: watch #20, likely needs extraction next visit',
+      'v1.11.0: THE TEST — the triage dentist\'s notes survive the treating dentist\'s save');
+    log(JSON.stringify(tr2.teeth) === JSON.stringify(['19', '20']),
+      'v1.11.0: ...the teeth of concern are not overwritten by the teeth treated (got ' + JSON.stringify(tr2.teeth) + ')');
+    log((tr2.teeth_notes || {})['19'] === 'deep caries',
+      'v1.11.0: ...the per-tooth triage notes survive');
+    log(after.triaged_by_name === 'Dr Alpha',
+      'v1.11.0: ...the findings are still attributed to Dr Alpha (got ' + String(after.triaged_by_name) + ')');
+    log(tr2.triaged_at === triagedAtWas,
+      'v1.11.0: ...and triaged_at is NOT re-stamped by the treating dentist');
+    log((after.treatment.fillings || []).some((f) => String(f.tooth) === '30'),
+      'v1.11.0: (setup guard) the treating dentist really did treat a DIFFERENT tooth');
+    log(!(tr2.teeth || []).includes('30'),
+      'v1.11.0: ...and the tooth the treating dentist worked on did not leak into the triage findings');
+
+    // The data layer itself must honour a partial save — mirrors the saveVitals checks.
+    const pp = db.createPatient(db.login('admin', 'admin'), {
+      first_name: 'Part', last_name: 'Save', demographics: {}, medical_history: {},
+      dental_history: { reason: 'x', visit_type: 'filling' }, route: 'dentist', consents: SIGNED,
+    });
+    const alphaU = db.login('alpha', 'x');
+    db.saveTriage(alphaU, pp.id, { complaint: 'X', notes: 'N', teeth: ['3'] }, { attribute: true });
+    const betaU = db.login('beta', 'x');
+    db.saveTriage(betaU, pp.id, { complaint: 'Y' });
+    const pt = db.getPatient(pp.id).triage;
+    log(pt.complaint === 'Y' && pt.notes === 'N' && JSON.stringify(pt.teeth) === JSON.stringify(['3']),
+      'v1.11.0: a partial saveTriage writes only the keys it was given');
+    log(db.getPatient(pp.id).triaged_by_name === 'Dr Alpha',
+      'v1.11.0: ...and a save without attribute does not reassign who triaged');
 
     currentUser = db.login('admin', 'admin');
     store.setUser(currentUser);

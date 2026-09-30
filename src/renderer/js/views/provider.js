@@ -676,22 +676,27 @@ export function renderProvider(ctx, params = {}) {
         provider_signature: drawn || (keepsOldSig ? tx.provider_signature : null),
       };
     }
-    function collectTriage() {
+    // Only what the TREATING dentist legitimately owns on the triage row.
+    //
+    // This used to send the whole row — complaint, teeth, per-tooth notes,
+    // triage notes, the lot — on every save, which meant a treating dentist
+    // opening a chart destroyed the triage dentist's findings and (because
+    // saveTriage stamped on every call) signed his own name to them. The keys
+    // that are the triage dentist's findings are simply not sent, so
+    // saveTriage's key-presence rule leaves them alone.
+    //
+    // `complaint` and `xray_station` stay here because the dentist is their
+    // only writer — the complaint is seeded at check-in and this screen is
+    // where it gets corrected, and the station number is read back when an
+    // x-ray is attached. `flags` is derived from the medical history on every
+    // render, so every dentist computes the same value; it is not anyone's
+    // content.
+    function collectChartHeader() {
       return {
         complaint: complaint.get(),
         flags,
-        // Checklist chips are gone from the UI (planning now happens here at the
-        // dentist), but legacy stored checklists must round-trip untouched.
-        checklist: tr.checklist || {},
-        teeth: odo.getSelected(),
-        teeth_notes: odo.getNotes(),
-        notes: triageNotes.get(),
-        xray_count: xrays.length,
         xray_station: station.get(),
-        assigned_to: tr.assigned_to || null,
-        status: (p.triage && p.triage.status) || 'ready',
-        triage_signature: tr.triage_signature || null,
-        triage_signer_name: tr.triage_signer_name || null,
+        xray_count: xrays.length,
       };
     }
 
@@ -722,7 +727,7 @@ export function renderProvider(ctx, params = {}) {
         if (!ok) return;
       }
       try {
-        await api.saveTriage(id, collectTriage());
+        await api.saveTriage(id, collectChartHeader());
         await api.saveTreatment(id, payload, mode);
         toast(mode === 'lock' ? 'Record signed off and locked' : mode === 'complete' ? 'Visit complete — sent to check-out' : 'Progress saved', 'success');
         if (mode) ctx.navigate('provider'); else detail(id);

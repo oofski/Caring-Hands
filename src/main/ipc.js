@@ -283,7 +283,7 @@ function register(getMainWindow) {
   handle('patients:cleanupIncomplete', () => db.deleteIncompletePatients(currentUser));
 
   /* ---- Triage & treatment ---- */
-  handle('triage:save', ({ patientId, data }) => db.saveTriage(currentUser, patientId, data));
+  handle('triage:save', ({ patientId, data, opts }) => db.saveTriage(currentUser, patientId, data, opts));
   // finalize may be false, 'complete' (mark done, no lock), or 'lock'/true — pass
   // it through so v1.2.1's "complete without lock" mode reaches the data layer.
   handle('treatment:save', ({ patientId, data, finalize }) =>
