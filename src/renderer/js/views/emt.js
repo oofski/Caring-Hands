@@ -2,6 +2,7 @@ import { el, clear, toast, modal, add } from '../dom.js';
 import { t } from '../i18n.js';
 import { api } from '../api.js';
 import { icon } from '../icons.js';
+import { stationNoteComposer } from '../components/stationNotes.js';
 import { patientHistoryPanel } from '../components/patientHistory.js';
 import { bloodThinnerStatus, bloodThinnerText, bpStatus, BP_SYS_MAX, BP_DIA_MAX } from '../medFlags.js';
 import { statusPill } from './dashboard.js';
@@ -349,6 +350,15 @@ export function renderEmt(ctx, params = {}) {
       }, [icon('save', { size: 16 }), 'Save review']),
     ]);
 
+    // A short concern for whoever sees the patient next. The vitals station has
+    // the patient in front of them for several minutes and notices things the
+    // form never asks about; until now there was nowhere to put any of it.
+    const handover = stationNoteComposer(p.id, { notes: (p.triage && p.triage.station_notes) || [] });
+    const handoverCard = el('div', { class: 'card', style: 'margin-top:var(--space-4)' }, [
+      el('div', { class: 'card-title' }, [icon('clipboard', { size: 15 }), 'Note for the clinician']),
+      handover.node,
+    ]);
+
     // Whatever is typed in the vitals fields right now — routing saves this
     // first so the vitals gate sees the reading the nurse just took.
     const pendingVitals = () => ({ bp_systolic: sys.value, bp_diastolic: dia.value, heart_rate: hr.value });
@@ -451,6 +461,8 @@ export function renderEmt(ctx, params = {}) {
       ]),
 
       reviewCard,
+
+      handoverCard,
 
       nextStep,
     ]));

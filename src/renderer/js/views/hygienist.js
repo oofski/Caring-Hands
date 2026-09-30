@@ -11,6 +11,7 @@ import { statusPill } from './dashboard.js';
 import { vitalsStrip } from '../components/vitalsStrip.js';
 import { visitNotesPanel } from '../components/visitNotes.js';
 import { triageFindings } from '../components/triageFindings.js';
+import { stationNotes } from '../components/stationNotes.js';
 import { sortedByName } from '../patientSort.js';
 
 // Cleaning options a hygienist performs (mirrors the provider's cleaning set).
@@ -241,6 +242,7 @@ export function renderHygienist(ctx, params = {}) {
       // pressure and the blood-thinner status are exactly what that turns on,
       // and this screen used to show neither.
       vitalsStrip(p),
+      stationNotes(p),
 
       // The hygienist works from the same findings the dentist does — shared
       // component, same reason the vitals strip is shared. Read-only here: a

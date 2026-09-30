@@ -61,6 +61,13 @@ const PERMS = {
   'patients:records': ['admin', 'doctor'],
   'triage:save': ['admin', 'doctor', 'triage'],
   'vitals:save': ['admin', 'doctor', 'triage', 'emt'],
+  // Only the two stations that meet the patient BEFORE a clinician does. A
+  // dentist's later thoughts belong in the clinical note, which is signed.
+  'triage:stationNote': ['admin', 'registration', 'emt'],
+  // Reading them is open to every station that meets the patient. Deliberately
+  // its own channel: the front desk has no patients:get, and widening that so
+  // the desk could show two lines of handover would hand them the whole chart.
+  'triage:stationNotes': ['admin', 'registration', 'emt', 'doctor', 'triage', 'hygienist', 'checkout'],
   'patients:route': ['admin', 'doctor', 'triage', 'emt'],
   'treatment:save': ['admin', 'doctor', 'hygienist'],
   'consent:setTeeth': ['admin', 'doctor'],
@@ -307,6 +314,8 @@ function register(getMainWindow) {
 
   /* ---- v1.0.6: vitals, consent teeth, dismissal, per-patient audit ---- */
   handle('vitals:save', ({ patientId, data }) => db.saveVitals(currentUser, patientId, data));
+  handle('triage:stationNote', ({ patientId, note }) => db.addStationNote(currentUser, patientId, note));
+  handle('triage:stationNotes', ({ patientId }) => db.listStationNotes(patientId));
   handle('patients:route', ({ patientId, route }) => db.routePatient(currentUser, patientId, route));
   handle('consent:setTeeth', ({ consentId, tooth_numbers }) => db.updateConsentTeeth(currentUser, consentId, tooth_numbers));
   handle('consent:add', ({ patientId, consent }) => db.addPatientConsent(currentUser, patientId, consent));

@@ -1,8 +1,9 @@
-import { el, mount, clear } from '../dom.js';
+import { el, mount, clear, modal } from '../dom.js';
 import { captureConsent } from '../components/consentCapture.js';
 import { api } from '../api.js';
 import { icon } from '../icons.js';
 import { store } from '../store.js';
+import { stationNoteComposer } from '../components/stationNotes.js';
 
 // The front desk's arrival check. Everyone who has checked in — at the desk or
 // online, sometimes days earlier — waits here until someone confirms they are
@@ -95,6 +96,12 @@ export function renderArrivals(ctx) {
         ? el('span', { class: 'crm-chip crm-chip--ok', title: 'Every consent this visit needs is signed' }, [icon('check', { size: 10 }), 'Consents signed'])
         : el('span', { class: 'crm-chip crm-chip--warn', title: 'A required consent is not signed yet' }, ['Consent missing']));
       if (p.on_thinner) tags.push(el('span', { class: 'crm-chip crm-chip--warn', title: 'On a blood thinner' }, ['Thinner']));
+      if (p.station_note_count) {
+        tags.push(el('span', {
+          class: 'crm-chip crm-chip--warn',
+          title: 'A handover note is already on this patient for the clinician',
+        }, [`${p.station_note_count} note${p.station_note_count > 1 ? 's' : ''}`]));
+      }
 
       // THE missing step. A returning patient starts a new visit with no
       // consents — correctly, because consent is per visit — but nothing at the
@@ -147,6 +154,16 @@ export function renderArrivals(ctx) {
               .filter(Boolean).join(' · ') || '—',
           ]),
           el('div', { class: 'arrival-tags' }, tags),
+          // The desk meets the patient first and hears things the form never
+          // asks about — very anxious, came with a translator, mentioned chest
+          // pain last week. Until now there was nowhere to put any of it, so it
+          // reached the dentist only if someone remembered to say it out loud.
+          el('button', {
+            class: 'btn btn--ghost btn--sm',
+            style: 'margin-top:var(--space-2)',
+            title: 'Leave a short note for the dentist or hygienist',
+            onClick: () => noteFor(p),
+          }, [icon('pen', { size: 14 }), p.station_note_count ? 'Notes for the clinician' : 'Note for the clinician']),
         ]),
         confirmed
           ? el('div', { class: 'arrival-done' }, [
@@ -162,6 +179,19 @@ export function renderArrivals(ctx) {
             confirmBtn,
           ]),
       ]);
+    }
+
+    // Its own dialog rather than another control in an already-busy row, and
+    // the same composer the vitals station uses, so a note written at the desk
+    // and one written at vitals read identically at the chair.
+    async function noteFor(p) {
+      const composer = stationNoteComposer(p.id, {});
+      await modal({
+        title: `Note for the clinician — ${p.first_name} ${p.last_name}`,
+        body: composer.node,
+        confirmText: 'Done',
+      });
+      load();
     }
 
     const who = tab === 'prereg' ? 'pre-registered' : 'desk-registered';

@@ -49,6 +49,8 @@ export const api = {
   // findings, which is the only thing that stamps who triaged the patient.
   saveTriage: (patientId, data, opts) => call('triageSave', { patientId, data, opts }),
   saveTreatment: (patientId, data, finalize) => call('treatmentSave', { patientId, data, finalize }),
+  addStationNote: (patientId, note) => call('triageStationNote', { patientId, note }),
+  stationNotes: (patientId) => call('triageStationNotes', { patientId }),
   saveVitals: (patientId, data) => call('vitalsSave', { patientId, data }),
   routePatient: (patientId, route) => call('patientsRoute', { patientId, route }),
   setConsentTeeth: (consentId, tooth_numbers) => call('consentSetTeeth', { consentId, tooth_numbers }),

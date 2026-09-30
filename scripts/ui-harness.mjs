@@ -61,6 +61,8 @@ const PERMS = {
   'vitalsSave': ['admin', 'doctor', 'triage', 'emt'], 'patientsRoute': ['admin', 'doctor', 'triage', 'emt'], 'consentSetTeeth': ['admin', 'doctor'], 'consentAdd': ['admin', 'doctor', 'registration', 'emt', 'triage', 'hygienist'],
   'usbLoad': ['admin', 'doctor', 'triage', 'checkout'], 'usbUploadCheckout': ['admin', 'doctor', 'triage', 'checkout'], 'usbClear': ['admin', 'doctor', 'triage', 'checkout'],
   'triageSave': ['admin', 'doctor', 'triage'], 'treatmentSave': ['admin', 'doctor', 'hygienist'],
+  'triageStationNote': ['admin', 'registration', 'emt'],
+  'triageStationNotes': ['admin', 'registration', 'emt', 'doctor', 'triage', 'hygienist', 'checkout'],
   'xrayAdd': ['admin', 'doctor', 'triage'], 'xraySetTooth': ['admin', 'doctor'], 'xrayGet': ['admin', 'doctor', 'triage', 'hygienist'], 'xrayList': ['admin', 'doctor', 'triage', 'hygienist'], 'xrayDelete': ['admin', 'doctor', 'triage'],
   'xrayFolderConfig': ['admin', 'doctor'], 'xrayFolderChoose': ['admin', 'doctor'], 'xrayFolderLock': ['admin', 'doctor'], 'xrayFolderDelete': ['admin', 'doctor'], 'xrayDeleteFile': ['admin', 'doctor'],
   'pdfPreview': ['admin', 'doctor'], 'pdfGenerate': ['admin', 'doctor'], 'pdfPrint': ['admin', 'doctor'],
@@ -113,6 +115,8 @@ window.api = {
   triageSave: okWrap(({ patientId, data, opts }) => db.saveTriage(currentUser, patientId, data, opts), 'triageSave'),
   treatmentSave: okWrap(({ patientId, data, finalize }) => db.saveTreatment(currentUser, patientId, data, finalize), 'treatmentSave'),
   vitalsSave: okWrap(({ patientId, data }) => db.saveVitals(currentUser, patientId, data), 'vitalsSave'),
+  triageStationNote: okWrap(({ patientId, note }) => db.addStationNote(currentUser, patientId, note), 'triageStationNote'),
+  triageStationNotes: okWrap(({ patientId }) => db.listStationNotes(patientId), 'triageStationNotes'),
   patientsRoute: okWrap(({ patientId, route }) => db.routePatient(currentUser, patientId, route), 'patientsRoute'),
   consentSetTeeth: okWrap(({ consentId, tooth_numbers }) => db.updateConsentTeeth(currentUser, consentId, tooth_numbers), 'consentSetTeeth'),
   consentAdd: okWrap(({ patientId, consent }) => db.addPatientConsent(currentUser, patientId, consent), 'consentAdd'),
@@ -3355,6 +3359,181 @@ async function main() {
     const summ = pdfC.buildHtml(db.getPatient(tpat.id), 'summary');
     log(/Triage Assessment/.test(summ) && /deep caries/.test(summ) && /Dr Alpha/.test(summ),
       'v1.11.0: the patient summary carries the triage assessment too');
+
+    currentUser = db.login('admin', 'admin');
+  }
+
+  // ---- v1.12.0: a note from the front desk / vitals for the clinician ----
+  {
+    currentUser = db.login('admin', 'admin');
+    const storeS = (await import('../src/renderer/js/store.js')).store;
+    storeS.setUser(currentUser);
+    const { renderProvider } = await import('../src/renderer/js/views/provider.js');
+    const { renderHygienist } = await import('../src/renderer/js/views/hygienist.js');
+    const pdfS = require('../src/main/pdf.js');
+    const sCtx = { navigate: () => {}, toast: () => {}, store: storeS, setDetail: () => {} };
+    const as = async (u, pw) => { const r = await window.api.authLogin({ username: u, password: pw }); currentUser = db.login(u, pw); storeS.setUser(r.data); return r; };
+
+    const evS = db.createEvent(currentUser, { name: 'Handover Clinic' });
+    db.setActiveEvent(currentUser, evS.id);
+    const desk = db.createUser(currentUser, { username: 'frontdesk2', full_name: 'Dana Front', role: 'registration', password: 'x' });
+    const medic = db.createUser(currentUser, { username: 'emt2', full_name: 'Ravi Medic', role: 'emt', password: 'x' });
+
+    const sp = db.createPatient(currentUser, {
+      first_name: 'Hand', last_name: 'Over', demographics: {}, medical_history: {},
+      dental_history: { reason: 'Lower left pain', visit_type: 'filling' }, route: 'dentist', consents: SIGNED,
+    });
+
+    // The desk writes BEFORE anyone has taken vitals, which is the whole point:
+    // they meet the patient first.
+    db.addStationNote(db.login('frontdesk2', 'x'), sp.id, 'Very anxious about needles — asked for extra time.');
+    db.saveVitals(db.login('emt2', 'x'), sp.id, { bp_systolic: 148, bp_diastolic: 92, heart_rate: 88 });
+    db.addStationNote(db.login('emt2', 'x'), sp.id, 'Mentioned chest pain last week, not seen a doctor.');
+    db.routePatient(currentUser, sp.id, 'dentist');
+
+    const notes = db.listStationNotes(sp.id);
+    log(notes.length === 2, 'v1.12.0: both stations can leave a note, and neither replaces the other');
+    log(notes[0].station === 'Front desk' && notes[1].station === 'Vitals',
+      'v1.12.0: ...each labelled with the station that wrote it');
+    log(notes[0].by_name === 'Dana Front' && notes[1].by_name === 'Ravi Medic',
+      'v1.12.0: ...and with the name of the person who wrote it');
+    // Derived from the ROLE, never passed in: a "Front desk" label is only worth
+    // reading if nobody can type it.
+    db.addStationNote(db.login('admin', 'admin'), sp.id, { toString: () => 'x' } && 'Admin covering the desk.');
+    log(db.listStationNotes(sp.id)[2].station === 'Admin',
+      'v1.12.0: the station on a note comes from the signed-in role, not from the screen');
+    log(/Write the note/.test((() => { try { db.addStationNote(db.login('admin', 'admin'), sp.id, '   '); return ''; } catch (e) { return e.message; } })()),
+      'v1.12.0: an empty note is refused rather than filed as a blank line');
+
+    // Only the stations that meet the patient may WRITE one; everyone may read.
+    currentUser = db.login('admin', 'admin'); storeS.setUser(currentUser);
+    const docU = db.listUsers().find((u) => u.role === 'doctor');
+    await as(docU.username, 'x');
+    const denied = await window.api.triageStationNote({ patientId: sp.id, note: 'dentist trying to write' });
+    log(denied.ok === false && /permission/i.test(denied.error || ''),
+      'v1.12.0: a dentist cannot write a handover note — their later thoughts belong in the signed clinical note');
+    const readable = await window.api.triageStationNotes({ patientId: sp.id });
+    log(readable.ok === true && readable.data.length === 3,
+      'v1.12.0: ...but every station that meets the patient can read them');
+
+    // The dentist SEES them, above the triage findings.
+    const sView = renderProvider(sCtx, { id: sp.id });
+    document.body.append(sView);
+    for (let i = 0; i < 16; i++) await tick();
+    const sTxt = sView.textContent;
+    log(/Very anxious about needles/.test(sTxt) && /Mentioned chest pain last week/.test(sTxt),
+      'v1.12.0: the dentist sees both notes on the chart');
+    log(/Dana Front/.test(sTxt) && /Ravi Medic/.test(sTxt),
+      'v1.12.0: ...attributed, so the dentist knows who to ask');
+    const sCard = sView.querySelector('.station-notes');
+    log(!!sCard && !sCard.querySelector('input, textarea'),
+      'v1.12.0: ...and the card is read-only at the chair');
+    // Order on the page: the desk and vitals hand over BEFORE the triage dentist.
+    const findings = sView.querySelector('.triage-findings');
+    log(!!sCard && !!findings
+      && (sCard.compareDocumentPosition(findings) & 4) !== 0,
+      'v1.12.0: ...and sits above the triage findings, in the order the patient met the stations');
+
+    // The queue flags it without opening the chart.
+    const sQueue = renderProvider(sCtx, {});
+    document.body.append(sQueue);
+    for (let i = 0; i < 14; i++) await tick();
+    log(/Note/.test(sQueue.textContent) && db.listPatients({ eventId: evS.id }).find((x) => x.id === sp.id).station_note_count === 3,
+      'v1.12.0: the dentist queue flags a patient carrying a handover note');
+
+    // The hygienist reads the same card.
+    const hp = db.createPatient(currentUser, {
+      first_name: 'Hyg', last_name: 'Handover', demographics: {}, medical_history: {},
+      dental_history: { reason: 'Cleaning', visit_type: 'cleaning' }, route: 'hygienist', consents: SIGNED,
+    });
+    db.addStationNote(db.login('frontdesk2', 'x'), hp.id, 'Hard of hearing on the left.');
+    db.saveVitals(currentUser, hp.id, { bp_systolic: 118, bp_diastolic: 74, heart_rate: 66 });
+    db.routePatient(currentUser, hp.id, 'hygienist');
+    currentUser = db.login('admin', 'admin'); storeS.setUser(currentUser);
+    const hView = renderHygienist(sCtx, { id: hp.id });
+    document.body.append(hView);
+    for (let i = 0; i < 16; i++) await tick();
+    log(/Hard of hearing on the left/.test(hView.textContent),
+      'v1.12.0: the hygienist sees the same handover notes');
+
+    // A patient nobody left a note on shows NO card. "The desk had no concerns"
+    // is the ordinary case; a card saying so on every chart trains people to
+    // scroll past this one.
+    const qp = db.createPatient(currentUser, {
+      first_name: 'No', last_name: 'Notes', demographics: {}, medical_history: {},
+      dental_history: { reason: 'Check-up', visit_type: 'filling' }, route: 'dentist', consents: SIGNED,
+    });
+    db.saveVitals(currentUser, qp.id, { bp_systolic: 120, bp_diastolic: 78, heart_rate: 70 });
+    db.routePatient(currentUser, qp.id, 'dentist');
+    const qView = renderProvider(sCtx, { id: qp.id });
+    document.body.append(qView);
+    for (let i = 0; i < 16; i++) await tick();
+    log(!qView.querySelector('.station-notes'),
+      'v1.12.0: a patient with no handover note shows no card at all');
+
+    // On the clinical record, NOT on the copy check-out hands the patient.
+    db.saveTreatment(currentUser, sp.id, { fillings: [{ tooth: '19', surfaces: ['O'] }], provider_name: 'Dr Admin' }, 'complete');
+    const prog = pdfS.buildHtml(db.getPatient(sp.id), 'progress');
+    const full = pdfS.buildHtml(db.getPatient(sp.id), 'full');
+    const patientCopy = pdfS.buildHtml(db.getPatient(sp.id), 'summary');
+    log(/Mentioned chest pain last week/.test(prog) && /Dana Front/.test(prog),
+      'v1.12.0: the handover notes print on the progress note');
+    log(/Mentioned chest pain last week/.test(full),
+      'v1.12.0: ...and on the full record');
+    log(!/Very anxious about needles/.test(patientCopy) && !/Mentioned chest pain/.test(patientCopy),
+      'v1.12.0: ...and NOT on the summary check-out hands the patient');
+
+    currentUser = db.login('admin', 'admin');
+    storeS.setUser(currentUser);
+  }
+
+  // ---- v1.12.0: adding station_notes to SYNC_COLS must not re-stamp the world ----
+  {
+    currentUser = db.login('admin', 'admin');
+    const evQ = db.createEvent(currentUser, { name: 'Sync Baseline' });
+    db.setActiveEvent(currentUser, evQ.id);
+    const qp = db.createPatient(currentUser, {
+      first_name: 'Quiet', last_name: 'Row', demographics: {}, medical_history: {},
+      dental_history: { reason: 'Check-up', visit_type: 'filling' }, route: 'dentist', consents: SIGNED,
+    });
+    db.saveVitals(currentUser, qp.id, { bp_systolic: 120, bp_diastolic: 78, heart_rate: 70 });
+    const trId = db.getPatient(qp.id).triage.id;
+
+    // Push everything and confirm it, so the triage row is genuinely clean.
+    db.markSynced(db.collectSyncRows(500).mark);
+    log(db.collectSyncRows(500).rows.filter((r) => r.entity === 'triage').length === 0,
+      'v1.12.0: (setup) a synced triage row reads as clean');
+
+    // Now BUILD the state a v1.11 laptop would have left behind: the row was
+    // pushed and agreed under the old column list, so both bookkeeping hashes
+    // hold a value that no longer matches the payload this build produces.
+    // Nothing about the row's CONTENT changes — only what it thinks it pushed.
+    const beforeState = db.syncRowState('triage', trId);
+    const preUpgrade = 'a'.repeat(64); // what the old shape hashed to, whatever it was
+    db.setSyncRowState('triage', trId, { synced_rev: preUpgrade, content_rev: preUpgrade });
+    db.setSetting('triage_sig_rebaseline', '');
+    db.rebaselineTriageSig();
+
+    // The row is dirty — it must be, the peer agreed a different hash — and it
+    // pushes once. The thing that must NOT happen is a new timestamp: that is
+    // what beats a peer's newer unsynced edit with content nobody has touched.
+    const push = db.collectSyncRows(500);
+    const pushed = push.rows.find((r) => r.entity === 'triage' && r.uid === beforeState.uid);
+    log(!!pushed, 'v1.12.0: an upgraded laptop does push its triage rows once, as it must');
+    log(!!pushed && pushed.updated_at === beforeState.updated_at,
+      'v1.12.0: ...but it does NOT re-stamp them, so adding a column cannot beat a peer’s newer unsynced edit');
+    log(db.syncRowState('triage', trId).content_rev === db.syncRowState('triage', trId).content_now,
+      'v1.12.0: ...and the re-baseline leaves content_rev matching what the row would push');
+
+    // A row that GENUINELY changes still re-stamps — the re-baseline must not
+    // have frozen the clock for real edits.
+    db.markSynced(push.mark);
+    db.addStationNote(currentUser, qp.id, 'Came with a translator.');
+    const moved = db.collectSyncRows(500).rows.find((r) => r.entity === 'triage' && r.uid === beforeState.uid);
+    log(!!moved && /Came with a translator/.test(JSON.stringify(moved.data)),
+      'v1.12.0: a row that actually gains a note is pushed, note and all');
+    log(!!moved && moved.updated_at !== beforeState.updated_at,
+      'v1.12.0: ...and a real edit still gets a fresh timestamp');
 
     currentUser = db.login('admin', 'admin');
   }

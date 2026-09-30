@@ -52,16 +52,25 @@ jobs:
         continue-on-error: true
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.11.0-build.${{ github.run_number }}
-          name: Caring Hands v1.11.0 (build ${{ github.run_number }})
+          tag_name: v1.12.0-build.${{ github.run_number }}
+          name: Caring Hands v1.12.0 (build ${{ github.run_number }})
           prerelease: false
           make_latest: true
           body: |
-            ## Caring Hands Worldwide — Practice Management Software (v1.11.0)
+            ## Caring Hands Worldwide — Practice Management Software (v1.12.0)
 
             Offline-first dental clinic app for Windows. **Download the installer once — it auto-updates from here on.**
 
-            **New in v1.11.0 — the six things the clinic asked for**
+            **New in v1.12.0 — the front desk and vitals can hand a note to the dentist**
+
+            - **The two stations that meet the patient first can now leave a short note for whoever sees them next.** The front desk hears things the form never asks about — very anxious about needles, came with a translator, hard of hearing on the left — and the vitals station has the patient in front of them for several minutes. Until now none of it reached the chair unless somebody remembered to say it out loud. **Arrivals** has a *Note for the clinician* button on every patient; the **Vitals** screen has the same box under the EMT review.
+            - **The dentist and the hygienist see it at the top of the chart**, right under the blood pressure and above the triage findings — the order the patient actually met the stations. Each note carries the station it came from, who wrote it and when, so the clinician knows who to ask. The dentist's queue flags a patient carrying one, so it is visible before the chart is even opened.
+            - **Notes are added, never edited.** Two stations write here and neither can see the other's screen; a single editable box is exactly the shape that let a second dentist silently destroy the first one's triage findings in v1.11.0. Nothing written here can overwrite anything else, and the station on a note comes from the signed-in account rather than being typed, so "Front desk" means the front desk.
+            - **They print on the clinical record and NOT on the patient's copy.** "Patient seems agitated" is a fair thing for one clinician to tell the next and the wrong thing to print on what somebody takes home, so they appear on the progress note and the full record only — never on the summary check-out hands the patient.
+            - A dentist cannot write one. Their later thoughts belong in the clinical note, which is signed; **Add a note** on a finished visit already does that.
+
+            *No clinic-server update is needed for this release — the server is still v1.11.0.*
+            **From v1.11.0 — the six things the clinic asked for**
 
             *Two dentists, one chart*
             - **CRITICAL FIX: the second dentist to open a chart destroyed the first dentist's findings — silently.** With a triage dentist seeing the patient first and a treating dentist picking them up, every save by the treating dentist overwrote the triage complaint, teeth of concern, per-tooth notes and assessment notes with whatever was on their own screen, **and re-signed the whole thing in their name**. There is one triage record per patient and no history, so what was overwritten was gone. The treating dentist's save now touches only the two fields they own, and the triage attribution is written once, on the sign-off that made it — never again.
@@ -86,7 +95,7 @@ jobs:
             - **New: + patient roster** (administrators only) adds every patient by name with what was done, who triaged them and who treated them, and the per-tooth triage notes. Its columns add up to the figures on the summary page. It is titled and footed differently from the shareable version so the wrong one cannot be sent by mistake.
             - **The printed patient record now carries the per-tooth triage notes and Triaged by.** Both were already recorded and shared between computers, and appeared on no printout at all.
 
-            **⚠️ This release needs the clinic server refreshed (now v1.11.0)** — the same one-time paste your admin has done before. Until it is pasted, the online sign-up form still shows a calendar picker for the date of birth. Nothing else in this release depends on it.
+            **⚠️ v1.11.0 needed the clinic server refreshed (now v1.11.0)** — the same one-time paste your admin has done before. If you have not done it yet, the online sign-up form still shows a calendar picker for the date of birth.
             **From v1.10.1 — the dashboard works for whoever is signed in**
 
             - **Fixed: everyone except an administrator was shown a sidebar containing only "Dashboard".** The Clinic and Admin menus start collapsed, and everyone lands on the Dashboard — which is in neither menu — so nothing ever expanded them. A hygienist's only screen, **Cleanings**, was hidden behind a closed menu they had no reason to suspect; the same was true of **Arrivals** for the front desk, **Vitals** for the EMT, and **Check-Out**. The menus now start open, and if you collapse one it stays collapsed on that computer.
@@ -197,8 +206,8 @@ jobs:
             Every release from v1.0.2 to v1.6.9 — pre-registration, cloud sync, the reporting rebuild, the A–Z patient lists, per-event staff, the USB workflow and the rest — is listed with its full notes at
             https://github.com/oofski/Caring-Hands/releases
 
-            - **Caring-Hands-Setup-1.11.0.exe** — installer (recommended; required for auto-update).
-            - **Caring-Hands-Portable-1.11.0.exe** — portable (no auto-update).
+            - **Caring-Hands-Setup-1.12.0.exe** — installer (recommended; required for auto-update).
+            - **Caring-Hands-Portable-1.12.0.exe** — portable (no auto-update).
 
             First sign-in: `admin / admin` — then create your staff accounts. All clinical data stays on the device unless you enable Cloud Sync.
           files: |
@@ -222,7 +231,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          tag="v1.11.0-build.${{ github.run_number }}"
+          tag="v1.12.0-build.${{ github.run_number }}"
           for attempt in 1 2 3; do
             missing=0
             for f in release/*.exe release/latest.yml release/*.blockmap; do
@@ -248,7 +257,7 @@ jobs:
       - name: Verify both installers are on the release
         shell: bash
         run: |
-          tag="v1.11.0-build.${{ github.run_number }}"
+          tag="v1.12.0-build.${{ github.run_number }}"
           api="https://api.github.com/repos/${{ github.repository }}/releases/tags/$tag"
           json=$(curl -sS -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" "$api")
           names=$(echo "$json" | grep -o '"name": *"[^"]*\.exe"' || true)

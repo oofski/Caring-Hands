@@ -778,3 +778,16 @@ body:has(.kiosk-gate) .toast-host{ bottom:96px; }
   background:var(--surface-sunken); border-radius:var(--radius-sm); }
 .triage-tooth-notes .kv{ flex-direction:row; gap:8px; align-items:baseline; }
 .triage-tooth-notes .kv-label{ flex:0 0 auto; }
+
+/* Station handover notes — the front desk and vitals telling the clinician
+   something the form never asked about. Amber accent like the triage findings
+   card: both are "the previous station is talking to you", and they sit next to
+   each other on the chart. */
+.station-notes{ border-left:3px solid var(--warning); }
+.station-note-list{ display:flex; flex-direction:column; gap:var(--space-2); }
+.station-note{ padding:10px 12px; background:var(--surface-sunken); border-radius:var(--radius-sm); }
+.station-note-text{ white-space:pre-wrap; }
+.station-note-by{ margin-top:5px; font-size:var(--fs-sm); color:var(--text-subtle);
+  display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
+.station-note-compose{ display:flex; flex-direction:column; gap:var(--space-2); }
+.station-note-compose .field-hint{ margin:0; }

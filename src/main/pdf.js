@@ -187,6 +187,18 @@ function teethOfConcern(tr) {
   return teeth.map((x) => `<b>#${esc(x)}</b>${notes[x] ? ' — ' + esc(notes[x]) : ''}`).join(' &middot; ');
 }
 
+// The front desk's and the vitals station's handover notes.
+//
+// On the clinical record only — NOT on summaryBody, which is the copy check-out
+// hands the patient. "Patient seems agitated" is a fair thing for one clinician
+// to tell the next and the wrong thing to print on what someone takes home.
+function stationNotesHtml(tr) {
+  const list = (tr && Array.isArray(tr.station_notes)) ? tr.station_notes : [];
+  if (!list.length) return '';
+  const items = list.map((n) => `<div class="box"><span class="label">${esc(n.station || 'Clinic')} \u00b7 ${esc(n.by_name || 'Unknown')}${n.at ? ' \u00b7 ' + fmtDate(n.at) : ''}</span><br>${esc(n.note || '')}</div>`).join('');
+  return `<h2>Notes from the front desk &amp; vitals</h2>${items}`;
+}
+
 // Which dentist saw the patient first. With a triage dentist and a separate
 // treating dentist, "Provider" at the foot of the note names only the second of
 // them, and the assessment the note is built on has no author on the page.
@@ -241,6 +253,8 @@ function progressNoteBody(p) {
     ${tr.notes ? `<div class="box"><span class="label">Assessment notes</span><br>${esc(tr.notes)}</div>` : ''}
     ${triagedByLine(tr)}
     <div class="box"><span class="label">X-rays taken: </span>${esc(tr.xray_count || 0)}${tr.xray_station ? ' · Station ' + esc(tr.xray_station) : ''}</div>
+
+    ${stationNotesHtml(tr)}
 
     <h2>Treatment Provided</h2>
     <div><span class="label">Fillings</span><div class="chips">${fillings}</div></div>

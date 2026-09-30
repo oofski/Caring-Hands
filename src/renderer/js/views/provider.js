@@ -13,6 +13,7 @@ import { vitalsStrip as sharedVitalsStrip } from '../components/vitalsStrip.js';
 import { captureConsent as sharedCaptureConsent } from '../components/consentCapture.js';
 import { visitNotesPanel } from '../components/visitNotes.js';
 import { triageFindings } from '../components/triageFindings.js';
+import { stationNotes } from '../components/stationNotes.js';
 
 const QUADRANTS = [['UR', 'UR'], ['UL', 'UL'], ['LR', 'LR'], ['LL', 'LL']];
 const fmtWhen = (ts) => { if (!ts) return ''; const d = new Date(ts); return isNaN(d) ? String(ts) : d.toLocaleString(); };
@@ -61,7 +62,13 @@ export function renderProvider(ctx, params = {}) {
         p.on_thinner ? el('span', { class: 'pill pill--danger', style: 'margin-left:8px' }, ['Blood thinner']) : null,
         (p.flags && p.flags.length) ? flagDot(p.flags.length) : null]),
       el('td', { class: 'num' }, [p.age != null ? String(p.age) : '—']),
-      el('td', {}, [p.complaint || '—']),
+      el('td', {}, [p.complaint || '—',
+        p.station_note_count
+          ? el('span', {
+            class: 'pill pill--warning', style: 'margin-left:8px',
+            title: 'The front desk or the vitals station left a note on this patient',
+          }, [el('span', { class: 'pill-dot' }), 'Note'])
+          : null]),
       // Who has been seen by the triage dentist, and who is still waiting for
       // one. Without this the triage dentist has to open every chart to find
       // out which patients are theirs.
@@ -855,6 +862,11 @@ export function renderProvider(ctx, params = {}) {
       ]) : null,
       // EMT station handoff — vitals, blood-thinner answer, who routed the patient.
       vitalsStrip(),
+      // The stations the patient passed through before this one, in the order
+      // they saw them: the desk and vitals hand over here, the triage dentist
+      // below. Both sit above the medical-flags banner for the same reason the
+      // vitals strip does — they are what the previous station is telling you.
+      stationNotes(p),
 
       // Immediately after the handover from the previous station, and before
       // anything the dentist has to fill in. Buried further down it reads as

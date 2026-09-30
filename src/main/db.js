@@ -207,6 +207,13 @@ function migrate() {
   // v1.4.7: when a reading is high, the EMT may record up to 2 additional BP
   // readings (re-checks). Stored as a small JSON array on the triage row.
   addColumn('triage', 'bp_rechecks', "TEXT NOT NULL DEFAULT '[]'");
+  // v1.12.0: short handover notes written by the front desk and the vitals
+  // station for the clinician who sees the patient next. Append-only JSON array
+  // of { note, station, by, by_name, at }.
+  //
+  // NULL, not '[]', on every existing row. That matters for sync: see
+  // rebaselineTriageSig below.
+  addColumn('triage', 'station_notes', 'TEXT');
 
   // v1.1.0: cloud sync. Each syncable row carries a stable uid (cloud identity),
   // an updated_at revision, and synced_rev (the revision last pushed/applied —
@@ -293,6 +300,71 @@ function migrate() {
     setSetting('cloud_pending', '[]');
     setSetting('cloud_cursor_heal', 'v1');
   }
+  rebaselineTriageSig();
+}
+
+// ONE-TIME, on the upgrade that adds station_notes to SYNC_COLS.triage.
+//
+// A row is "dirty" when its content hash differs from synced_rev, so adding a
+// column to the hashed payload makes EVERY triage row on EVERY laptop dirty at
+// once. The wasted push is not the problem. The problem is the STAMP:
+// collectSyncRows re-stamps a dirty row's updated_at to NOW unless content_rev
+// already matches the new hash — and last-write-wins is decided on that stamp.
+// An upgraded laptop would hand its UNCHANGED triage rows a brand-new timestamp
+// and beat a peer's genuinely newer edit that had not synced yet. Data lost by
+// adding a column nobody has written to.
+//
+// Setting content_rev (and NOT synced_rev) is the whole fix, and it is safe by
+// construction: the row still pushes once, carrying identical content with its
+// ORIGINAL timestamp, so last-write-wins is untouched. The worst case if this
+// is somehow wrong for a row is one redundant push — never a lost edit.
+function rebaselineTriageSig() {
+  if (getSetting('triage_sig_rebaseline') === 'station_notes') return;
+  try {
+    const rows = db.prepare('SELECT * FROM triage').all();
+    const upd = db.prepare('UPDATE triage SET content_rev = ? WHERE id = ?');
+    const tx = db.transaction(() => {
+      for (const row of rows) {
+        if (!row.updated_at) continue; // never stamped: nothing to preserve
+        upd.run(sig(buildData('triage', row)), row.id);
+      }
+    });
+    tx();
+  } catch (_e) { /* a failed re-baseline costs a re-stamp, never a lost row */ }
+  setSetting('triage_sig_rebaseline', 'station_notes');
+}
+
+/* ------------------------------------------------------------------ */
+/*  Sync bookkeeping, for inspection                                   */
+/* ------------------------------------------------------------------ */
+// Sync is the hardest thing in this app to reason about and has caused more
+// production bugs than everything else together, almost always because two
+// stations disagreed about what a row's content was. These read and write ONLY
+// the three bookkeeping columns — never a row's actual content — so a test (or
+// someone debugging a clinic) can see where a row sits and can construct the
+// state a previous version would have left behind.
+function syncRowState(entity, id) {
+  const table = ENTITY_TABLE[entity];
+  if (!table) throw new Error('Unknown sync entity: ' + entity);
+  const row = db.prepare(`SELECT * FROM ${table} WHERE id = ?`).get(id);
+  if (!row) return null;
+  return {
+    uid: row.uid,
+    content_now: sig(buildData(entity, row)),
+    content_rev: row.content_rev,
+    synced_rev: row.synced_rev,
+    updated_at: row.updated_at,
+  };
+}
+function setSyncRowState(entity, id, { synced_rev, content_rev, updated_at } = {}) {
+  const table = ENTITY_TABLE[entity];
+  if (!table) throw new Error('Unknown sync entity: ' + entity);
+  const sets = [], args = [];
+  if (synced_rev !== undefined) { sets.push('synced_rev = ?'); args.push(synced_rev); }
+  if (content_rev !== undefined) { sets.push('content_rev = ?'); args.push(content_rev); }
+  if (updated_at !== undefined) { sets.push('updated_at = ?'); args.push(updated_at); }
+  if (!sets.length) return;
+  db.prepare(`UPDATE ${table} SET ${sets.join(', ')} WHERE id = ?`).run(...args, id);
 }
 
 const ROLES = ['admin', 'doctor', 'triage', 'emt', 'checkout', 'hygienist', 'registration'];
@@ -1324,7 +1396,7 @@ function getPatient(id) {
   if (!p) return null;
   p.consents = db.prepare('SELECT * FROM consents WHERE patient_id = ? ORDER BY signed_at').all(id);
   const tr = db.prepare('SELECT * FROM triage WHERE patient_id = ?').get(id);
-  p.triage = tr ? { ...tr, flags: safeJson(tr.flags, []), checklist: safeJson(tr.checklist, {}), teeth: safeJson(tr.teeth, []), teeth_notes: safeJson(tr.teeth_notes, {}), emt_review: safeJson(tr.emt_review, {}), bp_rechecks: safeJson(tr.bp_rechecks, []), emt_signed_off: !!tr.emt_signed_off } : null;
+  p.triage = tr ? { ...tr, flags: safeJson(tr.flags, []), checklist: safeJson(tr.checklist, {}), teeth: safeJson(tr.teeth, []), teeth_notes: safeJson(tr.teeth_notes, {}), emt_review: safeJson(tr.emt_review, {}), bp_rechecks: safeJson(tr.bp_rechecks, []), station_notes: safeJson(tr.station_notes, []) || [], emt_signed_off: !!tr.emt_signed_off } : null;
   const t = db.prepare('SELECT * FROM treatments WHERE patient_id = ?').get(id);
   p.treatment = t
     ? {
@@ -1359,6 +1431,66 @@ function getPatient(id) {
 const toIntOrNull = (v) => { const n = parseInt(v, 10); return Number.isFinite(n) ? n : null; };
 
 // EMT / staff-measured vitals stored (with accountability) on the triage row.
+/* ------------------------------------------------------------------ */
+/*  Station handover notes                                             */
+/* ------------------------------------------------------------------ */
+
+// Which station a note came from, decided by the role of whoever wrote it.
+// NEVER passed in from the screen: a label saying "Front desk" is only worth
+// reading if it cannot be typed by hand — the same reason triaged_by is derived
+// from the actor rather than a signature field.
+const STATION_BY_ROLE = {
+  registration: 'Front desk',
+  emt: 'Vitals',
+  admin: 'Admin',
+};
+const STATION_NOTE_MAX = 500;   // "a short note", enforced rather than asked for
+const STATION_NOTE_KEEP = 20;   // a runaway list would travel in every sync push
+
+// A short concern from the front desk or the vitals station, for whoever sees
+// the patient next.
+//
+// APPEND-ONLY, deliberately. Two stations write here and neither can see the
+// other's screen; a single editable field is the exact shape that let a second
+// dentist silently destroy the first one's triage findings (v1.11.0). Nothing
+// here can overwrite anything, so that failure is not available.
+// Just the notes, for a screen that has no business reading the whole chart.
+// The front desk does not hold patients:get — widening THAT so the desk could
+// show two lines of handover would hand them the clinical record as well.
+function listStationNotes(patientId) {
+  const tr = db.prepare('SELECT station_notes FROM triage WHERE patient_id = ?').get(patientId);
+  return tr ? (safeJson(tr.station_notes, []) || []) : [];
+}
+
+function addStationNote(actor, patientId, note) {
+  const text = String(note == null ? '' : note).trim();
+  if (!text) throw new Error('Write the note before adding it.');
+  const pt = db.prepare('SELECT id FROM patients WHERE id = ?').get(patientId);
+  if (!pt) throw new Error('Patient not found.');
+  const station = STATION_BY_ROLE[actor && actor.role] || 'Clinic';
+  // The front desk may write before anyone has taken vitals, so the triage row
+  // is created here if it does not exist yet — exactly as saveVitals does.
+  let tr = db.prepare('SELECT station_notes FROM triage WHERE patient_id = ?').get(patientId);
+  if (!tr) {
+    db.prepare("INSERT INTO triage (patient_id, status) VALUES (?, 'waiting')").run(patientId);
+    tr = db.prepare('SELECT station_notes FROM triage WHERE patient_id = ?').get(patientId);
+  }
+  const list = safeJson(tr.station_notes, []) || [];
+  list.push({
+    note: text.slice(0, STATION_NOTE_MAX),
+    station,
+    by: actor ? actor.id : null,
+    by_name: actor ? actor.full_name : null,
+    at: now(),
+  });
+  const kept = list.slice(-STATION_NOTE_KEEP);
+  db.prepare('UPDATE triage SET station_notes = ? WHERE patient_id = ?')
+    .run(JSON.stringify(kept), patientId);
+  audit(actor, 'station_note', 'patient', patientId, `${station}: ${text.slice(0, 120)}`);
+  // The notes alone, never the patient: this channel is open to the front desk.
+  return { patient_id: patientId, station_notes: kept };
+}
+
 function saveVitals(actor, patientId, data) {
   const tr = db.prepare('SELECT id FROM triage WHERE patient_id = ?').get(patientId);
   const d = data || {};
@@ -1687,7 +1819,7 @@ function listPatients({ eventId, search } = {}) {
   sql += ' ORDER BY p.created_at DESC';
   return db.prepare(sql).all(...args).map((p) => {
     const pt = rowToPatient(p);
-    const tr = db.prepare('SELECT status, complaint, flags, assigned_to, route, bp_systolic, bp_diastolic, heart_rate, blood_thinner, emt_signed_off, vitals_at, routed_at, triaged_at, triaged_by_name FROM triage WHERE patient_id = ?').get(p.id);
+    const tr = db.prepare('SELECT status, complaint, flags, assigned_to, route, bp_systolic, bp_diastolic, heart_rate, blood_thinner, emt_signed_off, vitals_at, routed_at, triaged_at, triaged_by_name, station_notes FROM triage WHERE patient_id = ?').get(p.id);
     return {
       id: pt.id,
       first_name: pt.first_name,
@@ -1711,6 +1843,9 @@ function listPatients({ eventId, search } = {}) {
       // the triage dentist without opening each one.
       triaged_at: tr ? tr.triaged_at : null,
       triaged_by_name: tr ? (tr.triaged_by_name || null) : null,
+      // How many handover notes the front desk and the vitals station left, so
+      // the clinician's queue can flag them without opening every chart.
+      station_note_count: tr ? ((safeJson(tr.station_notes, []) || []).length) : 0,
       has_vitals: !!(tr && (tr.bp_systolic != null || tr.heart_rate != null)),
       preregistered: !!(pt.demographics && pt.demographics.preregistered),
       // v1.5.24: front-desk arrival state — confirmed present, and whether the
@@ -2827,7 +2962,7 @@ const SYNC_COLS = {
   // returning volunteer's login works on whichever laptop adds them back.
   staffdir: ['username', 'full_name', 'role', 'salt', 'hash', 'last_event_name', 'last_used_at', 'times_served', 'created_at'],
   patient: ['language', 'first_name', 'last_name', 'dob', 'gender', 'phone', 'email', 'demographics', 'medical_history', 'dental_history', 'status', 'created_at', 'dismissed_at', 'dismissed_by_name', 'arrived_at', 'arrived_by_name'],
-  triage: ['complaint', 'flags', 'checklist', 'teeth', 'teeth_notes', 'notes', 'xray_count', 'xray_station', 'assigned_to', 'status', 'triage_signature', 'triage_signer_name', 'triaged_at', 'bp_systolic', 'bp_diastolic', 'heart_rate', 'vitals_at', 'blood_thinner', 'blood_thinner_detail', 'route', 'routed_at', 'emt_review', 'emt_signed_off', 'bp_rechecks', 'triaged_by_name', 'vitals_by_name', 'routed_by_name'],
+  triage: ['complaint', 'flags', 'checklist', 'teeth', 'teeth_notes', 'notes', 'xray_count', 'xray_station', 'assigned_to', 'status', 'triage_signature', 'triage_signer_name', 'triaged_at', 'bp_systolic', 'bp_diastolic', 'heart_rate', 'vitals_at', 'blood_thinner', 'blood_thinner_detail', 'route', 'routed_at', 'emt_review', 'emt_signed_off', 'bp_rechecks', 'triaged_by_name', 'vitals_by_name', 'routed_by_name', 'station_notes'],
   treatment: ['fillings', 'extractions', 'cleaning', 'anesthetic', 'other_procedures', 'clinical_notes', 'provider_name', 'provider_signature', 'locked', 'addenda', 'completed_at', 'completed_by_name'],
   consent: ['type', 'version', 'language', 'signer_name', 'relationship', 'signature_png', 'signed_at', 'tooth_numbers', 'amended_by', 'amended_at'],
   xray: ['station', 'image_png', 'note', 'created_at', 'tooth'],
@@ -2866,9 +3001,9 @@ function uidOf(table, id) { if (!id) return null; const r = db.prepare(`SELECT u
 function localIdByUid(table, uid) { if (!uid) return null; const r = db.prepare(`SELECT id FROM ${table} WHERE uid = ?`).get(uid); return r ? r.id : null; }
 
 // Build the ordered, stable payload object for a row (denormalizing names).
-function buildData(entity, row) {
+function buildData(entity, row, cols) {
   const out = {};
-  for (const col of SYNC_COLS[entity]) {
+  for (const col of (cols || SYNC_COLS[entity])) {
     if (NAME_SOURCE[col]) {
       // Keep an already-stored name verbatim (including an empty string synced
       // from a peer) so its content hash is stable and it isn't re-pushed every
@@ -3259,6 +3394,8 @@ module.exports = {
   saveTriage, saveTreatment,
   addXray, updateXrayTooth, getXray, listXrays, deleteXray,
   recordClinicExport, lastClinicExport, finishPreflight, clinicReport,
+  addStationNote, listStationNotes,
+  rebaselineTriageSig, syncRowState, setSyncRowState,
   dashboardStats, listAudit, audit,
   backupTo, exportEventJson,
   exportClinicBundle, importClinicBundle, buildEventSummary, captureEventSummary, rebuildSummaryFromBundle,
