@@ -85,6 +85,11 @@ const PERMS = {
   'pdf:generate': ['admin', 'doctor', 'checkout'],
   'pdf:preview': ['admin', 'doctor', 'checkout'],
   'pdf:print': ['admin', 'doctor', 'checkout'],
+  // The shareable clinic report. The de-identified summary is safe for anyone,
+  // so a dentist can send it; the roster names patients, so it matches
+  // 'export:clinic' and stays with admins.
+  'pdf:clinicSummary': ['admin', 'doctor'],
+  'pdf:clinicRoster': ['admin'],
   'record:exportUsb': ['admin', 'doctor'],
   'usb:list': ['admin', 'doctor', 'triage', 'emt', 'checkout'],
   'usb:load': ['admin', 'doctor', 'triage', 'checkout'],
@@ -464,6 +469,27 @@ function register(getMainWindow) {
     db.audit(currentUser, 'export_pdf', 'patient', patientId, path.basename(res.filePath));
     return { saved: true, path: res.filePath };
   });
+
+  // Two documents from one generator, titled so the wrong one cannot be sent.
+  const clinicPdf = async ({ eventId } = {}, withRoster) => {
+    const data = db.clinicReport(eventId);
+    const buf = await pdf.renderClinicPdf(data, { withRoster });
+    const evName = String((data.event && data.event.name) || 'Clinic').replace(/[^a-z0-9]+/gi, '-').replace(/^-|-$/g, '');
+    const suggested = `${evName}-${withRoster ? 'Summary-and-Roster' : 'Summary'}-${new Date().toISOString().slice(0, 10)}.pdf`;
+    const res = await dialog.showSaveDialog(getMainWindow(), {
+      title: withRoster ? 'Save clinic summary + patient roster' : 'Save clinic summary',
+      defaultPath: suggested,
+      filters: [{ name: 'PDF', extensions: ['pdf'] }],
+    });
+    if (res.canceled || !res.filePath) return { saved: false };
+    const out = res.filePath.endsWith('.pdf') ? res.filePath : res.filePath + '.pdf';
+    fs.writeFileSync(out, buf);
+    db.audit(currentUser, withRoster ? 'export_clinic_pdf_roster' : 'export_clinic_pdf',
+      'event', data.event ? data.event.id : null, path.basename(out));
+    return { saved: true, path: out, patients: data.roster.length, roster: !!withRoster };
+  };
+  handle('pdf:clinicSummary', (args) => clinicPdf(args, false));
+  handle('pdf:clinicRoster', (args) => clinicPdf(args, true));
 
   handle('pdf:print', async ({ patientId, format }) => {
     const patient = patientForPdf(patientId);

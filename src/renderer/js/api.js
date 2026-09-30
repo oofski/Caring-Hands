@@ -87,6 +87,8 @@ export const api = {
   pdfPreview: (patientId, format) => call('pdfPreview', { patientId, format }),
   pdfGenerate: (patientId, format) => call('pdfGenerate', { patientId, format }),
   pdfPrint: (patientId, format) => call('pdfPrint', { patientId, format }),
+  clinicSummaryPdf: (eventId) => call('pdfClinicSummary', { eventId }),
+  clinicRosterPdf: (eventId) => call('pdfClinicRoster', { eventId }),
   exportRecordUsb: (patientId) => call('recordExportUsb', { patientId }),
 
   backup: () => call('backupRun'),

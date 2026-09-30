@@ -3246,6 +3246,119 @@ async function main() {
     storeX.setUser(currentUser);
   }
 
+  // ---- v1.11.0: the clinic report a coordinator can be sent ----
+  {
+    currentUser = db.login('admin', 'admin');
+    const pdfC = require('../src/main/pdf.js');
+    const PNG = 'data:image/png;base64,AAAA';
+
+    const evC = db.createEvent(currentUser, { name: 'Coordinator Clinic', location: 'Sandy, Oregon', start_date: '2026-09-18' });
+    db.setActiveEvent(currentUser, evC.id);
+    const seenBy = (first, last, city, visit) => {
+      const pt = db.createPatient(currentUser, {
+        first_name: first, last_name: last, dob: '1980-05-05', gender: 'female', language: 'es',
+        demographics: { city, state: 'OR' }, medical_history: {},
+        dental_history: { reason: 'Pain', visit_type: visit },
+        route: 'dentist', consents: visit.startsWith('extraction') ? SIGNED_SURGERY : SIGNED,
+      });
+      db.saveVitals(currentUser, pt.id, { bp_systolic: 120, bp_diastolic: 78, heart_rate: 70 });
+      db.routePatient(currentUser, pt.id, visit === 'cleaning' ? 'hygienist' : 'dentist');
+      return pt;
+    };
+    const c1 = seenBy('Ana', 'Ruiz', 'Sandy', 'filling');
+    const c2 = seenBy('Beto', 'Cruz', 'Gresham', 'extraction_pain');
+    const c3 = seenBy('Cleo', 'Diaz', 'Sandy', 'cleaning');
+    // Triage by one dentist, treatment by another: the roster must name both.
+    db.saveTriage(db.login('alpha', 'x'), c1.id, {
+      complaint: 'Upper right ache', teeth: ['3'], teeth_notes: { 3: 'fractured cusp' },
+      notes: 'Alpha: restore #3',
+    }, { attribute: true });
+    db.saveTreatment(db.login('beta', 'x'), c1.id, {
+      fillings: [{ tooth: '3', surfaces: ['O'] }], provider_name: 'Dr Beta', provider_signature: PNG,
+    }, 'lock');
+    db.saveTreatment(currentUser, c2.id, {
+      extractions: [{ tooth: '17', types: ['simple'] }], provider_name: 'Dr Admin',
+    }, 'complete');
+    db.saveTreatment(currentUser, c3.id, { cleaning: { adult_prophy: true }, provider_name: 'Dr Admin' }, 'complete');
+    db.addXray(currentUser, c2.id, { image_png: PNG, tooth: '17' });
+
+    const data = db.clinicReport(evC.id);
+    log(data.roster.length === 3 && data.event.name === 'Coordinator Clinic',
+      'v1.11.0: the clinic report gathers the whole clinic in one call');
+
+    // THE point of the roster: its own columns add up to the KPIs on the facing
+    // page. The two existing one-line summarisers over-count, which would have
+    // made the roster contradict the figures beside it.
+    const sm = data.rollup.summary;
+    const sum = (k) => data.roster.reduce((n, r) => n + (Number(r[k]) || 0), 0);
+    log(sum('fillings') === sm.fillings && sum('extractions') === sm.extractions
+      && data.roster.filter((r) => r.cleaning).length === sm.cleanings && sum('xrays') === sm.xrays,
+      'v1.11.0: ...and every roster column totals to the KPI printed on the same document');
+
+    const summaryHtml = pdfC.buildClinicHtml(data, { withRoster: false });
+    const rosterHtml = pdfC.buildClinicHtml(data, { withRoster: true });
+    log(/Clinic Summary</.test(summaryHtml) && /Clinic Summary \+ Patient Roster/.test(rosterHtml),
+      'v1.11.0: the two documents are titled differently, so the wrong one cannot be sent unnoticed');
+    // The de-identified one carries NO patient name. This is the check that
+    // decides whether the summary can be handed to a funder.
+    log(!/Ruiz|Cruz|Diaz|Ana|Beto|Cleo/.test(summaryHtml),
+      'v1.11.0: the shareable summary contains no patient name');
+    log(/no patient names or identifying details/.test(summaryHtml),
+      'v1.11.0: ...and says so on its face');
+    log(/Contains patient names/.test(rosterHtml) && /Ruiz/.test(rosterHtml),
+      'v1.11.0: the roster names patients and warns that it does');
+    log(/Coordinator Clinic/.test(summaryHtml) && /Sandy, Oregon/.test(summaryHtml),
+      'v1.11.0: the summary names the clinic and where it ran');
+    log(/Dr Alpha/.test(rosterHtml) && /Dr Beta/.test(rosterHtml),
+      'v1.11.0: the roster names the triage dentist AND the treating dentist, not just one of them');
+    log(/fractured cusp/.test(rosterHtml),
+      'v1.11.0: ...and prints the per-tooth triage note, which reached no printed output before');
+    log(/Español/.test(summaryHtml) && !/>es</.test(summaryHtml),
+      'v1.11.0: language codes are relabelled for a reader outside the clinic');
+
+    // A finished clinic: the people are gone and only the totals were kept. The
+    // document must SAY that rather than print an empty table.
+    db.recordClinicExport(evC.id, { patients: 3 });
+    db.finishEvent(currentUser, evC.id);
+    const kept = db.clinicReport(evC.id);
+    log(kept.roster.length === 0 && kept.rollup.source === 'kept',
+      'v1.11.0: a finished clinic still reports, with no roster behind it');
+    log(kept.rollup.summary.patients_seen === 3,
+      'v1.11.0: ...and the kept totals are the ones the clinic actually saw');
+    const keptHtml = pdfC.buildClinicHtml(kept, { withRoster: true });
+    log(/patient records removed/.test(keptHtml) && !/Ruiz/.test(keptHtml),
+      'v1.11.0: ...and the roster page says the records are gone instead of printing an empty table');
+    log(/>3</.test(pdfC.buildClinicHtml(kept, { withRoster: false })),
+      'v1.11.0: the summary of a finished clinic still carries its figures');
+
+    // Triage findings on the PATIENT documents, which is where the treating
+    // dentist and the patient actually read them. Finishing the clinic above
+    // left no clinic selected, so this needs one of its own.
+    const evP = db.createEvent(currentUser, { name: 'Printed Notes' });
+    db.setActiveEvent(currentUser, evP.id);
+    const tpat = db.createPatient(currentUser, {
+      first_name: 'Print', last_name: 'Triage', demographics: {}, medical_history: {},
+      dental_history: { reason: 'Pain', visit_type: 'filling' }, route: 'dentist', consents: SIGNED,
+    });
+    db.saveVitals(currentUser, tpat.id, { bp_systolic: 118, bp_diastolic: 74, heart_rate: 68 });
+    db.routePatient(currentUser, tpat.id, 'dentist');
+    db.saveTriage(db.login('alpha', 'x'), tpat.id, {
+      complaint: 'Lower left pain', teeth: ['19'], teeth_notes: { 19: 'deep caries, cold sensitive' },
+      notes: 'Alpha: restore if possible',
+    }, { attribute: true });
+    db.saveTreatment(db.login('beta', 'x'), tpat.id, { fillings: [{ tooth: '19', surfaces: ['O'] }], provider_name: 'Dr Beta' }, 'complete');
+    const prog = pdfC.buildHtml(db.getPatient(tpat.id), 'progress');
+    log(/deep caries, cold sensitive/.test(prog),
+      'v1.11.0: the progress note prints the per-tooth triage note, not a bare tooth number');
+    log(/Triaged by/.test(prog) && /Dr Alpha/.test(prog) && /Dr Beta/.test(prog),
+      'v1.11.0: ...and names the triage dentist beside the treating dentist');
+    const summ = pdfC.buildHtml(db.getPatient(tpat.id), 'summary');
+    log(/Triage Assessment/.test(summ) && /deep caries/.test(summ) && /Dr Alpha/.test(summ),
+      'v1.11.0: the patient summary carries the triage assessment too');
+
+    currentUser = db.login('admin', 'admin');
+  }
+
   await tick();
   if (errors.length) errors.forEach((e) => log(false, 'RUNTIME: ' + e));
   const failed = results.filter((r) => !r[0]).length;

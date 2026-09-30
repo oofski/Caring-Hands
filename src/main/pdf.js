@@ -10,6 +10,8 @@
  */
 
 const { BrowserWindow } = require('electron');
+const fs = require('fs');
+const path = require('path');
 
 function esc(s) {
   if (s == null) return '';
@@ -171,6 +173,28 @@ const OREGON_CONSENT =
   'death or other loss results from gross negligence. I am also aware of the risk of exposure to COVID during a ' +
   'dental procedure and I consent to participate in this clinic at my own risk.';
 
+// Teeth flagged at triage, WITH the note attached to each one.
+//
+// triage.teeth_notes is written by the odontogram, travels in sync, and until
+// v1.11.0 appeared on no printed output at all: the progress note listed bare
+// tooth numbers, so "#19 — deep caries, cold sensitive" reached the paper chart
+// as "19". On screen it is reachable only by hovering an SVG title, which on a
+// clinic touchscreen means invisible.
+function teethOfConcern(tr) {
+  const teeth = (tr && tr.teeth) || [];
+  if (!teeth.length) return '<span class="muted">—</span>';
+  const notes = (tr && tr.teeth_notes) || {};
+  return teeth.map((x) => `<b>#${esc(x)}</b>${notes[x] ? ' — ' + esc(notes[x]) : ''}`).join(' &middot; ');
+}
+
+// Which dentist saw the patient first. With a triage dentist and a separate
+// treating dentist, "Provider" at the foot of the note names only the second of
+// them, and the assessment the note is built on has no author on the page.
+function triagedByLine(tr) {
+  if (!tr || (!tr.triaged_by_name && !tr.triaged_at)) return '';
+  return `<div class="box"><span class="label">Triaged by: </span>${esc(tr.triaged_by_name || 'Not recorded')}${tr.triaged_at ? ' · ' + fmtDate(tr.triaged_at) : ''}</div>`;
+}
+
 function progressNoteBody(p) {
   const t = p.treatment || {};
   const tr = p.triage || {};
@@ -213,8 +237,9 @@ function progressNoteBody(p) {
       ? `<div class="box"><span class="label">Vitals: </span>${bpHtml(tr)}${bpRechecksHtml(tr) ? ' · ' + bpRechecksHtml(tr) : ''} · HR ${tr.heart_rate != null ? esc(tr.heart_rate) : '—'} · Blood thinners: ${esc(bloodThinnerLine(p))}</div>`
       : ''}
     <div class="chips">${checklist}</div>
-    <div class="box"><span class="label">Teeth of concern: </span>${(tr.teeth || []).map((x) => `<b>${esc(x)}</b>`).join(', ') || '<span class="muted">—</span>'}</div>
+    <div class="box"><span class="label">Teeth of concern: </span>${teethOfConcern(tr)}</div>
     ${tr.notes ? `<div class="box"><span class="label">Assessment notes</span><br>${esc(tr.notes)}</div>` : ''}
+    ${triagedByLine(tr)}
     <div class="box"><span class="label">X-rays taken: </span>${esc(tr.xray_count || 0)}${tr.xray_station ? ' · Station ' + esc(tr.xray_station) : ''}</div>
 
     <h2>Treatment Provided</h2>
@@ -430,6 +455,7 @@ function healthBlock(p) {
 
 function summaryBody(p) {
   const t = p.treatment || {};
+  const tr = p.triage || {};
 
   const fillings = (t.fillings || []).map((f) => {
     const surf = Array.isArray(f.surfaces) ? f.surfaces.join(',') : (f.surfaces || '');
@@ -465,6 +491,12 @@ function summaryBody(p) {
       <tr>${field('Event', p.event ? p.event.name : '—')}${field('Provider', t.provider_name)}</tr>
     </table>
 
+    ${tr.complaint || (tr.teeth || []).length || tr.notes || tr.triaged_by_name ? `<h2>Triage Assessment</h2>
+      ${tr.complaint ? `<div class="box"><span class="label">Chief complaint: </span>${esc(tr.complaint)}</div>` : ''}
+      <div class="box"><span class="label">Teeth of concern: </span>${teethOfConcern(tr)}</div>
+      ${tr.notes ? `<div class="box"><span class="label">Assessment notes</span><br>${esc(tr.notes)}</div>` : ''}
+      ${triagedByLine(tr)}` : ''}
+
     ${healthBlock(p)}
 
     <h2>Procedures Performed</h2>
@@ -492,6 +524,258 @@ function addendaHtml(t, esc) {
   const when = (v) => { const d = new Date(v); return isNaN(d.getTime()) ? String(v || '') : d.toLocaleString(); };
   const items = list.map((a) => `<div class="box"><span class="label">${esc(a.by_name || 'Unknown')} · ${esc(when(a.at))}</span><br>${esc(a.note || '')}</div>`).join('');
   return `<h2>Added after completion</h2>${items}`;
+}
+
+/* ================================================================== */
+/*  Clinic report — the document a coordinator can be sent              */
+/* ================================================================== */
+
+// A PARALLEL generator, not a fourth buildHtml format. buildHtml takes a
+// PATIENT: its footer hardcodes p.last_name and the words "Confidential Patient
+// Record", and an unrecognised format falls through to the progress note rather
+// than failing. A clinic-wide document shares the stylesheet and the helpers and
+// nothing else.
+
+// The wordmark, read off disk once and inlined as a data URL. It cannot be
+// referenced as a file:// path: the document is loaded as a data: URL (see
+// renderClinicPdf) so it has no base to resolve against, and in a packaged build
+// the file lives inside the asar. A missing logo must not fail the document —
+// the text brand in header() already carries it.
+let LOGO_CACHE;
+function logoDataUrl() {
+  if (LOGO_CACHE !== undefined) return LOGO_CACHE;
+  try {
+    const svg = fs.readFileSync(path.join(__dirname, '..', '..', 'assets', 'logo.svg'));
+    LOGO_CACHE = 'data:image/svg+xml;base64,' + svg.toString('base64');
+  } catch (_e) { LOGO_CACHE = ''; }
+  return LOGO_CACHE;
+}
+
+function clinicStyles() {
+  return `
+    <style>
+      .logo { height: 42px; display:block; }
+      .lede { font-size: 12px; color:#334e68; margin: 2px 0 14px; }
+      .barblock { margin-bottom: 12px; }
+      .kpis { display:flex; flex-wrap:wrap; gap:8px; margin: 4px 0 6px; }
+      .kpi { flex:1 1 30%; min-width:140px; border:1px solid #d9e2ec; border-radius:8px; padding:9px 12px; background:#fbfdff; }
+      .kpi b { display:block; font-size:22px; color:#1a6aa8; line-height:1.15; }
+      .kpi span { font-size:10px; text-transform:uppercase; letter-spacing:.5px; color:#627d98; }
+      .kpi em { display:block; font-style:normal; font-size:10px; color:#829ab1; margin-top:2px; }
+      .bars td { padding: 2px 6px 2px 0; font-size: 11px; }
+      .bars td.n { text-align:right; width: 46px; font-weight:700; color:#334e68; }
+      .bars td.k { width: 130px; color:#334e68; }
+      .bar { height:9px; background:#eaf3f9; border-radius:5px; overflow:hidden; }
+      .bar i { display:block; height:100%; background:#1a6aa8; }
+      .rtable { border:1px solid #d9e2ec; border-radius:6px; overflow:hidden; }
+      .rtable th { background:#f0f5fa; font-size:9.5px; text-transform:uppercase; letter-spacing:.4px; color:#627d98; border-bottom:1px solid #d9e2ec; }
+      .rtable td { font-size:11px; border-bottom:1px solid #eef2f7; }
+      .rtable tr:last-child td { border-bottom:0; }
+      .rtable td.n, .rtable th.n { text-align:right; }
+      .tnote { color:#627d98; font-size:10px; }
+      .note-strip { border-left:3px solid #f0a202; background:#fffaf0; padding:6px 10px; margin:6px 0; border-radius:0 6px 6px 0; }
+      .warn { border:1px solid #f5c2c0; background:#fdecec; color:#b3261e; border-radius:6px; padding:9px 12px; margin: 8px 0; font-size:11px; }
+    </style>`;
+}
+
+function clinicHeader(title, subtitle) {
+  const logo = logoDataUrl();
+  return `
+    <div class="hdr">
+      <div>${logo ? `<img class="logo" src="${logo}" alt="Caring Hands Worldwide"/>` : '<div class="brand">CARING HANDS<small>WORLDWIDE</small></div>'}</div>
+      <div class="doc-title">${esc(title)}<small>${esc(subtitle || '')}</small></div>
+    </div>`;
+}
+
+function clinicFooter(withRoster) {
+  return `<div class="footer">
+      <span>Caring Hands Worldwide${withRoster ? ' — Contains patient names. Internal use only.' : ' — No patient names or identifying details'}</span>
+      <span>Generated ${fmtDate(new Date().toISOString())}</span>
+    </div>`;
+}
+
+function kpiCard(value, label, sub) {
+  return `<div class="kpi"><b>${esc(value)}</b><span>${esc(label)}</span>${sub ? `<em>${esc(sub)}</em>` : ''}</div>`;
+}
+
+// A labelled breakdown as proportional bars. Sorted biggest first, because a
+// coordinator reads the top of this list and stops.
+function barBlock(title, obj, { limit = 6, relabel } = {}) {
+  const rows = Object.entries(obj || {})
+    .map(([k, v]) => [relabel ? relabel(k) : k, Number(v) || 0])
+    .filter(([, v]) => v > 0)
+    .sort((a, b) => b[1] - a[1]);
+  if (!rows.length) return '';
+  const shown = rows.slice(0, limit);
+  const rest = rows.slice(limit).reduce((n, r) => n + r[1], 0);
+  if (rest) shown.push(['Other', rest]);
+  const max = Math.max(...shown.map((r) => r[1]));
+  const body = shown.map(([k, v]) => `<tr>
+      <td class="k">${esc(k)}</td>
+      <td><div class="bar"><i style="width:${max ? Math.round((v / max) * 100) : 0}%"></i></div></td>
+      <td class="n">${esc(v)}</td>
+    </tr>`).join('');
+  return `<div class="barblock"><div class="label">${esc(title)}</div><table class="bars">${body}</table></div>`;
+}
+
+const GENDER_LABEL = { male: 'Male', m: 'Male', female: 'Female', f: 'Female', other: 'Other' };
+const LANG_LABEL = { en: 'English', es: 'Español', bzj: 'Belizean Creole', nya: 'Chichewa', ru: 'Русский', fr: 'Français', pt: 'Português' };
+// The summary stores raw codes so it stays language-neutral on disk. Relabelled
+// here exactly as the Reports tab does, and never by first letter — that is what
+// once printed the Spanish "Mujer" as Male.
+const genderLabel = (k) => (k === 'Not recorded' ? k : (GENDER_LABEL[String(k).trim().toLowerCase()] || String(k).charAt(0).toUpperCase() + String(k).slice(1)));
+const langLabel = (k) => (k === 'Not recorded' ? k : (LANG_LABEL[k] || String(k).toUpperCase()));
+
+function clinicSummaryBody(data) {
+  const r = data.rollup || {};
+  const s = r.summary || {};
+  const ev = data.event || {};
+  const seen = Number(s.patients_seen) || 0;
+  const done = Number(s.visits_completed) || 0;
+  const pct = seen ? Math.round((done / seen) * 100) : 0;
+  const treatments = (Number(s.fillings) || 0) + (Number(s.extractions) || 0) + (Number(s.cleanings) || 0);
+  const day = (d) => fmtDate(d + 'T12:00:00').replace(/,\s*\d{1,2}:.*$/, '');
+  const dates = [ev.start_date, ev.end_date && ev.end_date !== ev.start_date ? ev.end_date : null]
+    .filter(Boolean).map(day).join(' – ');
+  const days = (s.days || []).filter((d) => d.date && d.date !== 'Not recorded');
+  const dayRows = days.map((d) => `<tr>
+      <td>${esc(day(d.date))}</td>
+      <td class="n">${esc(d.seen || 0)}</td><td class="n">${esc(d.completed || 0)}</td>
+      <td class="n">${esc(d.fillings || 0)}</td><td class="n">${esc(d.extractions || 0)}</td>
+      <td class="n">${esc(d.cleanings || 0)}</td>
+    </tr>`).join('');
+
+  return `
+    ${dates ? `<div class="lede">Clinic dates: ${esc(dates)}</div>` : ''}
+    ${r.source === 'kept'
+      ? '<div class="box muted">These figures are the totals kept when this clinic was closed and its patient records removed. They are complete; the records behind them are no longer on this computer.</div>'
+      : ''}
+
+    <h2>What the clinic did</h2>
+    <div class="kpis">
+      ${kpiCard(seen, 'Patients seen', s.pre_signups ? `${s.pre_signups} signed up online` : null)}
+      ${kpiCard(done, 'Visits finished', seen ? `${pct}% of those seen` : null)}
+      ${kpiCard(treatments, 'Procedures', 'fillings + extractions + cleanings')}
+    </div>
+    <div class="kpis">
+      ${kpiCard(Number(s.fillings) || 0, 'Fillings')}
+      ${kpiCard(Number(s.extractions) || 0, 'Extractions')}
+      ${kpiCard(Number(s.cleanings) || 0, 'Cleanings')}
+    </div>
+    <div class="kpis">
+      ${kpiCard(Number(s.xrays) || 0, 'X-rays taken', s.patients_with_xray ? `for ${s.patients_with_xray} patient(s)` : null)}
+      ${kpiCard(Number(s.flagged) || 0, 'With a medical flag', 'allergy, condition or pregnancy')}
+      ${kpiCard(Number(s.checked_out) || 0, 'Checked out')}
+    </div>
+
+    <h2>Who the clinic saw</h2>
+    <div class="two">
+      <div>${barBlock('By age', s.by_age, { limit: 5 })}${barBlock('By gender', s.by_gender, { limit: 4, relabel: genderLabel })}</div>
+      <div>${barBlock('By city', s.by_city, { limit: 6 })}${barBlock('By language', s.by_language, { limit: 4, relabel: langLabel })}</div>
+    </div>
+
+    ${dayRows ? `<h2>Day by day</h2>
+    <table class="rtable">
+      <thead><tr><th>Day</th><th class="n">Seen</th><th class="n">Finished</th><th class="n">Fillings</th><th class="n">Extractions</th><th class="n">Cleanings</th></tr></thead>
+      <tbody>${dayRows}</tbody>
+    </table>` : ''}`;
+}
+
+function rosterBody(data) {
+  const roster = data.roster || [];
+  const r = data.rollup || {};
+  if (!roster.length) {
+    return `<div class="pagebreak"></div><h2>Patient roster</h2>
+      <div class="warn">${r.source === 'kept'
+        ? 'This clinic has been closed and its patient records removed from this computer, so there is no roster to print. The figures on the previous page are the totals that were kept.'
+        : 'No patient records were found for this clinic.'}</div>`;
+  }
+  const yesNo = (b) => (b ? 'Yes' : '—');
+  const rows = roster.map((p) => {
+    // The per-tooth triage notes. They are in the database and travel in sync,
+    // and until now they appeared on no printed output at all — the progress
+    // note prints bare tooth numbers.
+    const teeth = (p.teeth || []).map((tn) => {
+      const n = p.teeth_notes ? p.teeth_notes[tn] : '';
+      return `#${esc(tn)}${n ? ' — ' + esc(n) : ''}`;
+    }).join('; ');
+    const detail = [
+      p.complaint ? `<b>Complaint:</b> ${esc(p.complaint)}` : '',
+      teeth ? `<b>Teeth of concern:</b> ${teeth}` : '',
+      p.triage_notes ? `<b>Triage notes:</b> ${esc(p.triage_notes)}` : '',
+    ].filter(Boolean).join(' &middot; ');
+    return `<tr>
+        <td>${esc(p.last_name)}, ${esc(p.first_name)}</td>
+        <td class="n">${p.age == null ? '—' : esc(p.age)}</td>
+        <td>${esc(p.city || '—')}</td>
+        <td class="n">${esc(p.fillings)}</td>
+        <td class="n">${esc(p.extractions)}</td>
+        <td>${yesNo(p.cleaning)}</td>
+        <td class="n">${esc(p.xrays)}</td>
+        <td>${esc(p.triaged_by_name || '—')}</td>
+        <td>${esc(p.provider_name || p.completed_by_name || '—')}${p.signed ? ' <span class="tnote">(signed)</span>' : ''}</td>
+      </tr>${detail ? `<tr><td colspan="9" class="tnote" style="padding-top:0">${detail}</td></tr>` : ''}`;
+  }).join('');
+  // The totals on this page are counted from the same roster rows, so a
+  // coordinator can add the column up and get the number printed beneath it.
+  const sum = (k) => roster.reduce((n, p) => n + (Number(p[k]) || 0), 0);
+  const cleanings = roster.filter((p) => p.cleaning).length;
+  return `<div class="pagebreak"></div>
+    <h2>Patient roster (${esc(roster.length)})</h2>
+    <div class="lede">Every patient on this clinic's list, with what was done. Counted the same way as the figures on the summary page.</div>
+    <table class="rtable">
+      <thead><tr>
+        <th>Patient</th><th class="n">Age</th><th>City</th>
+        <th class="n">Fill</th><th class="n">Extr</th><th>Cleaning</th><th class="n">X-ray</th>
+        <th>Triaged by</th><th>Treated by</th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+      <tfoot><tr>
+        <td><b>Total</b></td><td></td><td></td>
+        <td class="n"><b>${esc(sum('fillings'))}</b></td>
+        <td class="n"><b>${esc(sum('extractions'))}</b></td>
+        <td><b>${esc(cleanings)}</b></td>
+        <td class="n"><b>${esc(sum('xrays'))}</b></td>
+        <td></td><td></td>
+      </tr></tfoot>
+    </table>`;
+}
+
+// withRoster decides which of the TWO documents this is. They are titled
+// differently on purpose: the wrong one cannot be sent by accident if the cover
+// says which it is and the footer repeats it on every page.
+function buildClinicHtml(data, { withRoster = false } = {}) {
+  const d = data || {};
+  const ev = d.event || {};
+  const sub = [ev.name || (d.rollup && d.rollup.summary && d.rollup.summary.event_name), ev.location].filter(Boolean).join(' · ');
+  const title = withRoster ? 'Clinic Summary + Patient Roster' : 'Clinic Summary';
+  return `<!doctype html><html><head><meta charset="utf-8">${styles()}${clinicStyles()}</head>
+    <body><div class="page">
+      ${clinicHeader(title, sub)}
+      ${withRoster ? '' : '<div class="box muted">This summary contains <b>no patient names or identifying details</b> — it is safe to share with partners, funders and the wider community.</div>'}
+      ${withRoster ? '<div class="warn"><b>Contains patient names.</b> This copy is for the clinic’s own coordinators. Send the summary-only version to anyone outside the clinic.</div>' : ''}
+      ${clinicSummaryBody(d)}
+      ${withRoster ? rosterBody(d) : ''}
+      ${clinicFooter(withRoster)}
+    </div></body></html>`;
+}
+
+async function renderClinicPdf(data, opts) {
+  const html = buildClinicHtml(data, opts || {});
+  const win = new BrowserWindow({
+    show: false,
+    webPreferences: { offscreen: true, sandbox: true, contextIsolation: true },
+  });
+  try {
+    await win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
+    return await win.webContents.printToPDF({
+      printBackground: true,
+      margins: { marginType: 'none' },
+      pageSize: 'Letter',
+    });
+  } finally {
+    win.destroy();
+  }
 }
 
 function buildHtml(p, format) {
@@ -532,4 +816,4 @@ async function renderPdf(patient, format) {
   }
 }
 
-module.exports = { renderPdf, buildHtml };
+module.exports = { renderPdf, buildHtml, renderClinicPdf, buildClinicHtml };

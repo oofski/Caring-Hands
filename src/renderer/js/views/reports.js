@@ -97,7 +97,24 @@ export function renderReports(ctx) {
         el('div', { class: 'view-head-actions' }, [
           scopeSel,
           el('button', { class: 'btn btn--ghost btn--sm', onClick: load }, [icon('refresh', { size: 15 }), 'Refresh']),
-          store.is('admin') && patients.length ? el('button', { class: 'btn btn--primary btn--sm', onClick: async () => {
+          // The document a coordinator can actually be sent. Two of them: the
+          // summary carries no names and is safe for partners and funders; the
+          // roster names patients, so it is admin-only, exactly like the
+          // spreadsheet export. Only for ONE clinic — a season-wide sheet with
+          // “the clinic” in its title would be a lie on the page.
+          scope !== 'all' ? el('button', { class: 'btn btn--primary btn--sm', title: 'A shareable PDF with no patient names', onClick: async (e) => {
+            const btn = e.currentTarget; btn.disabled = true;
+            try { const r = await api.clinicSummaryPdf(scope); if (r.saved) toast(`Clinic summary saved to ${r.path}`, 'success'); }
+            catch (err) { toast(err.message, 'error'); }
+            finally { btn.disabled = false; }
+          } }, [icon('print', { size: 15 }), 'Clinic summary PDF']) : null,
+          scope !== 'all' && store.is('admin') ? el('button', { class: 'btn btn--ghost btn--sm', title: 'Includes every patient by name — for the clinic’s own coordinators', onClick: async (e) => {
+            const btn = e.currentTarget; btn.disabled = true;
+            try { const r = await api.clinicRosterPdf(scope); if (r.saved) toast(`Summary + roster (${r.patients} patient(s)) saved to ${r.path}`, 'success'); }
+            catch (err) { toast(err.message, 'error'); }
+            finally { btn.disabled = false; }
+          } }, [icon('users', { size: 15 }), '+ patient roster']) : null,
+          store.is('admin') && patients.length ? el('button', { class: 'btn btn--ghost btn--sm', onClick: async () => {
             try { const r = await api.exportEvent(scope); if (r.saved) toast(`Exported ${r.count} record(s)`, 'success'); } catch (e) { toast(e.message, 'error'); }
           } }, [icon('download', { size: 15 }), 'Export JSON']) : null,
         ]),

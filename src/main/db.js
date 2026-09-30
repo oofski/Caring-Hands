@@ -2481,6 +2481,67 @@ function reportRollup(scope) {
   };
 }
 
+// Everything one clinic's shareable report needs, in one call.
+//
+// Two things a coordinator gets from this that no existing output gives them:
+// the roster is counted with countFillings / countExtractions / didCleaning —
+// THE counting rules above — so the per-patient lines add up to the KPIs on the
+// facing page, which the two one-line summarisers in records.js and
+// treatmentSummary do not; and it carries `triaged_by_name` and the per-tooth
+// triage notes, which are in the database, travel in sync, and today appear on
+// no printed output at all.
+//
+// The roster is empty for a finished clinic — the people are gone and only the
+// de-identified totals were kept. rollup.source === 'kept' says so, and the
+// document has to print that rather than an empty table.
+function clinicReport(eventId) {
+  const evId = Number(eventId || getSetting('active_event_id'));
+  const event = db.prepare('SELECT * FROM events WHERE id = ?').get(evId) || null;
+  const rollup = reportRollup(evId);
+  const patients = db.prepare(
+    'SELECT * FROM patients WHERE event_id = ? ORDER BY last_name COLLATE NOCASE, first_name COLLATE NOCASE'
+  ).all(evId).map(rowToPatient);
+  const txOf = db.prepare('SELECT * FROM treatments WHERE patient_id = ?');
+  const trOf = db.prepare('SELECT * FROM triage WHERE patient_id = ?');
+  const xnOf = db.prepare('SELECT COUNT(*) AS n FROM xrays WHERE patient_id = ?');
+  const roster = patients.map((p) => {
+    const t = txOf.get(p.id);
+    const tr = trOf.get(p.id) || {};
+    const d = p.demographics || {};
+    return {
+      id: p.id,
+      last_name: p.last_name,
+      first_name: p.first_name,
+      age: p.age,
+      gender: p.gender || '',
+      language: p.language || '',
+      city: d.city ? d.city + (d.state ? ', ' + d.state : '') : '',
+      status: p.status,
+      complaint: tr.complaint || '',
+      triaged_by_name: tr.triaged_by_name || '',
+      triaged_at: tr.triaged_at || null,
+      teeth: safeJson(tr.teeth, []) || [],
+      teeth_notes: safeJson(tr.teeth_notes, {}) || {},
+      triage_notes: tr.notes || '',
+      fillings: countFillings(t),
+      extractions: countExtractions(t),
+      cleaning: didCleaning(t),
+      xrays: xnOf.get(p.id).n,
+      provider_name: (t && t.provider_name) || '',
+      completed_by_name: (t && t.completed_by_name) || '',
+      completed_at: (t && t.completed_at) || null,
+      signed: !!(t && t.locked),
+    };
+  });
+  return {
+    event: event ? { id: event.id, name: event.name, location: event.location, start_date: event.start_date, end_date: event.end_date } : null,
+    rollup,
+    roster,
+    roster_available: roster.length > 0,
+    generated_at: now(),
+  };
+}
+
 // Store (or refresh) an event's kept totals. Called before ANY path that removes
 // patients, so the numbers a clinic reports on can never be destroyed by a
 // deletion — only the people can.
@@ -3197,7 +3258,7 @@ module.exports = {
   arrivalReadiness, confirmArrival, routeFromVisitType, visitNeedsSurgeryConsent,
   saveTriage, saveTreatment,
   addXray, updateXrayTooth, getXray, listXrays, deleteXray,
-  recordClinicExport, lastClinicExport, finishPreflight,
+  recordClinicExport, lastClinicExport, finishPreflight, clinicReport,
   dashboardStats, listAudit, audit,
   backupTo, exportEventJson,
   exportClinicBundle, importClinicBundle, buildEventSummary, captureEventSummary, rebuildSummaryFromBundle,
