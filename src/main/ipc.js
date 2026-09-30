@@ -73,6 +73,7 @@ const PERMS = {
   'xray:add': ['admin', 'doctor', 'triage', 'emt'],
   'xray:setTooth': ['admin', 'doctor'],
   'xray:folderList': ['admin', 'doctor'],
+  'xray:folderCount': ['admin', 'doctor'],
   'xray:folderConfig': ['admin', 'doctor'],
   'xray:folderChoose': ['admin', 'doctor'],
   'xray:folderLock': ['admin', 'doctor'],
@@ -95,6 +96,7 @@ const PERMS = {
   'import:clinic': ['admin'],
   'event:finish': ['admin'],
   'event:purge': ['admin'],
+  'event:preflight': ['admin'],
   'reports:archived': ['admin', 'doctor'],
   'reports:rollup': ['admin', 'doctor'],
   'reports:rebuild': ['admin'],
@@ -193,7 +195,12 @@ function register(getMainWindow) {
     const backupPath = xlsxPath.replace(/\.xlsx$/i, '') + '.chbak.json';
     fs.writeFileSync(xlsxPath, xlsx.buildWorkbook(clinicSheets(bundle)));
     fs.writeFileSync(backupPath, JSON.stringify(bundle));
-    return { saved: true, xlsxPath, backupPath, patients: bundle.patients.length };
+    // The receipt that arms both destructive buttons. Recorded only after both
+    // files are on disk, so a failed write cannot license a deletion.
+    const receipt = db.recordClinicExport((bundle.event && bundle.event.id) || eventId, {
+      patients: bundle.patients.length, xlsxPath, backupPath,
+    });
+    return { saved: true, xlsxPath, backupPath, patients: bundle.patients.length, receipt };
   });
 
   handle('import:clinic', async () => {
@@ -216,6 +223,10 @@ function register(getMainWindow) {
   const syncBeforeRemoving = async () => {
     try { if (cloud.status().enabled) await cloud.syncOnce(); } catch (_e) { /* offline: proceed with local totals */ }
   };
+  // What is still outstanding before a clinic is closed for good. The image
+  // count from the DEXIS import folder is added by the caller, which is the only
+  // side that can read the disk.
+  handle('event:preflight', ({ eventId } = {}) => db.finishPreflight(eventId));
   handle('event:finish', async ({ eventId } = {}) => {
     await syncBeforeRemoving();
     return db.finishEvent(currentUser, eventId);
@@ -340,6 +351,22 @@ function register(getMainWindow) {
     if (locked !== undefined) db.setSetting('xray_folder_locked', locked ? '1' : '0');
     if (clearAfter !== undefined) db.setSetting('xray_clear_after_import', clearAfter ? '1' : '0');
     return xrayCfg();
+  });
+
+  // Just how many films are sitting there, for the finish-clinic pre-flight.
+  // folderList base64-encodes up to forty images to show them; counting must not
+  // read a single byte of pixel data on a clinic laptop.
+  handle('xray:folderCount', async () => {
+    const d = xrayDir();
+    if (!d) return xrayCfg({ needsSetup: true, count: 0 });
+    if (!fs.existsSync(d)) return xrayCfg({ error: 'That folder was not found on this computer.', count: 0 });
+    try {
+      const count = fs.readdirSync(d, { withFileTypes: true })
+        .filter((e) => e.isFile())
+        .filter((e) => { const x = path.extname(e.name).toLowerCase(); return !!(XRAY_RENDER_EXT[x] || XRAY_CONVERT_EXT[x]); })
+        .length;
+      return xrayCfg({ count });
+    } catch (e) { return xrayCfg({ error: e.message, count: 0 }); }
   });
 
   handle('xray:folderList', async () => {

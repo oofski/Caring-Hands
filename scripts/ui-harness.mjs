@@ -1388,6 +1388,9 @@ async function main() {
     log(Buffer.isBuffer(wb) && wb.slice(0, 2).toString() === 'PK', 'v1.6.0: the workbook is a real .xlsx file');
 
     // Finishing the clinic keeps the figures and removes the people.
+    // v1.11.0: finishing refuses without an export on this computer, so record
+    // the receipt the export handler writes. Its own check is below.
+    db.recordClinicExport(ev.id, { patients: 1, xlsxPath: '/tmp/Clinic.xlsx' });
     const fin = db.finishEvent(currentUser, ev.id);
     log(fin.removed === 1 && db.listPatients({ eventId: ev.id }).length === 0,
       'v1.6.0: finishing a clinic removes every patient record');
@@ -2245,6 +2248,7 @@ async function main() {
     const evK = db.createEvent(currentUser, { name: 'Keep Totals' });
     db.setActiveEvent(currentUser, evK.id);
     ['One', 'Two', 'Three', 'Four', 'Five'].forEach(seen);
+    db.recordClinicExport(evK.id, { patients: 5 });
     db.finishEvent(currentUser, evK.id);
     log(db.listEventReports().find((r) => r.event_id === evK.id).patients_seen === 5,
       'v1.7.3: (setup) Finish clinic keeps the totals');
@@ -2350,6 +2354,7 @@ async function main() {
     const evNow = db.createEvent(currentUser, { name: 'Running Today' });
     db.setActiveEvent(currentUser, evNow.id);
     seen('Attendee');
+    db.recordClinicExport(evNow.id, { patients: 1 });
     db.finishEvent(currentUser, evNow.id);
     log(!db.getActiveEvent(), 'v1.7.3: finishing a clinic leaves no clinic selected');
     let walkErr = '';
@@ -2488,6 +2493,7 @@ async function main() {
       'v1.9.0: changing which clinic is live does not touch either link');
 
     // Finishing a clinic stops it taking sign-ups nobody is watching.
+    db.recordClinicExport(cA.id, { patients: 0 });
     db.finishEvent(currentUser, cA.id);
     log(ev(cA.id).prereg_open === 0, 'v1.9.0: finishing a clinic closes its own link');
     log(ev(cB.id).prereg_open === 1, 'v1.9.0: ...and leaves every other clinic alone');
@@ -3128,6 +3134,116 @@ async function main() {
     // file types 04/12/1985 into the masked field.
     const kioskPt = db.listPatients({ eventId: 'all' }).find((x) => x.dob === '1985-04-12');
     log(!!kioskPt, 'v1.11.0: a patient checked in through the kiosk has an ISO date of birth stored');
+  }
+
+  // ---- v1.11.0: x-rays that turn up after the chair is cleared ----
+  {
+    currentUser = db.login('admin', 'admin');
+    const storeX = (await import('../src/renderer/js/store.js')).store;
+    storeX.setUser(currentUser);
+    const { renderProvider } = await import('../src/renderer/js/views/provider.js');
+    const xCtx = { navigate: () => {}, toast: () => {}, store: storeX, setDetail: () => {} };
+    const PNG = 'data:image/png;base64,AAAA';
+
+    const evX = db.createEvent(currentUser, { name: 'Late Films' });
+    db.setActiveEvent(currentUser, evX.id);
+    const mk = (first, last, route, visit) => {
+      const pt = db.createPatient(currentUser, {
+        first_name: first, last_name: last, demographics: {}, medical_history: {},
+        dental_history: { reason: 'Pain', visit_type: visit || 'filling' }, route, consents: SIGNED,
+      });
+      db.saveVitals(currentUser, pt.id, { bp_systolic: 120, bp_diastolic: 78, heart_rate: 70 });
+      db.routePatient(currentUser, pt.id, route);
+      return pt;
+    };
+
+    // 1. A film that arrives after the visit is marked complete.
+    const late = mk('Late', 'Film', 'dentist');
+    db.saveTreatment(currentUser, late.id, { fillings: [{ tooth: '19', surfaces: ['O'] }], provider_name: 'Dr Admin' }, 'complete');
+    const added = db.addXray(currentUser, late.id, { station: '2', image_png: PNG, note: 'PA #19', tooth: '19' });
+    log(added.count === 1 && db.listXrays(late.id).length === 1,
+      'v1.11.0: an x-ray still attaches to a visit that is already marked complete');
+    log(db.getPatient(late.id).triage.xray_count === 1,
+      'v1.11.0: ...and the chart x-ray count follows it');
+
+    // 2. A SIGNED-OFF chart refuses at the data layer, not just in the UI.
+    const sealed = mk('Signed', 'Off', 'dentist');
+    db.saveTreatment(currentUser, sealed.id, { fillings: [], provider_name: 'Dr Admin', provider_signature: PNG }, 'lock');
+    const refuses = (fn) => { try { fn(); return ''; } catch (e) { return e.message; } };
+    log(/locked and signed off/.test(refuses(() => db.addXray(currentUser, sealed.id, { image_png: PNG }))),
+      'v1.11.0: a signed-off chart refuses a new x-ray at the data layer, not only by hiding the button');
+    log(db.listXrays(sealed.id).length === 0, 'v1.11.0: ...and nothing was written');
+
+    // Re-opening is the honest path back in, and it works.
+    db.reopenTreatment(currentUser, sealed.id);
+    log(db.addXray(currentUser, sealed.id, { image_png: PNG, tooth: '3' }).count === 1,
+      'v1.11.0: ...re-opening the record lets the film in');
+    // Re-sign, then prove retag and delete are refused too: a locked record must
+    // not have its films silently re-labelled or removed either.
+    const xid = db.listXrays(sealed.id)[0].id;
+    db.saveTreatment(currentUser, sealed.id, { fillings: [], provider_name: 'Dr Admin', provider_signature: PNG }, 'lock');
+    log(/locked and signed off/.test(refuses(() => db.updateXrayTooth(currentUser, xid, '14'))),
+      'v1.11.0: a signed-off chart refuses having an x-ray re-assigned to another tooth');
+    log(/locked and signed off/.test(refuses(() => db.deleteXray(currentUser, xid))),
+      'v1.11.0: ...and refuses deleting one');
+    log(db.listXrays(sealed.id).length === 1 && db.listXrays(sealed.id)[0].tooth === '3',
+      'v1.11.0: ...leaving the film exactly as it was signed');
+
+    // 3. A patient the EMT sent only to the hygienist must still be reachable
+    //    from the dentist screen — the dentist is the only station with an x-ray
+    //    panel, so before this their late film had nowhere to go.
+    const hygOnly = mk('Hygiene', 'Only', 'hygienist', 'cleaning');
+    db.saveTreatment(currentUser, hygOnly.id, { cleaning: { adult_prophy: true }, provider_name: 'Dr Admin' }, 'complete');
+    const qv = renderProvider(xCtx, {});
+    document.body.append(qv);
+    for (let i = 0; i < 14; i++) await tick();
+    const finishedPane = Array.from(qv.querySelectorAll('details')).find((d) => /Finished today/.test(d.textContent));
+    log(!!finishedPane && /Only, Hygiene/.test(finishedPane.textContent),
+      'v1.11.0: a hygiene-only patient appears in the dentist’s Finished list, so a late x-ray can reach their chart');
+    log(/Film, Late/.test((finishedPane || qv).textContent),
+      'v1.11.0: ...alongside the dentist’s own finished patients');
+
+    // 4. The finish-clinic pre-flight counts what is about to be destroyed.
+    const stillWaiting = mk('Still', 'Waiting', 'dentist');
+    const pre = db.finishPreflight(evX.id);
+    log(pre.xrays === 2, 'v1.11.0: the finish-clinic pre-flight counts the x-ray images that finishing destroys');
+    log(pre.queued === 1, 'v1.11.0: ...and the patients still sitting in the queue');
+    log(pre.unsigned === 2, 'v1.11.0: ...and the charts nobody signed off');
+    log(pre.needs_export === true && pre.last_export === null,
+      'v1.11.0: ...and says the clinic has not been exported on this computer');
+
+    // 5. The interlock. "Finish clinic" used to be the ONE destructive button with
+    //    no export gate at all, and it is the one that destroys the images.
+    const blocked = refuses(() => db.finishEvent(currentUser, evX.id));
+    log(/Export/.test(blocked) && /x-ray image/.test(blocked),
+      'v1.11.0: finishing a clinic without an export is refused, and the refusal names the x-rays');
+    log(db.listPatients({ eventId: evX.id }).length === 4, 'v1.11.0: ...and not one record was removed');
+
+    // An export arms it, exactly as it already armed the sibling Delete button.
+    db.recordClinicExport(evX.id, { patients: 4, xlsxPath: '/tmp/Late-Films.xlsx', backupPath: '/tmp/Late-Films.chbak.json' });
+    const armed = db.finishPreflight(evX.id);
+    log(armed.needs_export === false && armed.last_export && armed.last_export.patients === 4,
+      'v1.11.0: an export receipt arms the finish button and is reported back');
+
+    // A record touched AFTER the export means the backup no longer matches.
+    // The wait is real: the receipt is stamped to the millisecond, and these two
+    // writes would otherwise land inside the same one.
+    await tick(); await tick();
+    db.addXray(currentUser, late.id, { image_png: PNG, note: 'second film' });
+    db.saveTreatment(currentUser, late.id, { fillings: [{ tooth: '19', surfaces: ['O'] }], clinical_notes: 'after the export', provider_name: 'Dr Admin' }, 'complete');
+    log(db.finishPreflight(evX.id).changes_since_export >= 2,
+      'v1.11.0: a record changed after the export is reported, so a stale backup cannot pass as protection');
+
+    log(db.finishEvent(currentUser, evX.id).removed === 4,
+      'v1.11.0: with an export on this computer, finishing the clinic goes through');
+    // Nothing to lose, nothing to export: a clinic already emptied can be closed.
+    const evEmpty = db.createEvent(currentUser, { name: 'Nobody Came' });
+    log(db.finishPreflight(evEmpty.id).needs_export === false,
+      'v1.11.0: a clinic with no patient records needs no export before it can be closed');
+    log(db.finishEvent(currentUser, evEmpty.id).ok === true, 'v1.11.0: ...and closing it is allowed');
+
+    currentUser = db.login('admin', 'admin');
+    storeX.setUser(currentUser);
   }
 
   await tick();

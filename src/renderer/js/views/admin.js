@@ -466,9 +466,50 @@ export function renderAdmin(ctx, params = {}) {
         class: 'btn btn--soft btn--sm',
         title: 'Keep the reporting totals, remove every patient record',
         onClick: async () => {
+          // Count what is outstanding BEFORE asking. The old dialog said "this
+          // cannot be undone" and nothing else — it never mentioned x-rays,
+          // which are the one thing finishing a clinic destroys outright, and it
+          // never noticed patients still sitting in the queue.
+          let pre;
+          try { pre = await api.finishPreflight(e.id); }
+          catch (err) { toast(err.message, 'error'); return; }
+          // Films the import folder is still holding belong to nobody yet. Only
+          // the main process can read the disk, so this is a separate call and a
+          // best-effort one — no folder configured is not a problem.
+          let waiting = 0;
+          try {
+            const f = await api.xrayFolderCount();
+            waiting = (f && Number(f.count)) || 0;
+          } catch (_e) { /* no import folder on this computer */ }
+
+          if (pre.needs_export) {
+            await modal({
+              title: 'Export this clinic first',
+              body: `Finishing deletes all <b>${pre.patients} patient record(s)</b>`
+                + `${pre.xrays ? ` and <b>${pre.xrays} x-ray image(s)</b>` : ''}`
+                + ' from this computer, the clinic cloud and every other station.'
+                + ' Nothing but the de-identified totals survives, and an x-ray cannot be recovered from those.'
+                + '<br><br>Open <b>Backup &amp; Export</b> in the sidebar, use “Export clinic (Excel + backup)”, then come back.',
+              confirmText: 'Got it',
+            });
+            return;
+          }
+
+          const outstanding = [
+            pre.queued ? `<li><b>${pre.queued} patient(s) are still in the queue</b> — nobody has marked them complete or dismissed.</li>` : '',
+            pre.unsigned ? `<li><b>${pre.unsigned} chart(s) are not signed off</b> — this is the last moment anyone can sign them.</li>` : '',
+            pre.xrays ? `<li><b>${pre.xrays} x-ray image(s) will be destroyed</b> — the kept report holds a count, never the films.</li>` : '',
+            waiting ? `<li><b>${waiting} image(s) are still waiting in the x-ray import folder</b> — attach them to a patient first or they belong to nobody.</li>` : '',
+            pre.changes_since_export ? `<li><b>${pre.changes_since_export} change(s) recorded since the last export</b> — export again so the backup matches what is here.</li>` : '',
+          ].filter(Boolean).join('');
+          const exp = pre.last_export;
           const ok = await modal({
             title: `Finish “${e.name}”?`,
-            body: 'The clinic’s <b>reporting totals are kept</b> — patients seen, procedures, and the breakdowns by age, gender, language and city — so this event still appears in Reports and grant returns.<br><br>Every <b>patient record is permanently removed</b> from this computer, the clinic cloud, and every other station. Export the clinic first if you want to be able to restore it.<br><br>This cannot be undone.',
+            body: 'The clinic’s <b>reporting totals are kept</b> — patients seen, procedures, and the breakdowns by age, gender, language and city — so this event still appears in Reports and grant returns.'
+              + '<br><br>Every <b>patient record is permanently removed</b> from this computer, the clinic cloud, and every other station — including <b>every x-ray image</b>, which only the backup file can bring back.'
+              + (outstanding ? `<br><br><b>Before you do:</b><ul style="margin:var(--space-2) 0 0; padding-left:1.2em">${outstanding}</ul>` : '')
+              + (exp ? `<br><br>Last export: <b>${exp.patients} patient record(s)</b>${exp.at ? ` on ${new Date(exp.at).toLocaleString()}` : ''}.<br><code>${exp.backupPath || exp.xlsxPath || ''}</code>` : '')
+              + '<br><br>This cannot be undone.',
             confirmText: 'Finish clinic & remove patient data',
             cancelText: 'Cancel',
             danger: true,
@@ -718,6 +759,46 @@ export function renderAdmin(ctx, params = {}) {
       'Export first — the delete button unlocks once you have saved a copy.',
     ]);
 
+    /* ---- X-ray import folder (v1.11.0) ---- */
+    // The app can already count and read the folder the x-ray machine writes to
+    // — that has been in the main process since v1.5 — but nothing in the app
+    // ever set the path, so the folder was never anything but empty. Without it
+    // “finishing the clinic with films nobody attached” cannot be detected at
+    // all, which is half of what the clinic asked for.
+    const folderLine = el('p', { class: 'muted small', style: 'margin:0' }, ['Checking…']);
+    const refreshFolder = async () => {
+      try {
+        const f = await api.xrayFolderCount();
+        clear(folderLine);
+        if (!f || f.needsSetup || !f.dir) {
+          folderLine.append('No folder set on this computer — the end-of-clinic check cannot warn about films nobody attached.');
+        } else if (f.error) {
+          folderLine.append(el('span', { style: 'color:var(--danger)' }, [f.error]));
+        } else {
+          folderLine.append(el('code', {}, [f.dir]), ' — ',
+            el('strong', {}, [`${f.count} image(s) waiting`]),
+            f.count ? ' to be attached to a patient.' : '. Nothing outstanding.');
+        }
+      } catch (e) { clear(folderLine); folderLine.append(e.message); }
+    };
+    refreshFolder();
+    const xrayFolderCard = el('div', { class: 'card' }, [
+        el('h3', { class: 'card-title' }, [icon('xray', { size: 15 }), 'X-ray import folder']),
+        el('p', { class: 'muted', style: 'margin:0 0 var(--space-3);' }, [
+          'Point this at the folder the x-ray machine saves to. The dentist still attaches each film to a chart by hand — this is so the app can tell you, ',
+          el('strong', {}, ['before you finish the clinic']),
+          ', that images are still sitting there unattached. Finishing a clinic destroys every x-ray it holds.',
+        ]),
+        folderLine,
+        el('div', { class: 'action-row', style: 'margin-top:var(--space-3);' }, [
+          el('button', { class: 'btn btn--ghost', onClick: async () => {
+            try { const r = await api.xrayFolderChoose(); if (r && !r.canceled) await refreshFolder(); }
+            catch (e) { toast(e.message, 'error'); }
+          } }, [icon('usb', { size: 16 }), 'Choose folder…']),
+          el('button', { class: 'btn btn--ghost', onClick: refreshFolder }, [icon('refresh', { size: 16 }), 'Re-check']),
+        ]),
+    ]);
+
     body.append(
       el('div', { class: 'card' }, [
         el('h3', { class: 'card-title' }, [icon('download', { size: 15 }), 'End of clinic — take the data with you']),
@@ -764,6 +845,7 @@ export function renderAdmin(ctx, params = {}) {
         ]),
         exportHint,
       ]),
+      xrayFolderCard,
       el('div', { class: 'card' }, [
         el('h3', { class: 'card-title' }, [icon('database', { size: 15 }), 'Backup & export']),
         el('p', { class: 'muted', style: 'margin:0 0 var(--space-4);' }, ['All data lives only on this device. Back up regularly to a USB drive or encrypted external drive, especially after each event.']),

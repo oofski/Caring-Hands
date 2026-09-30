@@ -1986,6 +1986,24 @@ function saveTreatment(actor, patientId, data, finalize) {
 /*  X-rays                                                             */
 /* ------------------------------------------------------------------ */
 
+// A signed-off chart refuses new films, retagged films and deletions.
+//
+// Until v1.11.0 this was enforced only by hiding the buttons: `locked` greyed
+// the x-ray panel out in provider.js but `xray:add` accepted the row anyway, so
+// anything that reached the channel another way — the import folder, a second
+// window, a stale screen left open from before the sign-off — wrote into a
+// record that prints "signed off" at the bottom. saveTreatment has refused this
+// since v1.0 (see its guard); the images were simply never given the same rule.
+//
+// "Re-open to correct" (reopenTreatment) clears `locked`, so the honest path to
+// a late x-ray on a signed chart is one click and is still open.
+function assertChartUnlocked(patientId, verb) {
+  const tx = db.prepare('SELECT locked FROM treatments WHERE patient_id = ?').get(patientId);
+  if (tx && tx.locked) {
+    throw new Error(`This record is locked and signed off. Re-open it to ${verb || 'change it'}.`);
+  }
+}
+
 function recountXrays(patientId) {
   const cnt = db.prepare('SELECT COUNT(*) AS n FROM xrays WHERE patient_id = ?').get(patientId).n;
   db.prepare('UPDATE triage SET xray_count = ? WHERE patient_id = ?').run(cnt, patientId);
@@ -1993,6 +2011,7 @@ function recountXrays(patientId) {
 }
 
 function addXray(actor, patientId, { station, image_png, note, tooth }) {
+  assertChartUnlocked(patientId, 'add an x-ray');
   const info = db.prepare(
     `INSERT INTO xrays (patient_id, station, image_png, note, tooth, created_at, updated_at) VALUES (?,?,?,?,?,?,?)`
   ).run(patientId, station || null, image_png, note || null, tooth != null && String(tooth).trim() ? String(tooth).trim() : null, now(), now());
@@ -2005,6 +2024,7 @@ function addXray(actor, patientId, { station, image_png, note, tooth }) {
 function updateXrayTooth(actor, id, tooth) {
   const row = db.prepare('SELECT patient_id FROM xrays WHERE id = ?').get(id);
   if (!row) throw new Error('X-ray not found.');
+  assertChartUnlocked(row.patient_id, 'change which tooth an x-ray belongs to');
   const t = tooth != null && String(tooth).trim() ? String(tooth).trim() : null;
   db.prepare('UPDATE xrays SET tooth = ?, updated_at = ? WHERE id = ?').run(t, now(), id);
   audit(actor, 'xray_tooth', 'patient', row.patient_id, `#${id} → ${t || '—'}`);
@@ -2024,6 +2044,12 @@ function listXrays(patientId) {
 
 function deleteXray(actor, id) {
   ensureUids();
+  {
+    // Before the tombstone, not after: a tombstone is broadcast to every laptop
+    // and cannot be taken back, so a refused delete must not leave one behind.
+    const own = db.prepare('SELECT patient_id FROM xrays WHERE id = ?').get(id);
+    if (own) assertChartUnlocked(own.patient_id, 'delete an x-ray');
+  }
   // An x-ray is a full sync entity carrying the image itself, so deleting it on
   // one laptop and nowhere else leaves the image on every other station and in
   // the cloud forever.
@@ -2527,6 +2553,100 @@ function rebuildSummaryFromBundle(actor, bundle) {
 // Remove every patient record for an event from THIS device and, via tombstones,
 // from the cloud and every other station. Irreversible by design — the caller is
 // expected to have exported a backup first, which the UI enforces.
+/* ------------------------------------------------------------------ */
+/*  Finishing a clinic — the pre-flight and the export interlock       */
+/* ------------------------------------------------------------------ */
+
+// Finishing a clinic is the single most destructive act in the app, and until
+// v1.11.0 it was also the least guarded one. `finishEvent` deletes every patient
+// row for the event; `xrays` is ON DELETE CASCADE with foreign_keys = ON, and the
+// deletion is tombstoned, so **every x-ray image is destroyed here, in the cloud,
+// and on every other laptop**. What survives is two integers in the kept summary.
+//
+// The sibling "Delete this clinic's patient data" button has refused to arm
+// until an export succeeded since v1.6.0 — but that gate lived in the admin
+// screen, so it protected one button and not the other, and not at all if the
+// channel was reached any other way. This moves it to where the deletion
+// actually happens.
+//
+// The receipt is a LOCAL setting on purpose. `settings` is not a sync entity, so
+// exporting on the front-desk laptop does not license the deletion from the
+// dentist's. The machine that pulls the trigger is the machine that must be
+// holding a copy.
+const exportReceiptKey = (evId) => `export_receipt_event_${Number(evId)}`;
+
+function recordClinicExport(eventId, info) {
+  const evId = Number(eventId || getSetting('active_event_id'));
+  if (!evId) return null;
+  const receipt = {
+    at: now(),
+    patients: Number((info && info.patients) || 0),
+    xlsxPath: (info && info.xlsxPath) || null,
+    backupPath: (info && info.backupPath) || null,
+  };
+  setSetting(exportReceiptKey(evId), JSON.stringify(receipt));
+  return receipt;
+}
+
+function lastClinicExport(eventId) {
+  const evId = Number(eventId || getSetting('active_event_id'));
+  if (!evId) return null;
+  const raw = getSetting(exportReceiptKey(evId));
+  return raw ? safeJson(raw, null) : null;
+}
+
+// What is still outstanding, so the confirmation can say it in numbers instead
+// of "this cannot be undone" and hope.
+function finishPreflight(eventId) {
+  const evId = Number(eventId || getSetting('active_event_id'));
+  const ev = db.prepare('SELECT id, name FROM events WHERE id = ?').get(evId);
+  if (!ev) throw new Error('Event not found.');
+  const one = (sql, ...args) => db.prepare(sql).get(...args).n;
+  const patients = one('SELECT COUNT(*) AS n FROM patients WHERE event_id = ?', evId);
+  // Anyone the clinic has not finished with. These people are still in the
+  // building; their records are about to be deleted out from under them.
+  const queued = one(
+    `SELECT COUNT(*) AS n FROM patients p LEFT JOIN triage t ON t.patient_id = p.id
+      WHERE p.event_id = ? AND COALESCE(t.status, 'waiting') NOT IN ('completed', 'dismissed')`, evId);
+  // Seen by a clinician, never signed off. Not an error — signing off is
+  // optional — but it is the last moment anyone can do it.
+  const unsigned = one(
+    `SELECT COUNT(*) AS n FROM patients p JOIN treatments x ON x.patient_id = p.id
+      WHERE p.event_id = ? AND COALESCE(x.locked, 0) = 0`, evId);
+  const xrays = one(
+    'SELECT COUNT(*) AS n FROM patients p JOIN xrays x ON x.patient_id = p.id WHERE p.event_id = ?', evId);
+  const lastExport = lastClinicExport(evId);
+  // An export from before the last half-dozen patients is worse than no export,
+  // because it looks like protection.
+  //
+  // Counted from the AUDIT LOG, not from `updated_at`. Those columns look like
+  // the obvious answer and are the wrong one: they are sync bookkeeping, written
+  // when collectSyncRows notices a row's content hash has moved, not when the
+  // row is written. saveTreatment never touches treatments.updated_at at all, so
+  // on a clinic that is offline all day — the normal case — it stays NULL while
+  // the chart fills up. audit_log.created_at is stamped by the write itself.
+  let changesSinceExport = 0;
+  if (lastExport && lastExport.at) {
+    changesSinceExport = one(
+      `SELECT COUNT(*) AS n FROM audit_log a JOIN patients p ON p.id = a.entity_id
+        WHERE a.entity = 'patient' AND p.event_id = ? AND a.created_at > ?`,
+      evId, lastExport.at);
+  }
+  return {
+    event_id: evId,
+    event_name: ev.name,
+    patients,
+    queued,
+    unsigned,
+    xrays,
+    last_export: lastExport,
+    changes_since_export: changesSinceExport,
+    // Nothing left to lose: a clinic whose records were already purged can be
+    // closed without exporting an empty file first.
+    needs_export: patients > 0 && !lastExport,
+  };
+}
+
 function purgeEventPatients(actor, eventId) {
   const evId = eventId || Number(getSetting('active_event_id'));
   const ev = db.prepare('SELECT * FROM events WHERE id = ?').get(evId);
@@ -2581,6 +2701,13 @@ function finishEvent(actor, eventId) {
   const evId = eventId || Number(getSetting('active_event_id'));
   const ev = db.prepare('SELECT * FROM events WHERE id = ?').get(evId);
   if (!ev) throw new Error('Event not found.');
+  // The interlock. See recordClinicExport above for why the receipt is local.
+  const pre = finishPreflight(evId);
+  if (pre.needs_export) {
+    throw new Error(`Export “${ev.name}” before finishing it — finishing deletes all ${pre.patients} patient record(s)`
+      + `${pre.xrays ? ` and ${pre.xrays} x-ray image(s)` : ''} from this computer, the clinic cloud and every other station.`
+      + ' Use “Export clinic (Excel + backup)” under Backup & Export first.');
+  }
   const summary = captureEventSummary(actor, evId);
   const purged = purgeEventPatients(actor, evId);
   db.prepare('UPDATE events SET active = 0 WHERE id = ?').run(evId);
@@ -3070,6 +3197,7 @@ module.exports = {
   arrivalReadiness, confirmArrival, routeFromVisitType, visitNeedsSurgeryConsent,
   saveTriage, saveTreatment,
   addXray, updateXrayTooth, getXray, listXrays, deleteXray,
+  recordClinicExport, lastClinicExport, finishPreflight,
   dashboardStats, listAudit, audit,
   backupTo, exportEventJson,
   exportClinicBundle, importClinicBundle, buildEventSummary, captureEventSummary, rebuildSummaryFromBundle,

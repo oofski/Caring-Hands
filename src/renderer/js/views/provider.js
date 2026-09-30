@@ -49,8 +49,13 @@ export function renderProvider(ctx, params = {}) {
     // this queue and there was no route back to the record, so a note the
     // dentist thought of a minute later had nowhere to go. They stay listed
     // here for the rest of the clinic.
-    const finished = sortedByName(patients.filter((p) => ['completed', 'dismissed'].includes(p.status)
-      && (p.route === 'dentist' || p.route === 'both' || p.route == null)));
+    //
+    // Every route, deliberately. A patient the EMT sent only to the hygienist
+    // was unreachable from here once their visit ended, which is exactly the
+    // patient whose x-ray turns up late: the dentist is the only station with
+    // an x-ray panel, so a hygiene-only chart had nowhere to put a film that
+    // arrived after the chair was cleared.
+    const finished = sortedByName(patients.filter((p) => ['completed', 'dismissed'].includes(p.status)));
     const row = (p) => el('tr', {}, [
       el('td', {}, [el('strong', {}, [`${p.last_name}, ${p.first_name}`]),
         p.on_thinner ? el('span', { class: 'pill pill--danger', style: 'margin-left:8px' }, ['Blood thinner']) : null,
@@ -80,7 +85,7 @@ export function renderProvider(ctx, params = {}) {
       ]),
       el('div', { class: 'card' }, [table(dentistQueue, 'No patients in the dentist queue yet — the EMT station sends patients here after vitals.')]),
       finished.length ? el('details', { class: 'collapse' }, [
-        el('summary', {}, [`Finished today (${finished.length}) — open one to add a note or correct it`]),
+        el('summary', {}, [`Finished today (${finished.length}) — open one to add a note, attach a late x-ray, or correct it`]),
         el('div', { class: 'collapse-body' }, [table(finished, '')]),
       ]) : null,
       atHygienist.length ? el('details', { class: 'collapse' }, [
