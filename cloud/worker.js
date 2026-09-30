@@ -1,4 +1,4 @@
-// Caring Hands — Cloud Sync Worker (v1.7.2)
+// Caring Hands — Cloud Sync Worker (v1.11.0)
 // =============================================================================
 // NO INSTALLS NEEDED. To deploy: create a Worker in the Cloudflare dashboard,
 // paste THIS ENTIRE FILE into its code editor, then:
@@ -15,7 +15,7 @@
 // See ./SYNC_CONTRACT.md for the exact API + schema this implements.
 
 const SERVICE = 'caring-hands-sync';
-const VERSION = '1.9.0';
+const VERSION = '1.11.0';
 // Smallest believable signature image. A 1x1 pixel is ~70 bytes and an empty
 // canvas of any size compresses to a few hundred; a real drawn signature is
 // comfortably above this. Deliberately conservative — the job here is to reject

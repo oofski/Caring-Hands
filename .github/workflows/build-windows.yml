@@ -52,22 +52,47 @@ jobs:
         continue-on-error: true
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.10.1-build.${{ github.run_number }}
-          name: Caring Hands v1.10.1 (build ${{ github.run_number }})
+          tag_name: v1.11.0-build.${{ github.run_number }}
+          name: Caring Hands v1.11.0 (build ${{ github.run_number }})
           prerelease: false
           make_latest: true
           body: |
-            ## Caring Hands Worldwide — Practice Management Software (v1.10.1)
+            ## Caring Hands Worldwide — Practice Management Software (v1.11.0)
 
             Offline-first dental clinic app for Windows. **Download the installer once — it auto-updates from here on.**
 
-            **New in v1.10.1 — the dashboard works for whoever is signed in**
+            **New in v1.11.0 — the six things the clinic asked for**
+
+            *Two dentists, one chart*
+            - **CRITICAL FIX: the second dentist to open a chart destroyed the first dentist's findings — silently.** With a triage dentist seeing the patient first and a treating dentist picking them up, every save by the treating dentist overwrote the triage complaint, teeth of concern, per-tooth notes and assessment notes with whatever was on their own screen, **and re-signed the whole thing in their name**. There is one triage record per patient and no history, so what was overwritten was gone. The treating dentist's save now touches only the two fields they own, and the triage attribution is written once, on the sign-off that made it — never again.
+            - **New: the treating dentist sees what triage found, before anything else.** A **Triage findings** panel sits at the top of the chart, right after the vitals: the chief complaint, the teeth of concern **with the note attached to each one**, the assessment notes, and **Triaged by** with a name and a time. It is read-only for anyone who did not record it. The hygienist sees the same panel. If nobody has triaged the patient it says so, because silence there reads as "nothing to worry about".
+            - **New: teeth flagged at triage are marked distinctly on the chart** — amber, with their own symbol so it does not depend on colour, and labelled in the legend. The treating dentist can see them and work around them but cannot re-tag or clear them.
+            - **New: the dentist queue has a Triage column** — who still needs a triage dentist, and who triaged the rest. Untriaged patients sort to the top, so the triage dentist works the top of the same list the treating dentist works the bottom of.
+
+            *The signature*
+            - **Fixed: the signature defaulted to the wrong dentist, and could print a forged record.** The printed name defaulted to whoever signed the chart first, so the treating dentist's note carried the triage dentist's name. Worse, a dentist who saved without signing got **their own name over the other dentist's ink** — and it printed that way. The name now defaults to whoever is signed in, a signature is only kept while the name beside it is unchanged, and a locked record still shows the person who actually signed it.
+
+            *Date of birth*
+            - **Fixed: the date of birth could not be entered on a phone.** Every date box was a calendar picker with no keyboard path, so a patient could fill the online form on a computer and not on their phone — which is how most of them arrive at a public link. It is now a box you **type**, `MM/DD/YYYY`, with the slashes put in for you. Impossible dates (month 13, 31 February, anything in the future) are refused where they are typed rather than being stored and causing trouble later. The check-in screen, the patient editor and the online sign-up form all changed together, and dates are stored in exactly the same format as before.
+
+            *X-rays after the clinic*
+            - **New: a film that turns up late can still reach the chart.** A patient the vitals station sent only to the hygienist had **no route back from the dentist screen** once their visit ended — and the dentist is the only station with an x-ray panel. Every finished patient now appears in the dentist's **Finished today** list, whatever route they took.
+            - **Fixed: "signed off" did not actually stop an x-ray being added.** The buttons were hidden, but the record still accepted new films, re-labelled ones and deletions. A signed chart now refuses all three; **Re-open to correct** is still one click away.
+            - **New: finishing a clinic now tells you what you are about to destroy.** Finishing deletes every patient record **and every x-ray image** from this computer, the clinic cloud and every other station — and the old dialog never said the word "x-ray", counted nothing, and, unlike the Delete button beside it, **had no export requirement at all**. It now refuses until this computer holds an export, and lists what is outstanding first: patients still in the queue, charts nobody signed off, how many images will be destroyed, images still waiting in the x-ray import folder, and whether anything has changed since the last export.
+            - **New: an X-ray import folder setting** under Backup & Export. Point it at the folder the x-ray machine writes to and the app can warn you, before you finish a clinic, that films are still sitting there unattached.
+
+            *A PDF you can send to anyone*
+            - **New: Reports → Clinic summary PDF.** A one-page report of a single clinic — patients seen, visits finished, fillings, extractions, cleanings, x-rays, who the clinic saw by age, gender, city and language, and a day-by-day table. It carries **no patient names or identifying details** and says so on its face, so it can go to partners, funders and the wider community as it is.
+            - **New: + patient roster** (administrators only) adds every patient by name with what was done, who triaged them and who treated them, and the per-tooth triage notes. Its columns add up to the figures on the summary page. It is titled and footed differently from the shareable version so the wrong one cannot be sent by mistake.
+            - **The printed patient record now carries the per-tooth triage notes and Triaged by.** Both were already recorded and shared between computers, and appeared on no printout at all.
+
+            **⚠️ This release needs the clinic server refreshed (now v1.11.0)** — the same one-time paste your admin has done before. Until it is pasted, the online sign-up form still shows a calendar picker for the date of birth. Nothing else in this release depends on it.
+            **From v1.10.1 — the dashboard works for whoever is signed in**
 
             - **Fixed: everyone except an administrator was shown a sidebar containing only "Dashboard".** The Clinic and Admin menus start collapsed, and everyone lands on the Dashboard — which is in neither menu — so nothing ever expanded them. A hygienist's only screen, **Cleanings**, was hidden behind a closed menu they had no reason to suspect; the same was true of **Arrivals** for the front desk, **Vitals** for the EMT, and **Check-Out**. The menus now start open, and if you collapse one it stays collapsed on that computer.
             - **New: clinicians see their own queue first.** The dashboard tiles count the whole clinic, so "Ready for treatment" included the dentist's patients — a number that told a hygienist nothing about their own chair. A **Waiting for you** tile now leads the row for the dentist and the hygienist, counting only the patients routed to them, and opens their station. Administrators still see the clinic-wide view.
             - Tiles for a station the signed-in role cannot open are no longer clickable, so nothing on the dashboard leads to a "you do not have access" message.
 
-            *No clinic-server update is needed for this release — the server is still v1.9.0.*
             **From v1.10.0 — three things the clinic asked for**
 
             - **The hygienist can now see blood pressure.** Their screen showed no vitals at all — not the blood pressure, not the heart rate, not whether the patient is on a blood thinner. Those are exactly what decides whether it is safe to scale someone, and the dentist has always had them. Both screens now read from one shared panel, so they can never drift apart again.
@@ -172,8 +197,8 @@ jobs:
             Every release from v1.0.2 to v1.6.9 — pre-registration, cloud sync, the reporting rebuild, the A–Z patient lists, per-event staff, the USB workflow and the rest — is listed with its full notes at
             https://github.com/oofski/Caring-Hands/releases
 
-            - **Caring-Hands-Setup-1.10.1.exe** — installer (recommended; required for auto-update).
-            - **Caring-Hands-Portable-1.10.1.exe** — portable (no auto-update).
+            - **Caring-Hands-Setup-1.11.0.exe** — installer (recommended; required for auto-update).
+            - **Caring-Hands-Portable-1.11.0.exe** — portable (no auto-update).
 
             First sign-in: `admin / admin` — then create your staff accounts. All clinical data stays on the device unless you enable Cloud Sync.
           files: |
@@ -197,7 +222,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          tag="v1.10.1-build.${{ github.run_number }}"
+          tag="v1.11.0-build.${{ github.run_number }}"
           for attempt in 1 2 3; do
             missing=0
             for f in release/*.exe release/latest.yml release/*.blockmap; do
@@ -223,7 +248,7 @@ jobs:
       - name: Verify both installers are on the release
         shell: bash
         run: |
-          tag="v1.10.1-build.${{ github.run_number }}"
+          tag="v1.11.0-build.${{ github.run_number }}"
           api="https://api.github.com/repos/${{ github.repository }}/releases/tags/$tag"
           json=$(curl -sS -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" "$api")
           names=$(echo "$json" | grep -o '"name": *"[^"]*\.exe"' || true)

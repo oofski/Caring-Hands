@@ -173,7 +173,7 @@ async function main() {
       h.data &&
       h.data.ok === true &&
       h.data.service === 'caring-hands-sync' &&
-      h.data.version === '1.9.0' &&
+      h.data.version === '1.11.0' &&
       h.data.seq === true &&
       typeof h.data.time === 'string'
   );
