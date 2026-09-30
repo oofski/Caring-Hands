@@ -117,6 +117,12 @@ export function renderProvider(ctx, params = {}) {
     const xrayCountEl = el('span', { class: 'xray-count-badge' }, [icon('xray', { size: 16 }), el('span', {}, [String(xrays.length)])]);
 
     /* ---------- Odontogram (the mouth) — click a tooth to tag + note ---------- */
+    // Teeth the TRIAGE dentist flagged. Held here rather than re-read from the
+    // chart so it cannot be disturbed mid-update, and immutable for this screen
+    // — the treating dentist may not add or remove a triage flag, which also
+    // stops "Mark all visible cleaned" (which bypasses txOptions) from wiping
+    // every flag on the chart.
+    const concernTeeth = new Set(tr.teeth || []);
     const odo = Odontogram({
       mode: 'adult',
       teeth: initialTeeth(tx, tr),
@@ -635,9 +641,14 @@ export function renderProvider(ctx, params = {}) {
     /* ---------- helpers to collect + mark ---------- */
     function computeMarksLive() {
       const m = {};
+      // Triage concerns are seeded FIRST so treatment can overwrite them, and
+      // seeded at all because setMarks drops any marked tooth that is missing
+      // from this map and has no note — without this line a triage flag
+      // disappeared the moment the dentist touched a filling row.
+      concernTeeth.forEach((id) => { m[id] = 'concern'; });
       Array.from(fillingRows.children).forEach((r) => { const f = r._get(); if (f.tooth) m[f.tooth] = 'filling'; });
       Array.from(extractRows.children).forEach((r) => { const x = r._get(); if (x.tooth) m[x.tooth] = 'extraction'; });
-      (cleanState.teeth || []).forEach((id) => { if (!m[id]) m[id] = 'cleaning'; });
+      (cleanState.teeth || []).forEach((id) => { if (!m[id] || m[id] === 'concern') m[id] = 'cleaning'; });
       return m;
     }
     // Manual row edits reflect back onto the mouth (silent — no onTag loop).
@@ -1003,7 +1014,13 @@ function initialTeeth(tx, tr) {
   (tx.fillings || []).forEach((f) => { if (f.tooth) data[f.tooth] = { tx: 'filling', note: f.note || '' }; });
   (tx.extractions || []).forEach((x) => { if (x.tooth && !x.other) data[x.tooth] = { tx: 'extraction', note: x.note || '' }; });
   ((tx.cleaning && tx.cleaning.teeth) || []).forEach((id) => { if (!data[id]) data[id] = { tx: 'cleaning', note: '' }; });
-  (tr.teeth || []).forEach((id) => { if (!data[id]) data[id] = { tx: null, note: (tr.teeth_notes && tr.teeth_notes[id]) || '' }; });
+  // A tooth flagged at TRIAGE gets its own mark. It used to be `tx: null`,
+  // which renders with the generic 'selected' class — visually identical to a
+  // tooth the dentist merely tapped, so a triage finding was invisible.
+  // Treatment is seeded first and wins the tooth: the treatment is the newer,
+  // more specific fact, and the tooth still appears under Teeth of concern in
+  // the triage findings card, which reads the stored row rather than the chart.
+  (tr.teeth || []).forEach((id) => { if (!data[id]) data[id] = { tx: 'concern', note: (tr.teeth_notes && tr.teeth_notes[id]) || '' }; });
   Object.entries(tr.teeth_notes || {}).forEach(([id, note]) => { if (data[id] && !data[id].note) data[id].note = note; });
   return data;
 }

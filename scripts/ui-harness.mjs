@@ -2948,6 +2948,47 @@ async function main() {
     store.setUser(currentUser);
   }
 
+  // ---- v1.11.0: a triage-flagged tooth looks different, and stays flagged ----
+  {
+    currentUser = db.login('admin', 'admin');
+    const store = (await import('../src/renderer/js/store.js')).store;
+    store.setUser(currentUser);
+    const { renderProvider } = await import('../src/renderer/js/views/provider.js');
+    const odoCtx = { navigate: () => {}, toast: () => {}, store, setDetail: () => {} };
+
+    const op = db.createPatient(currentUser, {
+      first_name: 'Odo', last_name: 'Concern', demographics: {}, medical_history: {},
+      dental_history: { reason: 'Pain', visit_type: 'filling' }, route: 'dentist', consents: SIGNED,
+    });
+    db.saveVitals(currentUser, op.id, { bp_systolic: 120, bp_diastolic: 76, heart_rate: 68 });
+    db.routePatient(currentUser, op.id, 'dentist');
+    const alphaU = db.login('alpha', 'x');
+    db.saveTriage(alphaU, op.id, { teeth: ['20', '30'], teeth_notes: { 20: 'deep caries' }, notes: 'see #20' }, { attribute: true });
+
+    const oNode = renderProvider(odoCtx, { id: op.id });
+    document.body.append(oNode);
+    for (let i = 0; i < 16; i++) await tick();
+
+    const tooth = (id) => oNode.querySelector(`.odo-tooth[data-id="${id}"]`);
+    log(!!tooth('20') && tooth('20').classList.contains('mark-concern'),
+      'v1.11.0: a tooth flagged at triage carries its own mark, not the generic "selected"');
+    log(/Triage concern/.test(oNode.textContent), 'v1.11.0: ...and the chart legend explains that mark');
+
+    // THE TRAP: setMarks drops a marked tooth that is absent from the incoming
+    // map and has no note. Tooth 30 was flagged with NO note, so touching a
+    // filling row used to make its flag vanish.
+    const toothInputs = Array.from(oNode.querySelectorAll('input')).filter((i) => /tooth/i.test(i.placeholder || ''));
+    if (toothInputs.length) setInput(toothInputs[0], '19');
+    for (let i = 0; i < 8; i++) await tick();
+    log(!!tooth('30') && tooth('30').classList.contains('mark-concern'),
+      'v1.11.0: a note-less triage flag survives the dentist editing a treatment row');
+    log(!!tooth('19') && tooth('19').classList.contains('mark-filling'),
+      'v1.11.0: ...and the tooth being treated marks as a filling');
+
+    currentUser = db.login('admin', 'admin');
+    store.setUser(currentUser);
+  }
+
   await tick();
   if (errors.length) errors.forEach((e) => log(false, 'RUNTIME: ' + e));
   const failed = results.filter((r) => !r[0]).length;

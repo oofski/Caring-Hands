@@ -52,7 +52,11 @@ export function Odontogram({ mode = 'adult', teeth = {}, selected = [], onChange
   // Which tag options the tooth popover offers. Lets a role-specific screen keep
   // the odontogram but only expose its own service (doctor: fillings/extractions,
   // hygienist: cleaning). Defaults to all three for general use.
-  const TX_LABELS = { filling: 'Filling', extraction: 'Extraction', cleaning: 'Cleaning' };
+  // 'concern' is a TRIAGE finding, not a treatment: the triage dentist flags a
+  // tooth and the treating dentist works from it. It is offered only on a
+  // screen that passes it in txOptions, so a treating dentist sees the mark
+  // but cannot re-tag or clear it.
+  const TX_LABELS = { concern: 'Triage concern', filling: 'Filling', extraction: 'Extraction', cleaning: 'Cleaning' };
   const txOpts = (Array.isArray(txOptions) && txOptions.length ? txOptions : ['filling', 'extraction', 'cleaning'])
     .filter((tx) => TX_LABELS[tx]);
   // Normalize incoming teeth (accepts {id:'filling'} or {id:{tx,note}}) + selected ids.
@@ -104,7 +108,10 @@ export function Odontogram({ mode = 'adult', teeth = {}, selected = [], onChange
       s('line', { class: 'groove', x1: -w / 2 + 5, y1: -4, x2: w / 2 - 5, y2: -4, stroke: '#cfd5dc', 'stroke-width': 1 }),
       s('line', { class: 'groove', x1: 0, y1: -h / 2 + 6, x2: 0, y2: h / 2 - 6, stroke: '#cfd5dc', 'stroke-width': 1 }),
       s('line', { class: 'xmark', x1: -w / 2 + 4, y1: -h / 2 + 4, x2: w / 2 - 4, y2: h / 2 - 4, stroke: 'transparent' }),
-      s('line', { class: 'xmark', x1: w / 2 - 4, y1: -h / 2 + 4, x2: -w / 2 + 4, y2: h / 2 - 4, stroke: 'transparent' })
+      s('line', { class: 'xmark', x1: w / 2 - 4, y1: -h / 2 + 4, x2: -w / 2 + 4, y2: h / 2 - 4, stroke: 'transparent' }),
+      // Triage concern also carries a shape, not only a colour — a clinic screen
+      // in daylight is exactly where colour-only encoding fails.
+      s('circle', { class: 'cmark', cx: 0, cy: 6, r: 3, fill: 'transparent' })
     );
     g.addEventListener('click', (e) => { e.stopPropagation(); openPopover(id, g); });
     return g;
@@ -125,7 +132,7 @@ export function Odontogram({ mode = 'adult', teeth = {}, selected = [], onChange
     const lab = svg.querySelector(`.tnum-g[data-id="${cssEsc(id)}"]`);
     const d = toothData[id];
     if (g) {
-      g.classList.remove('sel', 'mark-filling', 'mark-extraction', 'mark-cleaning', 'has-note');
+      g.classList.remove('sel', 'mark-concern', 'mark-filling', 'mark-extraction', 'mark-cleaning', 'has-note');
       if (d) {
         if (d.tx) g.classList.add('mark-' + d.tx); else g.classList.add('sel');
         if (d.note) g.classList.add('has-note');
@@ -195,8 +202,20 @@ export function Odontogram({ mode = 'adult', teeth = {}, selected = [], onChange
 
     const foot = document.createElement('div');
     foot.className = 'odo-pop-foot';
-    const clearB = document.createElement('button'); clearB.className = 'btn btn--ghost btn--sm'; clearB.type = 'button'; clearB.textContent = 'Clear tooth';
-    clearB.onclick = () => { const had = !!toothData[id]; delete toothData[id]; applyTooth(id); closePopover(); if (had) { emit(); if (onUntag) onUntag(id); } };
+    // A tooth flagged at triage cannot be cleared by a screen that cannot flag
+    // one. This is what actually enforces "the treating dentist may read the
+    // triage findings but not edit them" — hiding the controls is cosmetic.
+    const cur0 = toothData[id];
+    const readOnlyConcern = !!(cur0 && cur0.tx === 'concern' && !txOpts.includes('concern'));
+    let clearB = null;
+    if (readOnlyConcern) {
+      clearB = document.createElement('span');
+      clearB.className = 'subtle small';
+      clearB.textContent = 'Flagged at triage — tag your treatment on top of it.';
+    } else {
+      clearB = document.createElement('button'); clearB.className = 'btn btn--ghost btn--sm'; clearB.type = 'button'; clearB.textContent = 'Clear tooth';
+      clearB.onclick = () => { const had = !!toothData[id]; delete toothData[id]; applyTooth(id); closePopover(); if (had) { emit(); if (onUntag) onUntag(id); } };
+    }
     const doneB = document.createElement('button'); doneB.className = 'btn btn--primary btn--sm'; doneB.type = 'button'; doneB.textContent = 'Done';
     doneB.onclick = () => {
       toothData[id] = { tx: chosen || null, note: note.value.trim() };
@@ -242,13 +261,18 @@ export function Odontogram({ mode = 'adult', teeth = {}, selected = [], onChange
   modeWrap.className = 'odo-mode';
   modeWrap.append(Object.assign(document.createElement('span'), { className: 'field-label', textContent: 'Dentition' }), modeSel);
 
+  // Built from the options this screen actually offers. It used to be hard-coded,
+  // so the hygienist's cleaning-only chart advertised Filling and Extraction keys
+  // its popover never offered.
   const legend = document.createElement('div');
   legend.className = 'odo-legend';
   legend.innerHTML =
     '<span><i class="odo-key odo-key--sel"></i>Selected</span>' +
-    '<span><i class="odo-key odo-key--filling"></i>Filling</span>' +
-    '<span><i class="odo-key odo-key--extraction"></i>Extraction</span>' +
-    '<span><i class="odo-key odo-key--cleaning"></i>Cleaning</span>';
+    txOpts.map((tx) => `<span><i class="odo-key odo-key--${tx}"></i>${TX_LABELS[tx]}</span>`).join('') +
+    // A triage concern is shown to the treating dentist even though they cannot
+    // tag one, so the key has to be there to explain the mark.
+    (!txOpts.includes('concern') && Object.values(toothData).some((d) => d && d.tx === 'concern')
+      ? '<span><i class="odo-key odo-key--concern"></i>Triage concern</span>' : '');
 
   // Quadrant zoom segmented control (UR / UL / LR / LL / All).
   const quadWrap = document.createElement('div');
@@ -302,6 +326,14 @@ export function Odontogram({ mode = 'adult', teeth = {}, selected = [], onChange
     get,
     getSelected: () => Object.keys(toothData),
     getNotes: () => get().notes,
+    // Only the teeth flagged at TRIAGE, and only their notes. getSelected()
+    // returns every tagged tooth including the treating dentist's own work,
+    // which is how the treating dentist's teeth ended up saved as triage
+    // findings in the first place.
+    getConcern: () => Object.keys(toothData).filter((id) => toothData[id] && toothData[id].tx === 'concern'),
+    getConcernNotes: () => Object.fromEntries(Object.entries(toothData)
+      .filter(([, d]) => d && d.tx === 'concern' && d.note)
+      .map(([id, d]) => [id, d.note])),
     getTeeth: () => get().teeth,
     set: (ids) => { Object.keys(toothData).forEach((k) => delete toothData[k]); (ids || []).forEach((id) => { toothData[id] = { tx: null, note: '' }; }); render(); renderSelectedList(); },
     setTeeth: (obj) => { Object.keys(toothData).forEach((k) => delete toothData[k]); seed(obj, []); render(); renderSelectedList(); },

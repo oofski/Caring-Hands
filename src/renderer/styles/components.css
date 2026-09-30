@@ -756,3 +756,13 @@ body:has(.kiosk-gate) .toast-host{ bottom:96px; }
 }
 .addendum-meta{ font-size:var(--fs-2xs); font-weight:var(--fw-semibold); color:var(--text-muted); margin-bottom:3px; }
 .addendum-body{ font-size:var(--fs-sm); color:var(--text); white-space:pre-wrap; overflow-wrap:anywhere; }
+
+/* ---- Triage concern: a tooth the TRIAGE dentist flagged ----
+   Amber is the one semantic colour this chart had not spoken for (navy is
+   Selected, teal Filling, coral Extraction, green Cleaning), and it reads as
+   "unresolved — look at this", which is what a triage flag means. The circle
+   glyph carries the same meaning without relying on colour. */
+.odo-key--concern{ background:var(--warning); border-color:var(--warning); }
+.odo-tooth.mark-concern .crown{ fill:var(--warning-soft); stroke:var(--warning); stroke-width:1.8; stroke-dasharray:none; }
+.odo-tooth.mark-concern .cmark{ fill:var(--warning); }
+.tooth-tag--concern{ background:var(--warning-soft); color:var(--warning); border-color:var(--warning-border); }
