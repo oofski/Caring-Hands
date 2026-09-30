@@ -2775,6 +2775,95 @@ async function main() {
     log(!!ev, '(setup) a clinic was active for these checks');
   }
 
+  // ---- v1.11.0: the signature names the dentist who is signing ----
+  {
+    currentUser = db.login('admin', 'admin');
+    const store = (await import('../src/renderer/js/store.js')).store;
+    store.setUser(currentUser);
+    db.createEvent(currentUser, { name: 'Sig Clinic', location: 'S' });
+    db.createUser(currentUser, { username: 'alpha', full_name: 'Dr Alpha', role: 'doctor', password: 'x' });
+    db.createUser(currentUser, { username: 'beta', full_name: 'Dr Beta', role: 'doctor', password: 'x' });
+
+    const mkSig = (last) => {
+      const q = db.createPatient(currentUser, {
+        first_name: 'Sig', last_name: last, demographics: {}, medical_history: {},
+        dental_history: { reason: 'Filling', visit_type: 'filling' }, route: 'dentist', consents: SIGNED,
+      });
+      db.saveVitals(currentUser, q.id, { bp_systolic: 120, bp_diastolic: 76, heart_rate: 68 });
+      db.routePatient(currentUser, q.id, 'dentist');
+      return q;
+    };
+    const { renderProvider } = await import('../src/renderer/js/views/provider.js');
+    const nameOf = (node) => Array.from(node.querySelectorAll('input')).find((i) => i.placeholder === 'Printed name');
+    const asUser = async (u) => { const r = await window.api.authLogin({ username: u, password: 'x' }); currentUser = db.login(u, 'x'); store.setUser(r.data); return r; };
+    const sigCtx = { navigate: () => {}, toast: () => {}, store, setDetail: () => {} };
+
+    // Alpha works the chart and saves progress, stamping their name.
+    const sp = mkSig('Handover');
+    await asUser('alpha');
+    db.saveTreatment(currentUser, sp.id, { fillings: [{ tooth: '19' }], provider_name: 'Dr Alpha', provider_signature: 'data:image/png;base64,AAAA' }, false);
+
+    // Beta opens the same chart.
+    await asUser('beta');
+    const bNode = renderProvider(sigCtx, { id: sp.id });
+    document.body.append(bNode);
+    for (let i = 0; i < 14; i++) await tick();
+    log(!!nameOf(bNode) && nameOf(bNode).value === 'Dr Beta',
+      'v1.11.0: the printed name defaults to the dentist SIGNED IN, not the stored name');
+
+    // Saving without drawing must not carry Alpha's ink under Beta's name.
+    const saveBtn = Array.from(bNode.querySelectorAll('button')).find((b) => /Save progress/i.test(b.textContent));
+    if (saveBtn) {
+      saveBtn.click();
+      for (let i = 0; i < 10; i++) await tick();
+      const after = db.getPatient(sp.id).treatment;
+      log(after.provider_name === 'Dr Beta', 'v1.11.0: ...and the save records the signing dentist');
+      log(after.provider_signature == null,
+        'v1.11.0: ...while the previous dentist\'s signature is NOT carried over (got: ' + String(after.provider_signature).slice(0, 24) + ')');
+    } else {
+      log(false, 'v1.11.0: (setup) could not find Save progress');
+      log(false, 'v1.11.0: (setup) could not find Save progress');
+    }
+
+    // Drawing a signature stores it.
+    const bNode2 = renderProvider(sigCtx, { id: sp.id });
+    document.body.append(bNode2);
+    for (let i = 0; i < 14; i++) await tick();
+    drawSig(bNode2);
+    const saveBtn2 = Array.from(bNode2.querySelectorAll('button')).find((b) => /Save progress/i.test(b.textContent));
+    if (saveBtn2) { saveBtn2.click(); for (let i = 0; i < 10; i++) await tick(); }
+    log(String(db.getPatient(sp.id).treatment.provider_signature || '').startsWith('data:image'),
+      'v1.11.0: a drawn signature is stored');
+
+    // The same dentist resuming keeps their OWN ink.
+    const keepP = mkSig('Resume');
+    await asUser('alpha');
+    db.saveTreatment(currentUser, keepP.id, { fillings: [{ tooth: '3' }], provider_name: 'Dr Alpha', provider_signature: 'data:image/png;base64,KEEP' }, false);
+    const aNode = renderProvider(sigCtx, { id: keepP.id });
+    document.body.append(aNode);
+    for (let i = 0; i < 14; i++) await tick();
+    const aSave = Array.from(aNode.querySelectorAll('button')).find((b) => /Save progress/i.test(b.textContent));
+    if (aSave) { aSave.click(); for (let i = 0; i < 10; i++) await tick(); }
+    log(db.getPatient(keepP.id).treatment.provider_signature === 'data:image/png;base64,KEEP',
+      'v1.11.0: the same dentist resuming keeps their own signature');
+
+    // A LOCKED record is history: it must show who actually signed it.
+    const lockP = mkSig('Locked');
+    await asUser('alpha');
+    db.saveTreatment(currentUser, lockP.id, { fillings: [{ tooth: '5' }], provider_name: 'Dr Alpha', provider_signature: 'data:image/png;base64,LOCK' }, 'lock');
+    await asUser('beta');
+    const lNode = renderProvider(sigCtx, { id: lockP.id });
+    document.body.append(lNode);
+    for (let i = 0; i < 14; i++) await tick();
+    const lName = nameOf(lNode);
+    log(!!lName && lName.value === 'Dr Alpha',
+      'v1.11.0: a LOCKED record still shows the dentist who signed it, not the reader');
+    log(!!lName && lName.disabled === true, 'v1.11.0: ...and that field stays read-only');
+
+    currentUser = db.login('admin', 'admin');
+    store.setUser(currentUser);
+  }
+
   await tick();
   if (errors.length) errors.forEach((e) => log(false, 'RUNTIME: ' + e));
   const failed = results.filter((r) => !r[0]).length;

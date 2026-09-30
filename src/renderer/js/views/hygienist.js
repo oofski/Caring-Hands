@@ -141,12 +141,26 @@ export function renderHygienist(ctx, params = {}) {
     }));
 
     const notes = el('textarea', { class: 'input textarea', rows: 2, placeholder: 'Cleaning notes (optional)', disabled: locked ? 'disabled' : null }, [tx.clinical_notes || '']);
-    const hygName = el('input', { class: 'input', placeholder: 'Printed name', value: tx.provider_name || (me ? me.full_name : ''), disabled: locked ? 'disabled' : null });
+    // Defaults to whoever is signed in, not to the stored name — same rule and
+    // same reason as the dentist screen. The stored name only wins on a LOCKED
+    // record, where the field is history rather than an entry box.
+    const hygName = el('input', {
+      class: 'input', placeholder: 'Printed name',
+      value: locked
+        ? (tx.provider_name || '')
+        : ((me && me.full_name) || tx.provider_name || ''),
+      disabled: locked ? 'disabled' : null,
+    });
     const sigPad = SignaturePad();
 
     // Build a full treatment payload that PRESERVES the doctor's fillings/
     // extractions/anesthetic and only rewrites the cleaning + sign-off fields.
     function buildPayload() {
+      // Name + ink move together — see provider_signature below.
+      const drawn = sigPad.getDataUrl();
+      const nameNow = hygName.value.trim();
+      const keepsOldSig = !drawn && !!tx.provider_signature
+        && nameNow === String(tx.provider_name || '').trim();
       return {
         fillings: tx.fillings || [],
         extractions: tx.extractions || [],
@@ -154,8 +168,11 @@ export function renderHygienist(ctx, params = {}) {
         other_procedures: tx.other_procedures || null,
         cleaning: { ...cleanState, teeth: [...teeth], quad_detail: quadDetail.value.trim() },
         clinical_notes: notes.value.trim() || tx.clinical_notes || null,
-        provider_name: hygName.value.trim() || tx.provider_name || null,
-        provider_signature: sigPad.getDataUrl() || tx.provider_signature || null,
+        // No `|| tx.provider_name` fallback: it let a hygienist who merely
+        // opened a dentist-signed chart and pressed Save keep the dentist's
+        // name on their own save.
+        provider_name: nameNow || null,
+        provider_signature: drawn || (keepsOldSig ? tx.provider_signature : null),
       };
     }
 

@@ -508,9 +508,20 @@ export function renderProvider(ctx, params = {}) {
     renderGallery();
 
     /* ---------- Sign-off ---------- */
-    // Pre-filled from whoever is signed in, so requiring it costs a glance
-    // rather than a re-type.
-    const providerName = el('input', { class: 'input', placeholder: 'Printed name', value: tx.provider_name || (store.user && store.user.full_name) || '' });
+    // Defaults to WHOEVER IS SIGNED IN, not to whatever name is stored.
+    //
+    // It used to be the other way round, which broke the moment two dentists
+    // saw one patient: a triage dentist saving progress stamped their name, and
+    // the treatment dentist then inherited it and signed under it. The stored
+    // name only wins on a LOCKED record, where the field is history — a
+    // disabled input still displays its value, so showing the current user
+    // there would misattribute a record that is already signed.
+    const providerName = el('input', {
+      class: 'input', placeholder: 'Printed name',
+      value: locked
+        ? (tx.provider_name || '')
+        : ((store.user && store.user.full_name) || tx.provider_name || ''),
+    });
     if (locked) providerName.disabled = true;
     const sigPad = SignaturePad();
 
@@ -633,6 +644,15 @@ export function renderProvider(ctx, params = {}) {
     function refreshMarks() { odo.setMarks(computeMarksLive()); }
 
     function collectTreatment() {
+      // Name + ink are decided together — see provider_signature below.
+      const drawn = sigPad.getDataUrl();
+      const nameNow = providerName.value.trim();
+      // Trim both sides so the same person resuming on another laptop keeps
+      // their own ink. Deliberately NOT case-folded: two clinicians can
+      // legitimately differ only in case, and silently merging them is the
+      // very bug this is fixing.
+      const keepsOldSig = !drawn && !!tx.provider_signature
+        && nameNow === String(tx.provider_name || '').trim();
       const extractions = Array.from(extractRows.children).map((r) => r._get()).filter((x) => x.tooth);
       if (extOther.value.trim() || extOtherTooth.value.trim()) extractions.push({ tooth: extOtherTooth.value.trim(), types: [], other: extOther.value.trim() });
       // D4: anesthetic saved as an ARRAY of per-administration entries.
@@ -647,8 +667,13 @@ export function renderProvider(ctx, params = {}) {
         anesthetic,
         other_procedures: otherProc.get(),
         clinical_notes: dentalNotes.get(),
-        provider_name: providerName.value.trim(),
-        provider_signature: sigPad.getDataUrl() || tx.provider_signature || null,
+        provider_name: nameNow,
+        // The name and the ink are ONE unit. An untouched pad used to fall back
+        // to whatever signature was already stored, so a second dentist saving
+        // without signing produced their name over the first dentist's ink —
+        // and the record printed it as a signature they never gave. The stored
+        // ink is only reusable by the person it belongs to.
+        provider_signature: drawn || (keepsOldSig ? tx.provider_signature : null),
       };
     }
     function collectTriage() {
