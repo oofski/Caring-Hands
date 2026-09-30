@@ -1,7 +1,7 @@
 import { el, clear, toast, add } from '../dom.js';
 import { icon } from '../icons.js';
 import { t, tRaw, getLang, setLang, languageList, conditions, allergies, referrals, visitTypes, visitTypeLabel, speak, stopSpeaking } from '../i18n.js';
-import { textField, textArea, selectField, yesNo, chipGrid, limitDigits } from '../forms.js';
+import { textField, textArea, selectField, yesNo, chipGrid, limitDigits, dateField } from '../forms.js';
 import { SignaturePad } from '../components/signature.js';
 import { api } from '../api.js';
 import { store } from '../store.js';
@@ -113,7 +113,9 @@ export function renderKiosk(ctx) {
     const d = data.demographics;
     const first = textField(t('intake.firstName'), { value: data.first_name, required: true });
     const last = textField(t('intake.lastName'), { value: data.last_name, required: true });
-    const dob = textField(t('intake.dob'), { value: data.dob, type: 'date', required: true });
+    // Typed, not a calendar picker — see dateField. get() returns ISO or ''
+    // when what was typed is not a real date.
+    const dob = dateField(t('intake.dob'), { value: data.dob, required: true, hint: t('intake.dobHint') });
     const gender = selectField(t('intake.gender'), [
       { value: '', label: '—' },
       { value: 'male', label: t('intake.genderM') },
@@ -166,7 +168,13 @@ export function renderKiosk(ctx) {
       node,
       collect: () => {
         if (!first.get() || !last.get()) { toast(t('common.required') + ': ' + t('intake.firstName') + ' / ' + t('intake.lastName'), 'error'); return false; }
-        if (!dob.get()) { toast(t('common.required') + ': ' + t('intake.dob'), 'error'); return false; }
+        // Tell "you left it blank" apart from "that is not a real date" —
+        // a typed field can be filled in and still wrong, which a picker
+        // could never be.
+        if (!dob.get()) {
+          toast(dob.raw() ? t('intake.dobInvalid') : t('common.required') + ': ' + t('intake.dob'), 'error');
+          return false;
+        }
         if (!gender.get()) { toast(t('common.required') + ': ' + t('intake.gender'), 'error'); return false; }
         if (!city.get()) { toast(t('common.required') + ': ' + t('intake.city'), 'error'); return false; }
         if (!stateF.get()) { toast(t('common.required') + ': ' + t('intake.state'), 'error'); return false; }

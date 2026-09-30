@@ -1,5 +1,5 @@
 import { el, clear, toast, modal, add } from '../dom.js';
-import { limitDigits } from '../forms.js';
+import { limitDigits, dateField } from '../forms.js';
 import { t, conditions, allergies, referralLabel, languageList, visitTypeLabel } from '../i18n.js';
 import { api } from '../api.js';
 import { icon } from '../icons.js';
@@ -250,7 +250,7 @@ export function renderRecords(ctx, params = {}) {
     const f = {
       first_name: el('input', { class: 'input', value: p.first_name || '' }),
       last_name: el('input', { class: 'input', value: p.last_name || '' }),
-      dob: el('input', { class: 'input', type: 'date', value: p.dob || '' }),
+      dob: dateField('Date of birth', { value: p.dob || '' }),
       phone: el('input', { class: 'input', value: p.phone || '' }),
       email: el('input', { class: 'input', value: p.email || '' }),
       address: el('input', { class: 'input', value: d.address || '' }),
@@ -262,7 +262,7 @@ export function renderRecords(ctx, params = {}) {
     const fld = (label, node, span) => el('label', { class: 'field' + (span ? ' span-2' : '') }, [el('span', { class: 'field-label' }, [label]), node]);
     const form = el('div', { class: 'form-grid' }, [
       fld('First name', f.first_name), fld('Last name', f.last_name),
-      fld('Date of birth', f.dob), fld('Phone', f.phone),
+      f.dob.node, fld('Phone', f.phone),
       fld('Email', f.email, true),
       fld('Address', f.address, true),
       fld('Emergency contact', f.emergency_name), fld('Emergency phone', f.emergency_phone),
@@ -273,7 +273,7 @@ export function renderRecords(ctx, params = {}) {
       await api.updatePatient({
         id: p.id,
         first_name: f.first_name.value.trim(), last_name: f.last_name.value.trim(),
-        dob: f.dob.value, phone: f.phone.value.trim(), email: f.email.value.trim(),
+        dob: f.dob.get() || p.dob || null, phone: f.phone.value.trim(), email: f.email.value.trim(),
         demographics: { ...d, address: f.address.value.trim(), emergency_name: f.emergency_name.value.trim(), emergency_phone: f.emergency_phone.value.trim() },
       });
       toast('Patient details updated', 'success');

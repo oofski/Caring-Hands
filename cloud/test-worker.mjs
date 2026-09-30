@@ -871,6 +871,69 @@ async function main() {
       !!shutRow && shutRow.prereg_open === true && shutRow.prereg_link_works === true);
   }
 
+  // --- v1.11.0: date of birth can be TYPED ---
+  {
+    // The form now sends MM/DD/YYYY. It must be normalised to ISO before it is
+    // stored, because every age calculation reads this string and new Date()
+    // gives a slashed date LOCAL midnight but an ISO date UTC midnight.
+    const typed = await call(env, 'POST', '/checkin/evt-1', {
+      body: { ...REQ,
+        first_name: 'Typed', last_name: 'Dob', dob: '04/12/1985', gender: 'male', phone: '5550002222',
+        address: '2 Main St', city: 'Sandy', state: 'OR', emergency_name: 'Kin', emergency_phone: '5550003333',
+        reason: 'check', visit_type: 'filling', allergies: ['none'], conditions: ['none'], medications_none: true,
+        consent_agree: true, signer_name: 'Typed Dob', signature_png: SIG,
+      },
+    });
+    check('v1.11.0: a typed MM/DD/YYYY date of birth is accepted', typed.status === 200 && typed.data && typed.data.ok === true);
+    const row = Array.from(env.DB._store.values())
+      .filter((r) => r.entity === 'patient')
+      .map((r) => JSON.parse(r.data))
+      .find((d) => d.last_name === 'Dob');
+    check('v1.11.0: ...and stored as ISO YYYY-MM-DD, not as typed',
+      !!row && row.dob === '1985-04-12');
+
+    // A date that is not a real day must be refused, not stored verbatim. The
+    // column used to accept any string of 20 characters or fewer.
+    const bad = await call(env, 'POST', '/checkin/evt-1', {
+      body: { ...REQ,
+        first_name: 'Bad', last_name: 'Date', dob: '02/31/1990', gender: 'male', phone: '5550004444',
+        address: '3 Main St', city: 'Sandy', state: 'OR', emergency_name: 'Kin', emergency_phone: '5550005555',
+        reason: 'check', visit_type: 'filling', allergies: ['none'], conditions: ['none'], medications_none: true,
+        consent_agree: true, signer_name: 'Bad Date', signature_png: SIG,
+      },
+    });
+    check('v1.11.0: 31 February is refused rather than stored', bad.status === 400);
+
+    const future = await call(env, 'POST', '/checkin/evt-1', {
+      body: { ...REQ,
+        first_name: 'Future', last_name: 'Date', dob: '01/01/2099', gender: 'male', phone: '5550006666',
+        address: '4 Main St', city: 'Sandy', state: 'OR', emergency_name: 'Kin', emergency_phone: '5550007777',
+        reason: 'check', visit_type: 'filling', allergies: ['none'], conditions: ['none'], medications_none: true,
+        consent_agree: true, signer_name: 'Future Date', signature_png: SIG,
+      },
+    });
+    check('v1.11.0: a date in the future is refused', future.status === 400);
+
+    // The under-18 rule reads the same normalised value, so it must still fire
+    // for a typed date — this is the gate a timezone shift could flip.
+    const minor = await call(env, 'POST', '/checkin/evt-1', {
+      body: { ...REQ,
+        first_name: 'Young', last_name: 'One', dob: '06/15/2015', gender: 'female', phone: '5550008888',
+        address: '5 Main St', city: 'Sandy', state: 'OR', emergency_name: 'Kin', emergency_phone: '5550009999',
+        reason: 'check', visit_type: 'filling', allergies: ['none'], conditions: ['none'], medications_none: true,
+        consent_agree: true, signer_name: 'A Parent', signature_png: SIG,
+      },
+    });
+    check('v1.11.0: a typed date still triggers the under-18 guardian rule',
+      minor.status === 400 && /under 18|menor de 18/i.test(String(minor.data && minor.data.error)));
+
+    // The served form must be typeable, not a picker.
+    const formHtml = await (await worker.fetch(new Request('https://sync.example.com/checkin/evt-1'), env, {})).text();
+    check('v1.11.0: the public form asks for a typed date of birth, not a calendar',
+      /id="dob"[^>]*inputmode="numeric"/.test(formHtml) && !/type="date" id="dob"/.test(formHtml));
+    check('v1.11.0: ...and shows the expected format', /MM\/DD\/YYYY/.test(formHtml));
+  }
+
   // --- summary ---
   console.log('');
   if (failures) {

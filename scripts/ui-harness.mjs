@@ -244,7 +244,9 @@ async function main() {
   setInput(textInputs[0], 'Maria');
   setInput(textInputs[1], 'Lopez');
   // dob (v1.5.20: now required to advance)
-  const dob = $all('.kiosk-body input').find((i) => i.type === 'date'); if (dob) setInput(dob, '1985-04-12');
+  // Typed MM/DD/YYYY now, not a date picker — this also exercises the mask
+  // and the ISO conversion on the way in.
+  const dob = $all('.kiosk-body input').find((i) => i.placeholder === 'MM/DD/YYYY'); if (dob) setInput(dob, '04/12/1985');
   // v1.5.20: gender is now required to advance — select it.
   const genderSel = $all('.kiosk-body label.field').find((l) => /^Gender/i.test(((l.querySelector('.field-label') || {}).textContent || '').trim()));
   log(!!(genderSel && genderSel.querySelector('select')), 'v1.5.20: gender field present');
@@ -3097,6 +3099,35 @@ async function main() {
 
     currentUser = db.login('admin', 'admin');
     store.setUser(currentUser);
+  }
+
+  // ---- v1.11.0: a date of birth people can type ----
+  {
+    const { isoFromTyped, typedFromIso, dateField } = await import('../src/renderer/js/forms.js');
+    log(isoFromTyped('09/30/1985') === '1985-09-30', 'v1.11.0: a typed MM/DD/YYYY date converts to ISO for storage');
+    log(isoFromTyped('1/2/1990') === '1990-01-02', 'v1.11.0: ...single-digit month and day are accepted');
+    log(isoFromTyped('1990-01-02') === '1990-01-02', 'v1.11.0: ...an already-ISO value passes through');
+    log(isoFromTyped('13/01/2000') === '', 'v1.11.0: ...month 13 is refused');
+    log(isoFromTyped('02/31/1990') === '', 'v1.11.0: ...31 February is refused');
+    log(isoFromTyped('01/01/2099') === '', 'v1.11.0: ...a date in the future is refused');
+    log(typedFromIso('1990-01-02') === '01/02/1990', 'v1.11.0: a stored date is shown back in the typed format');
+
+    // The field itself: masks as you type, and round-trips a stored value.
+    const f = dateField('Date of birth', { value: '1985-04-12' });
+    log(f.input.value === '04/12/1985', 'v1.11.0: the field shows a stored date as MM/DD/YYYY');
+    log(f.input.type === 'text' && f.input.getAttribute('inputmode') === 'numeric',
+      'v1.11.0: ...and is a typeable field, not a calendar picker');
+    setInput(f.input, '09301985');
+    log(f.input.value === '09/30/1985', 'v1.11.0: ...slashes are inserted as you type');
+    log(f.get() === '1985-09-30', 'v1.11.0: ...and get() hands back ISO');
+    setInput(f.input, '99/99/1990');
+    log(f.get() === '' && f.raw() === '99/99/1990',
+      'v1.11.0: ...a nonsense date reads as empty while keeping what was typed, so the error can say which');
+
+    // The kiosk stores ISO end to end — the check-in flow at the top of this
+    // file types 04/12/1985 into the masked field.
+    const kioskPt = db.listPatients({ eventId: 'all' }).find((x) => x.dob === '1985-04-12');
+    log(!!kioskPt, 'v1.11.0: a patient checked in through the kiosk has an ISO date of birth stored');
   }
 
   await tick();

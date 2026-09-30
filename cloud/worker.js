@@ -542,6 +542,26 @@ async function handleCheckinPost(eventUid, request, env) {
 // Sanitize + shape a submission into the patient structure the app understands.
 // Everything is length-capped; unknown fields are ignored. Returns null if the
 // name is missing.
+// Accepts MM/DD/YYYY or YYYY-MM-DD, returns ISO YYYY-MM-DD, or '' when it is
+// not a real calendar date or is in the future. Built from parts rather than
+// parsed from a string so there is no timezone ambiguity.
+function normalizeDob(v) {
+  const t = String(v == null ? '' : v).trim();
+  if (!t) return '';
+  let y, m, d;
+  const a = /^(\d{4})-(\d{2})-(\d{2})$/.exec(t);
+  const b2 = /^(\d{1,2})\D(\d{1,2})\D(\d{4})$/.exec(t);
+  if (a) { y = +a[1]; m = +a[2]; d = +a[3]; }
+  else if (b2) { m = +b2[1]; d = +b2[2]; y = +b2[3]; }
+  else return '';
+  if (m < 1 || m > 12 || d < 1 || d > 31 || y < 1900) return '';
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  if (dt.getUTCFullYear() !== y || dt.getUTCMonth() !== m - 1 || dt.getUTCDate() !== d) return '';
+  if (dt.getTime() > Date.now()) return '';
+  const p2 = (n) => String(n).padStart(2, '0');
+  return `${y}-${p2(m)}-${p2(d)}`;
+}
+
 function buildPreregPatient(b) {
   b = b || {};
   const s = (v, n) => String(v == null ? '' : v).trim().slice(0, n || 120);
@@ -583,7 +603,11 @@ function buildPreregPatient(b) {
   return {
     first_name: first,
     last_name: last,
-    dob: s(b.dob, 20),
+    // Normalised, not merely length-capped. This accepted ANY string of 20
+    // characters or fewer — the ISO shape came only from the browser's date
+    // input, never from a rule here, so a hand-rolled POST could write anything
+    // into the column every age calculation reads.
+    dob: normalizeDob(b.dob),
     gender: s(b.gender, 20),
     phone: s(b.phone, 20).replace(/\D/g, '').slice(0, 10),
     email: s(b.email, 120),
@@ -723,7 +747,7 @@ const I18N = {
   en: {
     switchLabel: 'Español', switchLang: 'es',
     heroSub: 'Fill this out ahead of time and sign your consent to save time at the clinic. Your answers go straight to the front desk.',
-    about: 'About You', first: 'First name', last: 'Last name', dob: 'Date of birth', gender: 'Gender',
+    about: 'About You', first: 'First name', last: 'Last name', dob: 'Date of birth', dobHint: 'MM/DD/YYYY', gender: 'Gender',
     gOpt: [['', '—'], ['male', 'Male'], ['female', 'Female'], ['other', 'Other']],
     phone: 'Phone number', email: 'Email', address: 'Home address', city: 'City', state: 'State',
     emName: 'Emergency contact name', emPhone: 'Emergency contact phone',
@@ -737,7 +761,7 @@ const I18N = {
     surgery: 'Surgery Consent', surgeryIntro: 'Because an extraction may be done, please also read and sign this.', teeth: 'Tooth number(s), if known',
     submit: 'Submit pre-registration', submitting: 'Submitting…', footer: 'Caring Hands Worldwide — free dental care. Your information is shared only with the clinic team.',
     thankYou: 'Thank you, ', done: 'Your pre-registration and consent are complete. Please bring a photo ID — the front desk already has your information.',
-    errName: 'Please enter your first and last name.', errDob: 'Please enter your date of birth.', errGender: 'Please choose a gender.',
+    errName: 'Please enter your first and last name.', errDob: 'Please enter your date of birth.', errDobBad: 'Please check the date of birth — use MM/DD/YYYY.', errGender: 'Please choose a gender.',
     errCity: 'Please enter your city.', errState: 'Please enter your state.',
     errEmName: 'Please enter an emergency contact name.', errEmPhone: 'Please enter an emergency contact phone number.',
     errMedical: 'Please answer every medical and dental history question.',
@@ -760,7 +784,7 @@ const I18N = {
   es: {
     switchLabel: 'English', switchLang: 'en',
     heroSub: 'Complete esto con anticipación y firme su consentimiento para ahorrar tiempo en la clínica. Sus respuestas van directamente a la recepción.',
-    about: 'Sobre usted', first: 'Nombre', last: 'Apellido', dob: 'Fecha de nacimiento', gender: 'Género',
+    about: 'Sobre usted', first: 'Nombre', last: 'Apellido', dob: 'Fecha de nacimiento', dobHint: 'MM/DD/AAAA', gender: 'Género',
     gOpt: [['', '—'], ['male', 'Masculino'], ['female', 'Femenino'], ['other', 'Otro']],
     phone: 'Teléfono', email: 'Correo electrónico', address: 'Dirección', city: 'Ciudad', state: 'Estado',
     emName: 'Nombre de contacto de emergencia', emPhone: 'Teléfono de contacto de emergencia',
@@ -774,7 +798,7 @@ const I18N = {
     surgery: 'Consentimiento de Cirugía', surgeryIntro: 'Como podría realizarse una extracción, lea y firme esto también.', teeth: 'Número(s) de diente, si los sabe',
     submit: 'Enviar pre-registro', submitting: 'Enviando…', footer: 'Caring Hands Worldwide — atención dental gratuita. Su información se comparte solo con el equipo de la clínica.',
     thankYou: 'Gracias, ', done: 'Su pre-registro y consentimiento están completos. Por favor traiga una identificación con foto — la recepción ya tiene su información.',
-    errName: 'Por favor ingrese su nombre y apellido.', errDob: 'Por favor ingrese su fecha de nacimiento.', errGender: 'Por favor elija un género.',
+    errName: 'Por favor ingrese su nombre y apellido.', errDob: 'Por favor ingrese su fecha de nacimiento.', errDobBad: 'Revise la fecha de nacimiento — use MM/DD/AAAA.', errGender: 'Por favor elija un género.',
     errCity: 'Por favor ingrese su ciudad.', errState: 'Por favor ingrese su estado.',
     errEmName: 'Por favor ingrese el nombre de un contacto de emergencia.', errEmPhone: 'Por favor ingrese el teléfono del contacto de emergencia.',
     errMedical: 'Por favor responda todas las preguntas del historial médico y dental.',
@@ -871,7 +895,7 @@ function checkinFormPage(eventUid, eventName, lang) {
   const dentalYesNo = L.dentalYesNo.map(([k, l]) => ynRow(k, l)).join('');
   const genConsent = '<h3>' + htmlEscape(L.generalTitle) + '</h3>' + (L.generalMode === 'ol' ? ('<ol>' + L.general.map((c) => '<li>' + htmlEscape(c) + '</li>').join('') + '</ol>') : L.general.map((c) => '<p>' + htmlEscape(c) + '</p>').join(''));
   const surConsent = '<h3>' + htmlEscape(L.surgeryTitle) + '</h3>' + L.surgeryText.map((c) => '<p>' + htmlEscape(c) + '</p>').join('');
-  const T = { errName: L.errName, errDob: L.errDob, errGender: L.errGender, errCity: L.errCity, errState: L.errState, errEmName: L.errEmName, errEmPhone: L.errEmPhone, errMedical: L.errMedical, errPhone: L.errPhone, errVisit: L.errVisit, errAllergies: L.errAllergies, errAllergyOther: L.errAllergyOther, errConditions: L.errConditions, errConditionOther: L.errConditionOther, errMeds: L.errMeds, medNamePh: L.medNamePh, minorNotice: L.minorNotice, errRelationship: L.errRelationship, switchWarn: L.switchWarn, errConsent: L.errConsent, errSurgery: L.errSurgery, errSign: L.errSign, errSignSurgery: L.errSignSurgery, errSigner: L.errSigner, submitting: L.submitting, submitLabel: L.submit, thankYou: L.thankYou, done: L.done, netErr: L.netErr, genErr: L.genErr };
+  const T = { errName: L.errName, errDob: L.errDob, errDobBad: L.errDobBad, errGender: L.errGender, errCity: L.errCity, errState: L.errState, errEmName: L.errEmName, errEmPhone: L.errEmPhone, errMedical: L.errMedical, errPhone: L.errPhone, errVisit: L.errVisit, errAllergies: L.errAllergies, errAllergyOther: L.errAllergyOther, errConditions: L.errConditions, errConditionOther: L.errConditionOther, errMeds: L.errMeds, medNamePh: L.medNamePh, minorNotice: L.minorNotice, errRelationship: L.errRelationship, switchWarn: L.switchWarn, errConsent: L.errConsent, errSurgery: L.errSurgery, errSign: L.errSign, errSignSurgery: L.errSignSurgery, errSigner: L.errSigner, submitting: L.submitting, submitLabel: L.submit, thankYou: L.thankYou, done: L.done, netErr: L.netErr, genErr: L.genErr };
 
   const inner =
     '<div class="hero"><div style="display:flex;justify-content:space-between;align-items:center"><div class="ey">Caring Hands · Pre-registration</div>' +
@@ -882,7 +906,7 @@ function checkinFormPage(eventUid, eventName, lang) {
     '<div class="card"><h2>' + htmlEscape(L.about) + '</h2>' +
     '<div class="row"><div><label>' + htmlEscape(L.first) + ' <span class="req">*</span></label><input type="text" id="first_name" autocomplete="given-name"></div>' +
     '<div><label>' + htmlEscape(L.last) + ' <span class="req">*</span></label><input type="text" id="last_name" autocomplete="family-name"></div></div>' +
-    '<div class="row"><div><label>' + htmlEscape(L.dob) + ' <span class="req">*</span></label><input type="date" id="dob"></div>' +
+    '<div class="row"><div><label>' + htmlEscape(L.dob) + ' <span class="req">*</span></label><input type="text" id="dob" inputmode="numeric" autocomplete="bday" placeholder="' + htmlEscape(L.dobHint) + '"><div class="hint">' + htmlEscape(L.dobHint) + '</div></div>' +
     '<div><label>' + htmlEscape(L.gender) + ' <span class="req">*</span></label><select id="gender">' + L.gOpt.map(([v, t2]) => '<option value="' + htmlEscape(v) + '">' + htmlEscape(t2) + '</option>').join('') + '</select></div></div>' +
     '<div class="row"><div><label>' + htmlEscape(L.phone) + ' <span class="req">*</span></label><input type="tel" id="phone" inputmode="numeric" autocomplete="tel"></div>' +
     '<div><label>' + htmlEscape(L.email) + '</label><input type="email" id="email" autocomplete="email"></div></div>' +
@@ -940,9 +964,9 @@ function checkinFormPage(eventUid, eventName, lang) {
     "chipwire('allergies');chipwire('conditions');" +
     // Under-18 check, mirroring the front desk: show the guardian notice as soon
     // as the date of birth says so.
-    "function ageOf(v){if(!v)return null;var d=new Date(v);if(isNaN(d))return null;return Math.floor((Date.now()-d.getTime())/(365.25*24*3600*1000));}" +
+    "function ageOf(v){v=dobIso(v);if(!v)return null;var d=new Date(v);if(isNaN(d))return null;return Math.floor((Date.now()-d.getTime())/(365.25*24*3600*1000));}" +
     "function syncMinor(){var a=ageOf(val('dob'));var n=el('minorNote');if(n)n.style.display=(a!=null&&a<18)?'block':'none';}" +
-    "if(el('dob'))el('dob').addEventListener('change',syncMinor);syncMinor();" +
+    "if(el('dob')){el('dob').addEventListener('change',syncMinor);el('dob').addEventListener('input',syncMinor);}syncMinor();" +
     // The language link is a full page navigation, so it throws away everything
     // entered — including a drawn signature. The desk cannot lose work this way
     // (it asks for a language before the form exists), so at least ask first.
@@ -951,6 +975,21 @@ function checkinFormPage(eventUid, eventName, lang) {
     "if(langLink)langLink.addEventListener('click',function(e){if(touched&&!window.confirm(T.switchWarn))e.preventDefault();});" +
     // Phone fields accept digits only, as they do at the front desk.
     "['phone','emergency_phone'].forEach(function(id){var e=el(id);if(!e)return;e.addEventListener('input',function(){var d=(e.value||'').replace(/\\D/g,'').slice(0,10);if(d!==e.value)e.value=d;});});" +
+    // Date of birth is TYPED, not picked. A native date input is a calendar on a
+    // phone with no keyboard path, which is how most patients reach this link —
+    // they could fill the form on a computer and not on their phone. Slashes are
+    // inserted as you type so nobody has to hunt for one on a numeric keypad.
+    "(function(){var e=el('dob');if(!e)return;e.addEventListener('input',function(){var d=(e.value||'').replace(/\\D/g,'').slice(0,8);" +
+    "var o=d.length>4?(d.slice(0,2)+'/'+d.slice(2,4)+'/'+d.slice(4)):(d.length>2?(d.slice(0,2)+'/'+d.slice(2)):d);if(o!==e.value)e.value=o;});})();" +
+    // Typed MM/DD/YYYY in, ISO YYYY-MM-DD out. The split matters: new Date()
+    // reads '1990-01-02' as UTC midnight but '01/02/1990' as LOCAL midnight, so
+    // storing the slashed form would shift every age by up to a day — enough to
+    // flip 17 to 18 and change whether a guardian has to sign.
+    "function dobIso(v){v=(v||'').trim();if(!v)return '';var y,m,d;var a=/^(\\d{4})-(\\d{2})-(\\d{2})$/.exec(v);var b=/^(\\d{1,2})\\D(\\d{1,2})\\D(\\d{4})$/.exec(v);" +
+    "if(a){y=+a[1];m=+a[2];d=+a[3];}else if(b){m=+b[1];d=+b[2];y=+b[3];}else return '';" +
+    "if(m<1||m>12||d<1||d>31||y<1900)return '';var dt=new Date(y,m-1,d);" +
+    "if(dt.getFullYear()!==y||dt.getMonth()!==m-1||dt.getDate()!==d)return '';if(dt.getTime()>Date.now())return '';" +
+    "function p2(n){n=String(n);return n.length<2?'0'+n:n;}return y+'-'+p2(m)+'-'+p2(d);}" +
     "function checked(name){return Array.prototype.slice.call(document.querySelectorAll('input[name='+name+']:checked')).map(function(i){return i.value;});}" +
     "function mkpad(id){var c=el(id);if(!c)return null;var ctx=c.getContext('2d');var drawing=false,empty=true;" +
     "function stroke(){ctx.lineWidth=2.2;ctx.lineCap='round';ctx.lineJoin='round';ctx.strokeStyle='#12303f';}" +
@@ -975,7 +1014,7 @@ function checkinFormPage(eventUid, eventName, lang) {
     // Checked in the order the fields appear on the page, so nobody is bounced
     // back up past questions they have already answered.
     "var fn=val('first_name').trim(),ln=val('last_name').trim();if(!fn||!ln){return fail(T.errName,'first_name');}" +
-    "if(!val('dob').trim()){return fail(T.errDob,'dob');}if(!val('gender').trim()){return fail(T.errGender,'gender');}" +
+    "if(!val('dob').trim()){return fail(T.errDob,'dob');}if(!dobIso(val('dob'))){return fail(T.errDobBad,'dob');}if(!val('gender').trim()){return fail(T.errGender,'gender');}" +
     "if(!val('phone').trim()){return fail(T.errPhone,'phone');}" +
     "if(!val('city').trim()){return fail(T.errCity,'city');}if(!val('state').trim()){return fail(T.errState,'state');}" +
     "if(!val('emergency_name').trim()){return fail(T.errEmName,'emergency_name');}" +
@@ -1002,7 +1041,7 @@ function checkinFormPage(eventUid, eventName, lang) {
     "var visit=visitSel;var extraction=(visit==='extraction_pain'||visit==='extraction_no_pain');" +
     "if(extraction&&!el('sagree').checked){return fail(T.errSurgery,'sagree');}" +
     "if(extraction&&(!spad||!spad.data())){return fail(T.errSignSurgery,'ssig');}" +
-    "var payload={first_name:fn,last_name:ln,dob:val('dob'),gender:val('gender'),phone:val('phone'),email:val('email'),language:LANG,address:val('address'),city:val('city'),state:val('state'),emergency_name:val('emergency_name'),emergency_phone:val('emergency_phone')," +
+    "var payload={first_name:fn,last_name:ln,dob:dobIso(val('dob')),gender:val('gender'),phone:val('phone'),email:val('email'),language:LANG,address:val('address'),city:val('city'),state:val('state'),emergency_name:val('emergency_name'),emergency_phone:val('emergency_phone')," +
     "reason:val('reason'),visit_type:visit,allergies:al,allergies_other:val('allergies_other'),conditions:cd,conditions_other:val('conditions_other')," +
     "medications:medNames,medications_none:el('medications_none').checked," +
     "under_treatment:val('under_treatment'),hospitalized:val('hospitalized'),tobacco:val('tobacco'),pregnancy:val('pregnancy')," +

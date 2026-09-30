@@ -13,6 +13,88 @@ export function limitDigits(inputEl, max = 10) {
   clean();
 }
 
+/* ------------------------------------------------------------------ */
+/*  Date of birth                                                      */
+/* ------------------------------------------------------------------ */
+
+// Convert a typed MM/DD/YYYY (or an already-ISO date) to YYYY-MM-DD.
+// Returns '' for anything that is not a real calendar date, or is in the
+// future — nobody was born tomorrow, and a typo like 2206 for 2026 is far
+// easier to make on a keypad than with a picker.
+export function isoFromTyped(raw) {
+  const t = String(raw == null ? '' : raw).trim();
+  if (!t) return '';
+  let y, m, d;
+  const iso = /^(\d{4})-(\d{2})-(\d{2})$/.exec(t);
+  const us = /^(\d{1,2})\D(\d{1,2})\D(\d{4})$/.exec(t);
+  if (iso) { y = +iso[1]; m = +iso[2]; d = +iso[3]; }
+  else if (us) { m = +us[1]; d = +us[2]; y = +us[3]; }
+  else return '';
+  if (m < 1 || m > 12 || d < 1 || d > 31 || y < 1900) return '';
+  // Round-trip through Date to reject 31 February and friends. Built from
+  // parts (not parsed from a string) so there is no timezone ambiguity.
+  const dt = new Date(y, m - 1, d);
+  if (dt.getFullYear() !== y || dt.getMonth() !== m - 1 || dt.getDate() !== d) return '';
+  if (dt.getTime() > Date.now()) return '';
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${y}-${pad(m)}-${pad(d)}`;
+}
+
+// Display an ISO date as MM/DD/YYYY for the typed field.
+export function typedFromIso(iso) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(iso || '').trim());
+  return m ? `${m[2]}/${m[3]}/${m[1]}` : String(iso || '');
+}
+
+// A date of birth people can TYPE.
+//
+// This was an <input type="date">, which on a phone is a calendar picker with
+// no keyboard path — patients could fill the form on a computer and not on
+// their phone, which is how most of them arrive at a public link.
+//
+// Typed as MM/DD/YYYY, always STORED as YYYY-MM-DD. That split matters: age is
+// re-derived from this string by `new Date(dob)` in a dozen places, and
+// new Date() reads "1990-01-02" as UTC midnight but "01/02/1990" as LOCAL
+// midnight. Storing the slashed form would shift every age by up to a day —
+// enough to flip 17 to 18 and change whether a guardian has to sign.
+//
+// Returns the same { node, get, set, input } contract as textField, so it is a
+// drop-in at every call site. get() returns ISO, or '' when what is typed is
+// not a real date.
+export function dateField(label, { value = '', required = false, hint = 'MM/DD/YYYY' } = {}) {
+  const input = el('input', {
+    class: 'input', type: 'text', inputmode: 'numeric', autocomplete: 'bday',
+    placeholder: 'MM/DD/YYYY', value: typedFromIso(value),
+  });
+  // Slashes are inserted as you type, so nobody has to find them on a numeric
+  // keypad. Digits are stripped first and sliced after, for the same reason
+  // limitDigits above refuses to set maxlength: a pasted "01/02/1990" must not
+  // be cut before the non-digits are removed.
+  const clean = () => {
+    const d = (input.value || '').replace(/\D/g, '').slice(0, 8);
+    const out = d.length > 4 ? `${d.slice(0, 2)}/${d.slice(2, 4)}/${d.slice(4)}`
+      : d.length > 2 ? `${d.slice(0, 2)}/${d.slice(2)}`
+        : d;
+    if (out !== input.value) input.value = out;
+  };
+  input.addEventListener('input', clean);
+  clean();
+  const node = el('label', { class: 'field' }, [
+    el('span', { class: 'field-label' }, [label, required ? el('em', { class: 'req' }, [' *']) : null]),
+    input,
+    hint ? el('span', { class: 'field-hint' }, [hint]) : null,
+  ]);
+  return {
+    node,
+    input,
+    get: () => isoFromTyped(input.value),
+    // What was actually typed, for telling "not filled in" apart from
+    // "filled in wrongly" when reporting an error.
+    raw: () => input.value.trim(),
+    set: (v) => { input.value = typedFromIso(v); },
+  };
+}
+
 // Reusable labelled form controls. Each returns { node, get, set }.
 
 export function textField(label, { value = '', type = 'text', placeholder = '', required = false, hint = '' } = {}) {
