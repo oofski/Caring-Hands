@@ -12,6 +12,7 @@ import { bloodThinnerStatus, bpStatus } from '../medFlags.js';
 import { vitalsStrip as sharedVitalsStrip } from '../components/vitalsStrip.js';
 import { captureConsent as sharedCaptureConsent } from '../components/consentCapture.js';
 import { visitNotesPanel } from '../components/visitNotes.js';
+import { triageFindings } from '../components/triageFindings.js';
 
 const QUADRANTS = [['UR', 'UR'], ['UL', 'UL'], ['LR', 'LR'], ['LL', 'LL']];
 const fmtWhen = (ts) => { if (!ts) return ''; const d = new Date(ts); return isNaN(d) ? String(ts) : d.toLocaleString(); };
@@ -37,7 +38,12 @@ export function renderProvider(ctx, params = {}) {
     // EMT routing: 'dentist' and 'both' belong here; route null = legacy rows
     // (pre-routing data) which default to the dentist. Patients routed only to
     // the hygienist wait in a collapsed list below — they may come back later.
-    const dentistQueue = sortedByName(ready.filter((p) => p.route === 'dentist' || p.route === 'both' || p.route == null));
+    // Untriaged first: the triage dentist works the top of the same list the
+    // treating dentist works the bottom of.
+    const byTriageThenName = (list) => sortedByName(list)
+      .slice()
+      .sort((a, b) => (a.triaged_at ? 1 : 0) - (b.triaged_at ? 1 : 0));
+    const dentistQueue = byTriageThenName(ready.filter((p) => p.route === 'dentist' || p.route === 'both' || p.route == null));
     const atHygienist = sortedByName(ready.filter((p) => p.route === 'hygienist'));
     // Finishing a visit used to be a one-way door: the patient dropped out of
     // this queue and there was no route back to the record, so a note the
@@ -51,14 +57,20 @@ export function renderProvider(ctx, params = {}) {
         (p.flags && p.flags.length) ? flagDot(p.flags.length) : null]),
       el('td', { class: 'num' }, [p.age != null ? String(p.age) : '—']),
       el('td', {}, [p.complaint || '—']),
+      // Who has been seen by the triage dentist, and who is still waiting for
+      // one. Without this the triage dentist has to open every chart to find
+      // out which patients are theirs.
+      el('td', {}, [p.triaged_at
+        ? el('span', { class: 'pill pill--success' }, [el('span', { class: 'pill-dot' }), p.triaged_by_name || 'Triaged'])
+        : el('span', { class: 'pill pill--warning' }, [el('span', { class: 'pill-dot' }), 'Needs triage'])]),
       el('td', {}, [p.assigned_to || '—']),
       el('td', {}, [statusPill(p.status)]),
       el('td', {}, [chevronBtn('Treat', () => detail(p.id))]),
     ]);
     const table = (list, emptyMsg) => el('div', { class: 'data-table-wrap' }, [
       el('table', { class: 'data-table' }, [
-        el('thead', {}, [el('tr', {}, ['Patient', 'Age', 'Complaint', 'Chair', 'Status', ''].map((h) => el('th', {}, [h])))]),
-        el('tbody', {}, list.length ? list.map(row) : [el('tr', {}, [el('td', { colspan: 6, class: 'empty' }, [emptyMsg])])]),
+        el('thead', {}, [el('tr', {}, ['Patient', 'Age', 'Complaint', 'Triage', 'Chair', 'Status', ''].map((h) => el('th', {}, [h])))]),
+        el('tbody', {}, list.length ? list.map(row) : [el('tr', {}, [el('td', { colspan: 7, class: 'empty' }, [emptyMsg])])]),
       ]),
     ]);
     mount(root,
@@ -112,7 +124,6 @@ export function renderProvider(ctx, params = {}) {
 
     /* ---------- Visit row (paper: top of sheet) ---------- */
     const complaint = input(tr.complaint || p.dental_history.reason || '', 'Chief complaint', locked);
-    const triageNotes = textarea(tr.notes || '', 'Triage notes', 2, locked);
     const station = input(tr.xray_station || '', 'Station #', locked, 'input--sm');
     const xrayCountEl = el('span', { class: 'xray-count-badge' }, [icon('xray', { size: 16 }), el('span', {}, [String(xrays.length)])]);
 
@@ -123,12 +134,20 @@ export function renderProvider(ctx, params = {}) {
     // stops "Mark all visible cleaned" (which bypasses txOptions) from wiping
     // every flag on the chart.
     const concernTeeth = new Set(tr.teeth || []);
+    // This dentist may RECORD triage findings when nobody has yet, or when the
+    // findings are their own. A different dentist reads them and adds an
+    // addendum instead — correcting someone else's clinical finding in place is
+    // not something a record should allow.
+    const triageEditable = !locked && (!tr.triaged_at
+      || (store.user && tr.triaged_by === store.user.id));
     const odo = Odontogram({
       mode: 'adult',
       teeth: initialTeeth(tx, tr),
       // Doctor's odontogram offers only the doctor's services; cleaning is the
       // hygienist's job (still available in the collapsed Cleaning panel).
-      txOptions: ['filling', 'extraction'],
+      // 'concern' appears only while this dentist may record triage, so the
+      // treating dentist sees the marks but cannot change them.
+      txOptions: triageEditable ? ['concern', 'filling', 'extraction'] : ['filling', 'extraction'],
       onTag: (id, d) => { if (!locked) syncToothToRows(id, d); },
       onUntag: (id) => { if (!locked) removeAutoRows(id); },
     });
@@ -136,6 +155,17 @@ export function renderProvider(ctx, params = {}) {
     // When a tooth is tagged in the odontogram, fill the matching list row.
     function syncToothToRows(id, d) {
       removeAutoRows(id, d.tx);
+      // A triage concern is a finding, not a procedure — it must not create a
+      // filling or extraction row. Only tracked while this screen may edit
+      // triage, so bulk actions that bypass txOptions cannot clear a flag.
+      if (d.tx === 'concern') {
+        if (triageEditable) { concernTeeth.add(id); if (triagePanel && triagePanel.refreshTeeth) triagePanel.refreshTeeth(); }
+        return;
+      }
+      if (triageEditable && concernTeeth.has(id) && d.tx !== 'concern') {
+        concernTeeth.delete(id);
+        if (triagePanel && triagePanel.refreshTeeth) triagePanel.refreshTeeth();
+      }
       if (d.tx === 'filling') {
         const existing = findRow(fillingRows, id);
         if (existing) { setRowNote(existing, d.note); } else { addFilling({ tooth: id, note: d.note }, true); }
@@ -513,6 +543,13 @@ export function renderProvider(ctx, params = {}) {
     }
     renderGallery();
 
+    // What the triage dentist found — read-only for whoever comes after them.
+    const triagePanel = triageFindings(p, {
+      editable: triageEditable,
+      odo,
+      onSaved: () => detail(id),
+    });
+
     /* ---------- Sign-off ---------- */
     // Defaults to WHOEVER IS SIGNED IN, not to whatever name is stored.
     //
@@ -738,7 +775,16 @@ export function renderProvider(ctx, params = {}) {
         if (!ok) return;
       }
       try {
-        await api.saveTriage(id, collectChartHeader());
+        // When this dentist may record triage, their findings ride along with
+        // the same save — one dentist doing both halves should not have to
+        // press two buttons. When they may not, collect() contributes no keys
+        // and saveTriage leaves the findings alone. That is the whole
+        // no-clobber guarantee, in one line.
+        await api.saveTriage(
+          id,
+          { ...collectChartHeader(), ...(triagePanel.editable ? triagePanel.collect() : {}) },
+          { attribute: triagePanel.editable && !tr.triaged_at },
+        );
         await api.saveTreatment(id, payload, mode);
         toast(mode === 'lock' ? 'Record signed off and locked' : mode === 'complete' ? 'Visit complete — sent to check-out' : 'Progress saved', 'success');
         if (mode) ctx.navigate('provider'); else detail(id);
@@ -804,6 +850,11 @@ export function renderProvider(ctx, params = {}) {
       ]) : null,
       // EMT station handoff — vitals, blood-thinner answer, who routed the patient.
       vitalsStrip(),
+
+      // Immediately after the handover from the previous station, and before
+      // anything the dentist has to fill in. Buried further down it reads as
+      // one more field rather than as what the last clinician found.
+      triagePanel.node,
       flags.length ? el('div', { class: 'banner banner--alert' }, [icon('flag', { size: 16 }), 'Medical flags: ' + flags.join(' · ')]) : null,
       locked ? el('div', { class: 'banner banner--locked' }, [icon('lock', { size: 16 }), 'This record is signed off and locked. View or export below.']) : null,
 
@@ -842,7 +893,6 @@ export function renderProvider(ctx, params = {}) {
           el('label', { class: 'field', style: 'margin:0;max-width:130px' }, [el('span', { class: 'field-label' }, ['X-ray station #']), station.node]),
         ]),
         el('label', { class: 'field' }, [el('span', { class: 'field-label' }, ['Chief complaint']), complaint.node]),
-        el('label', { class: 'field' }, [el('span', { class: 'field-label' }, ['Triage notes']), triageNotes.node]),
       ),
 
       // The mouth — with F13 quadrant zoom buttons above the chart.

@@ -10,6 +10,7 @@ import { store } from '../store.js';
 import { statusPill } from './dashboard.js';
 import { vitalsStrip } from '../components/vitalsStrip.js';
 import { visitNotesPanel } from '../components/visitNotes.js';
+import { triageFindings } from '../components/triageFindings.js';
 import { sortedByName } from '../patientSort.js';
 
 // Cleaning options a hygienist performs (mirrors the provider's cleaning set).
@@ -240,6 +241,11 @@ export function renderHygienist(ctx, params = {}) {
       // pressure and the blood-thinner status are exactly what that turns on,
       // and this screen used to show neither.
       vitalsStrip(p),
+
+      // The hygienist works from the same findings the dentist does — shared
+      // component, same reason the vitals strip is shared. Read-only here: a
+      // hygienist does not record a dental triage.
+      triageFindings(p, { editable: false }).node,
 
       locked ? el('div', { class: 'banner banner--locked' }, [icon('lock', { size: 16 }), 'This record is signed off and locked.']) : null,
       alsoDoctor && !locked ? el('div', { class: 'banner banner--info' }, [icon('tooth', { size: 16 }), 'This patient is also flagged for the doctor (extraction/filling). Save your cleaning and leave sign-off to the provider.']) : null,

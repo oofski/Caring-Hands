@@ -766,3 +766,15 @@ body:has(.kiosk-gate) .toast-host{ bottom:96px; }
 .odo-tooth.mark-concern .crown{ fill:var(--warning-soft); stroke:var(--warning); stroke-width:1.8; stroke-dasharray:none; }
 .odo-tooth.mark-concern .cmark{ fill:var(--warning); }
 .tooth-tag--concern{ background:var(--warning-soft); color:var(--warning); border-color:var(--warning-border); }
+
+/* ---- Triage findings ----
+   Marked with the triage colour down its leading edge so it reads as "what the
+   last clinician found", never as a form this clinician is expected to fill in.
+   Nothing inside the read-only variant is an input. */
+.triage-findings{ border-left:3px solid var(--warning); }
+.triage-findings--none{ border-left-color:var(--border-strong); }
+.triage-findings--edit{ border-left-color:var(--accent); }
+.triage-tooth-notes{ display:flex; flex-direction:column; gap:4px; padding:10px 12px; margin-top:var(--space-2);
+  background:var(--surface-sunken); border-radius:var(--radius-sm); }
+.triage-tooth-notes .kv{ flex-direction:row; gap:8px; align-items:baseline; }
+.triage-tooth-notes .kv-label{ flex:0 0 auto; }

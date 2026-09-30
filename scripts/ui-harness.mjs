@@ -2989,6 +2989,116 @@ async function main() {
     store.setUser(currentUser);
   }
 
+  // ---- v1.11.0: the treating dentist SEES what triage found ----
+  {
+    currentUser = db.login('admin', 'admin');
+    const store = (await import('../src/renderer/js/store.js')).store;
+    store.setUser(currentUser);
+    const { renderProvider } = await import('../src/renderer/js/views/provider.js');
+    const { renderHygienist } = await import('../src/renderer/js/views/hygienist.js');
+    const tfCtx = { navigate: () => {}, toast: () => {}, store, setDetail: () => {} };
+    const asDoc2 = async (u) => { const r = await window.api.authLogin({ username: u, password: 'x' }); currentUser = db.login(u, 'x'); store.setUser(r.data); return r; };
+
+    const fp = db.createPatient(currentUser, {
+      first_name: 'See', last_name: 'Findings', demographics: {}, medical_history: {},
+      dental_history: { reason: 'Lower left pain', visit_type: 'filling' }, route: 'dentist', consents: SIGNED,
+    });
+    db.saveVitals(currentUser, fp.id, { bp_systolic: 122, bp_diastolic: 78, heart_rate: 70 });
+    db.routePatient(currentUser, fp.id, 'dentist');
+    db.saveTriage(db.login('alpha', 'x'), fp.id, {
+      complaint: 'Lower left pain',
+      teeth: ['19'], teeth_notes: { 19: 'deep caries, cold sensitive' },
+      notes: 'Alpha: likely needs extraction if the filling fails',
+    }, { attribute: true });
+
+    await asDoc2('beta');
+    const bView = renderProvider(tfCtx, { id: fp.id });
+    document.body.append(bView);
+    for (let i = 0; i < 16; i++) await tick();
+    const txt = bView.textContent;
+    log(/Triage findings/.test(txt), 'v1.11.0: the treating dentist sees a Triage findings card');
+    log(/Lower left pain/.test(txt), 'v1.11.0: ...with the chief complaint from triage');
+    log(/deep caries, cold sensitive/.test(txt),
+      'v1.11.0: ...with the PER-TOOTH note as text, not hidden in a tooltip');
+    log(/Alpha: likely needs extraction/.test(txt), 'v1.11.0: ...and the triage notes');
+    log(/Dr Alpha/.test(txt), 'v1.11.0: ...naming the dentist who recorded them');
+    const card = bView.querySelector('.triage-findings');
+    log(!!card && !card.querySelector('input, textarea'),
+      'v1.11.0: ...and the card is read-only for a dentist who did not record it');
+
+    // The hygienist reads the same card.
+    const hp = db.createPatient(db.login('admin', 'admin'), {
+      first_name: 'Hyg', last_name: 'Reads', demographics: {}, medical_history: {},
+      dental_history: { reason: 'Cleaning', visit_type: 'cleaning' }, route: 'hygienist', consents: SIGNED,
+    });
+    db.saveVitals(db.login('admin', 'admin'), hp.id, { bp_systolic: 118, bp_diastolic: 74, heart_rate: 66 });
+    db.routePatient(db.login('admin', 'admin'), hp.id, 'hygienist');
+    db.saveTriage(db.login('alpha', 'x'), hp.id, { complaint: 'Heavy calculus', notes: 'Alpha: scale with care' }, { attribute: true });
+    currentUser = db.login('admin', 'admin'); store.setUser(currentUser);
+    const hView = renderHygienist(tfCtx, { id: hp.id });
+    document.body.append(hView);
+    for (let i = 0; i < 16; i++) await tick();
+    log(/Triage findings/.test(hView.textContent) && /Alpha: scale with care/.test(hView.textContent),
+      'v1.11.0: the hygienist sees the same triage findings');
+
+    // On a screen that cannot record triage, an untriaged patient must SAY so —
+    // silence would read as "triage found nothing to worry about".
+    const uh = db.createPatient(currentUser, {
+      first_name: 'Not', last_name: 'Triaged', demographics: {}, medical_history: {},
+      dental_history: { reason: 'Cleaning', visit_type: 'cleaning' }, route: 'hygienist', consents: SIGNED,
+    });
+    db.saveVitals(currentUser, uh.id, { bp_systolic: 120, bp_diastolic: 76, heart_rate: 68 });
+    db.routePatient(currentUser, uh.id, 'hygienist');
+    const uhView = renderHygienist(tfCtx, { id: uh.id });
+    document.body.append(uhView);
+    for (let i = 0; i < 16; i++) await tick();
+    log(/has not been seen by a triage dentist/.test(uhView.textContent),
+      'v1.11.0: where triage cannot be recorded, an untriaged patient says so rather than showing nothing');
+
+    // A dentist opening an untriaged patient gets the form instead — they are
+    // allowed to be the one who triages.
+    const up = db.createPatient(currentUser, {
+      first_name: 'Not', last_name: 'TriagedYet', demographics: {}, medical_history: {},
+      dental_history: { reason: 'Check-up', visit_type: 'filling' }, route: 'dentist', consents: SIGNED,
+    });
+    db.saveVitals(currentUser, up.id, { bp_systolic: 120, bp_diastolic: 76, heart_rate: 68 });
+    db.routePatient(currentUser, up.id, 'dentist');
+
+    // The triage dentist can record from this screen, and it attributes.
+    currentUser = db.login('admin', 'admin'); store.setUser(currentUser);
+    await asDoc2('alpha');
+    const aView = renderProvider(tfCtx, { id: up.id });
+    document.body.append(aView);
+    for (let i = 0; i < 16; i++) await tick();
+    const aCard = aView.querySelector('.triage-findings--edit');
+    log(!!aCard, 'v1.11.0: a dentist may RECORD triage when nobody has yet');
+    if (aCard) {
+      const cin = aCard.querySelector('input');
+      const cta = aCard.querySelector('textarea');
+      if (cin) setInput(cin, 'Upper right ache');
+      if (cta) setInput(cta, 'Alpha: watch #3');
+      const sb = Array.from(aCard.querySelectorAll('button')).find((b) => /Save triage findings/i.test(b.textContent));
+      if (sb) { sb.click(); for (let i = 0; i < 12; i++) await tick(); }
+    }
+    const rec = db.getPatient(up.id);
+    log(rec.triage.notes === 'Alpha: watch #3' && rec.triaged_by_name === 'Dr Alpha',
+      'v1.11.0: ...and recording attributes the findings to them');
+
+    // The queue tells the triage dentist who still needs them.
+    const qView = renderProvider(tfCtx, {});
+    document.body.append(qView);
+    for (let i = 0; i < 14; i++) await tick();
+    // Both states must be present, not either: an || here would have passed
+    // while listPatients was not fetching triaged_at at all, so every patient
+    // read as "Needs triage".
+    const qText = qView.textContent;
+    log(/Needs triage/.test(qText), 'v1.11.0: the dentist queue flags who still needs triage');
+    log(/Dr Alpha/.test(qText), 'v1.11.0: ...and names the dentist who triaged the others');
+
+    currentUser = db.login('admin', 'admin');
+    store.setUser(currentUser);
+  }
+
   await tick();
   if (errors.length) errors.forEach((e) => log(false, 'RUNTIME: ' + e));
   const failed = results.filter((r) => !r[0]).length;

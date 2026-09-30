@@ -1687,7 +1687,7 @@ function listPatients({ eventId, search } = {}) {
   sql += ' ORDER BY p.created_at DESC';
   return db.prepare(sql).all(...args).map((p) => {
     const pt = rowToPatient(p);
-    const tr = db.prepare('SELECT status, complaint, flags, assigned_to, route, bp_systolic, bp_diastolic, heart_rate, blood_thinner, emt_signed_off, vitals_at, routed_at FROM triage WHERE patient_id = ?').get(p.id);
+    const tr = db.prepare('SELECT status, complaint, flags, assigned_to, route, bp_systolic, bp_diastolic, heart_rate, blood_thinner, emt_signed_off, vitals_at, routed_at, triaged_at, triaged_by_name FROM triage WHERE patient_id = ?').get(p.id);
     return {
       id: pt.id,
       first_name: pt.first_name,
@@ -1707,6 +1707,10 @@ function listPatients({ eventId, search } = {}) {
       flags: tr ? safeJson(tr.flags, []) : [],
       assigned_to: tr ? tr.assigned_to : null,
       route: tr ? tr.route : null,
+      // Who triaged, and when — so a queue can show which patients still need
+      // the triage dentist without opening each one.
+      triaged_at: tr ? tr.triaged_at : null,
+      triaged_by_name: tr ? (tr.triaged_by_name || null) : null,
       has_vitals: !!(tr && (tr.bp_systolic != null || tr.heart_rate != null)),
       preregistered: !!(pt.demographics && pt.demographics.preregistered),
       // v1.5.24: front-desk arrival state — confirmed present, and whether the
