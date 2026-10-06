@@ -178,7 +178,9 @@ export function renderDashboard(ctx) {
 
     // ---- Live CRM board ----
     const groups = {}; STAGES.forEach((s) => { groups[s.key] = []; });
-    patients.forEach((p) => { groups[stageOf(p)].push(p); });
+    // A no-show was never in the building, so they are not on the floor board —
+    // otherwise they would sit in "Checked in" for the rest of the clinic.
+    patients.filter((p) => p.status !== 'no_show').forEach((p) => { groups[stageOf(p)].push(p); });
 
     const crmCard = (p) => {
       const foot = [];
@@ -287,6 +289,7 @@ export function statusPill(status) {
     in_treatment: ['In treatment', 'pill--warning'],
     completed: ['Completed', 'pill--success'],
     dismissed: ['Checked out', 'pill--neutral'],
+    no_show: ['No-show', 'pill--neutral'],
   };
   const [label, cls] = map[status] || [status, 'pill--neutral'];
   return el('span', { class: `pill ${cls}` }, [el('span', { class: 'pill-dot' }), label]);

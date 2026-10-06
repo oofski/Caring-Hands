@@ -1492,6 +1492,7 @@ function addStationNote(actor, patientId, note) {
 }
 
 function saveVitals(actor, patientId, data) {
+  refuseNoShow(patientId, 'have vitals recorded');
   const tr = db.prepare('SELECT id FROM triage WHERE patient_id = ?').get(patientId);
   const d = data || {};
   const sys = toIntOrNull(d.bp_systolic), dia = toIntOrNull(d.bp_diastolic), hr = toIntOrNull(d.heart_rate);
@@ -1553,6 +1554,7 @@ function requireVitals(patientId) {
 }
 function routePatient(actor, patientId, route) {
   if (!ROUTES.includes(route)) throw new Error('Choose where the patient goes next: dentist, hygienist, or both.');
+  refuseNoShow(patientId, 'be sent to a station');
   requireVitals(patientId);
   // The consent gate used to live only on the Arrivals screen — but Arrivals is
   // a separate confirmation step that can be skipped, and the vitals station
@@ -1619,7 +1621,109 @@ function arrivalReadiness(patientId) {
 // The front desk marking a patient as physically present and ready to be seen.
 // Deliberately refuses when a required consent is unsigned or no station is
 // assigned — this is the last checkpoint before a patient enters clinical care.
+/* ------------------------------------------------------------------ */
+/*  No-shows                                                           */
+/* ------------------------------------------------------------------ */
+
+// A patient who signed up online and never came.
+//
+// Until v1.13.0 there was no such thing, so a pre-registration that never
+// walked in sat at 'checked_in' forever — and summarize() counts every row as a
+// patient SEEN. Sixteen no-shows at one Sandy clinic went into the grant figures
+// as sixteen people treated, on the Reports screen, in the totals kept when the
+// clinic is finished, on the coordinator PDF and in the Excel export.
+//
+// It is a status, not a column: `status` already travels in sync, so marking
+// someone changes their row's content and nothing else — no SYNC_COLS change,
+// no re-baseline. Who marked them, and when, goes in demographics beside
+// `preregistered`, which is the same kind of workflow fact and already lives
+// there. It is reversible, because the person may simply be late.
+const NO_SHOW = 'no_show';
+
+// Every path that would move a patient onward refuses a no-show instead of
+// quietly accepting it. Without this, check-out, vitals, triage and treatment
+// all FAILED OPEN: a no-show could be checked out and counted as a visit.
+function refuseNoShow(patientId, doing) {
+  const p = db.prepare('SELECT status, first_name, last_name FROM patients WHERE id = ?').get(patientId);
+  if (p && p.status === NO_SHOW) {
+    throw new Error(`${`${p.first_name || ''} ${p.last_name || ''}`.trim() || 'This patient'} is marked as a no-show, so they cannot ${doing}. `
+      + 'If they have arrived after all, use “They came after all” on the Arrivals screen first.');
+  }
+}
+
+// Why this patient cannot be a no-show, or null if they can. Only someone who
+// signed up online and has shown no sign of being here: a desk registration was
+// physically present by definition, and anyone the desk confirmed or the vitals
+// station saw obviously came.
+function noShowBlocker(p, tr) {
+  if (!p) return 'the patient was not found';
+  if (p.status === NO_SHOW) return 'they are already marked as a no-show';
+  const demo = safeJson(p.demographics, {}) || {};
+  if (!demo.preregistered) return 'they registered at the desk, so they were here';
+  if (p.status !== 'checked_in') return 'they have already been seen at a station';
+  if (p.arrived_at) return 'the front desk has already confirmed they are here';
+  if (tr && (tr.bp_systolic != null || tr.bp_diastolic != null || tr.heart_rate != null)) return 'their vitals have been taken';
+  return null;
+}
+
+// What the renderer is told. The front desk does not hold patients:get, so
+// these channels hand back the outcome, never the chart.
+const noShowResult = (id) => {
+  const p = db.prepare('SELECT id, status FROM patients WHERE id = ?').get(id);
+  return p ? { id: p.id, status: p.status } : null;
+};
+
+function markNoShow(actor, patientId) {
+  const p = db.prepare('SELECT * FROM patients WHERE id = ?').get(patientId);
+  const tr = p ? db.prepare('SELECT bp_systolic, bp_diastolic, heart_rate FROM triage WHERE patient_id = ?').get(patientId) : null;
+  const why = noShowBlocker(p, tr);
+  const name = p ? `${p.first_name || ''} ${p.last_name || ''}`.trim() : '';
+  if (why) throw new Error(`${name || 'This patient'} cannot be marked as a no-show — ${why}.`);
+  const demo = safeJson(p.demographics, {}) || {};
+  demo.no_show_at = now();
+  demo.no_show_by_name = (actor && actor.full_name) || null;
+  db.prepare('UPDATE patients SET status = ?, demographics = ?, updated_at = ? WHERE id = ?')
+    .run(NO_SHOW, JSON.stringify(demo), now(), patientId);
+  audit(actor, 'no_show', 'patient', patientId, name);
+  return noShowResult(patientId);
+}
+
+// They came after all. Straight back to waiting at the desk, exactly where they
+// were before, with the stamp removed so nothing reads as a no-show.
+function undoNoShow(actor, patientId) {
+  const p = db.prepare('SELECT * FROM patients WHERE id = ?').get(patientId);
+  if (!p) throw new Error('Patient not found.');
+  if (p.status !== NO_SHOW) throw new Error('This patient is not marked as a no-show.');
+  const demo = safeJson(p.demographics, {}) || {};
+  delete demo.no_show_at;
+  delete demo.no_show_by_name;
+  db.prepare("UPDATE patients SET status = 'checked_in', demographics = ?, updated_at = ? WHERE id = ?")
+    .run(JSON.stringify(demo), now(), patientId);
+  audit(actor, 'no_show_undo', 'patient', patientId, `${p.first_name || ''} ${p.last_name || ''}`.trim());
+  return noShowResult(patientId);
+}
+
+// Everyone in this clinic who signed up online and has shown no sign of coming.
+function noShowCandidates(eventId) {
+  const evId = Number(eventId || getSetting('active_event_id'));
+  return db.prepare(
+    `SELECT p.* , t.bp_systolic, t.bp_diastolic, t.heart_rate
+       FROM patients p LEFT JOIN triage t ON t.patient_id = p.id
+      WHERE p.event_id = ? AND p.status = 'checked_in' AND p.arrived_at IS NULL`
+  ).all(evId).filter((p) => !noShowBlocker(p, p));
+}
+
+// The end-of-clinic sweep: mark every remaining pre-registration as a no-show
+// in one go. One transaction, so it is all or nothing.
+function markNoShows(actor, eventId) {
+  const list = noShowCandidates(eventId);
+  const tx = db.transaction(() => { list.forEach((p) => markNoShow(actor, p.id)); });
+  tx();
+  return { marked: list.length };
+}
+
 function confirmArrival(actor, patientId, opts = {}) {
+  refuseNoShow(patientId, 'be confirmed as here');
   const r = arrivalReadiness(patientId);
   const route = ['dentist', 'hygienist'].includes(opts.route) ? opts.route : r.route;
   if (!r.general_signed) throw new Error('The general consent has not been signed yet. Have the patient sign it before sending them through.');
@@ -1670,6 +1774,7 @@ function updateConsentTeeth(actor, consentId, toothNumbers) {
 function dismissPatient(actor, id) {
   const p = db.prepare('SELECT * FROM patients WHERE id = ?').get(id);
   if (!p) throw new Error('Patient not found.');
+  refuseNoShow(id, 'be checked out');
   // v1.2.1: patients move through the stations freely — check-out no longer
   // requires the provider to have signed off and LOCKED the record. We only
   // guard the obvious cases so nobody is dismissed before they've been seen.
@@ -1691,6 +1796,9 @@ function adminMovePatient(actor, id, target) {
   if (!MOVE_TARGETS.includes(target)) throw new Error('Unknown move target.');
   const p = db.prepare('SELECT * FROM patients WHERE id = ?').get(id);
   if (!p) throw new Error('Patient not found.');
+  // Back to check-in IS the undo, so it is allowed — and clears the stamp
+  // below. Every other move would carry a no-show onward as if they came.
+  if (target !== 'checkin') refuseNoShow(id, 'be moved there');
   // Moving TO a treatment chair still obeys the vitals gate, so an override
   // can't quietly walk a patient past the vitals station.
   if (target === 'dentist' || target === 'hygienist') return routePatient(actor, id, target);
@@ -1701,6 +1809,11 @@ function adminMovePatient(actor, id, target) {
     // patient reappears in the arrivals list and the vitals queue.
     db.prepare(`UPDATE patients SET status='checked_in', arrived_at=NULL, arrived_by_name=NULL,
                   dismissed_by=NULL, dismissed_by_name=NULL, dismissed_at=NULL, updated_at=? WHERE id=?`).run(now(), id);
+    if (p.status === NO_SHOW) {
+      const demo = safeJson(p.demographics, {}) || {};
+      delete demo.no_show_at; delete demo.no_show_by_name;
+      db.prepare('UPDATE patients SET demographics = ? WHERE id = ?').run(JSON.stringify(demo), id);
+    }
     db.prepare(`UPDATE triage SET route=NULL, routed_by=NULL, routed_at=NULL, emt_signed_off=0,
                   status='waiting' WHERE patient_id=?`).run(id);
     db.prepare('UPDATE treatments SET locked=0 WHERE patient_id=?').run(id);
@@ -1941,6 +2054,7 @@ function searchAllPatients(term) {
 // field on `data` so that a future caller spreading an existing row
 // (`{ ...p.triage, notes }`) cannot smuggle it back in.
 function saveTriage(actor, patientId, data, opts) {
+  refuseNoShow(patientId, 'be triaged');
   const existing = db.prepare('SELECT id FROM triage WHERE patient_id = ?').get(patientId);
   const d = data || {};
   const has = (k) => Object.prototype.hasOwnProperty.call(d, k);
@@ -2063,6 +2177,7 @@ function reopenTreatment(actor, patientId) {
 }
 
 function saveTreatment(actor, patientId, data, finalize) {
+  refuseNoShow(patientId, 'have treatment recorded');
   const existing = db.prepare('SELECT * FROM treatments WHERE patient_id = ?').get(patientId);
   if (existing && existing.locked) throw new Error('This record is locked and signed off.');
   const d = data || {};
@@ -2212,7 +2327,9 @@ function dashboardStats() {
   const base = 'SELECT COUNT(*) AS n FROM patients WHERE event_id = ?';
   const count = (extra, ...a) => db.prepare(base + extra).get(evId, ...a).n;
   return {
-    total: count(''),
+    // A no-show was never in the clinic; counting them in "today" is the
+    // dashboard version of counting them as seen.
+    total: count(" AND status != 'no_show'"),
     checked_in: count(" AND status = 'checked_in'"),
     triaged: count(" AND status = 'triaged'"),
     in_treatment: count(" AND status = 'in_treatment'"),
@@ -2439,8 +2556,21 @@ function summarize(event, patients, treatmentOf, xrayCountOf, triageOf) {
   let extractions = 0, fillings = 0, cleanings = 0, xrays = 0, completed = 0;
   let checked_out = 0, flagged = 0, patients_with_xray = 0;
   let pre_signups = 0, pre_checked_out = 0, onsite_signups = 0, onsite_checked_out = 0;
+  let no_shows = 0, pre_no_show = 0;
+  let seenCount = 0;
   for (const p of patients) {
     const d = p.demographics || {}, m = p.medical_history || {}, dh = p.dental_history || {};
+    // Someone who signed up and never came. They count as a SIGN-UP — that is
+    // what the "Sign-ups vs check-outs" card measures, and it is exactly the gap
+    // that card could never explain — and as nothing else. Not seen, not in any
+    // breakdown of who the clinic saw, not on any day's chart.
+    if (p.status === 'no_show') {
+      no_shows++;
+      bump(by_status, p.status);
+      if (d.preregistered) { pre_signups++; pre_no_show++; } else onsite_signups++;
+      continue;
+    }
+    seenCount++;
     bump(by_gender, p.gender); bump(by_age, ageBand(ageAtVisit(p))); bump(by_language, p.language);
     bump(by_city, d.city ? (d.city + (d.state ? ', ' + d.state : '')) : 'Not recorded');
     bump(by_day, dayOf(p.created_at));
@@ -2473,12 +2603,14 @@ function summarize(event, patients, treatmentOf, xrayCountOf, triageOf) {
     event_name: event ? event.name : null,
     event_location: event ? event.location : null,
     event_start: event ? event.start_date : null,
-    patients_seen: patients.length,
+    // Not patients.length: a no-show is a row, not a visit.
+    patients_seen: seenCount,
     visits_completed: completed,
     checked_out,
     flagged,
     patients_with_xray,
     pre_signups, pre_checked_out, onsite_signups, onsite_checked_out,
+    no_shows, pre_no_show,
     extractions, fillings, cleanings, xrays,
     by_gender, by_age, by_language, by_city, by_day, by_status, visit_types,
     conditions,
@@ -2505,6 +2637,7 @@ function buildEventSummary(eventId) {
 function mergeSummaries(list) {
   const NUM = ['patients_seen', 'visits_completed', 'checked_out', 'flagged', 'patients_with_xray',
     'pre_signups', 'pre_checked_out', 'onsite_signups', 'onsite_checked_out',
+    'no_shows', 'pre_no_show',
     'extractions', 'fillings', 'cleanings', 'xrays'];
   const MAPS = ['by_gender', 'by_age', 'by_language', 'by_city', 'by_day', 'by_status', 'visit_types', 'conditions'];
   const out = { generated_at: now() };
@@ -2563,9 +2696,13 @@ function reportRollup(scope) {
   }
   for (const ev of wanted) {
     const n = db.prepare('SELECT COUNT(*) AS n FROM patients WHERE event_id = ?').get(ev.id).n;
+    // The partial-restore test compares like with like: a kept "patients seen"
+    // against the live patients who were SEEN. Counting no-show rows here would
+    // let sixteen people who never came hide a genuinely partial restore.
+    const nSeen = db.prepare("SELECT COUNT(*) AS n FROM patients WHERE event_id = ? AND status != 'no_show'").get(ev.id).n;
     const keptRec = keptBy.get(ev.id);
     const keptSeen = keptRec && keptRec.summary ? (Number(keptRec.summary.patients_seen) || 0) : 0;
-    if (n > 0 && keptSeen > n) {
+    if (n > 0 && keptSeen > nSeen) {
       // The clinic has a kept report covering MORE people than are on this
       // computer right now — a partial restore, or someone checked in after the
       // clinic was finished. Counting only the live rows made a six-patient
@@ -2639,7 +2776,15 @@ function clinicReport(eventId) {
   const txOf = db.prepare('SELECT * FROM treatments WHERE patient_id = ?');
   const trOf = db.prepare('SELECT * FROM triage WHERE patient_id = ?');
   const xnOf = db.prepare('SELECT COUNT(*) AS n FROM xrays WHERE patient_id = ?');
-  const roster = patients.map((p) => {
+  // No-shows are listed on their own, never as rows of zeros in the roster: the
+  // roster's columns must total to the KPIs beside it, and "Patients seen" no
+  // longer includes anyone who did not come.
+  const noShows = patients.filter((p) => p.status === 'no_show').map((p) => ({
+    id: p.id, last_name: p.last_name, first_name: p.first_name, phone: p.phone || '',
+    preregistered: !!(p.demographics && p.demographics.preregistered),
+    no_show_by_name: (p.demographics && p.demographics.no_show_by_name) || '',
+  }));
+  const roster = patients.filter((p) => p.status !== 'no_show').map((p) => {
     const t = txOf.get(p.id);
     const tr = trOf.get(p.id) || {};
     const d = p.demographics || {};
@@ -2672,6 +2817,7 @@ function clinicReport(eventId) {
     event: event ? { id: event.id, name: event.name, location: event.location, start_date: event.start_date, end_date: event.end_date } : null,
     rollup,
     roster,
+    no_shows: noShows,
     roster_available: roster.length > 0,
     generated_at: now(),
   };
@@ -2799,11 +2945,19 @@ function finishPreflight(eventId) {
   if (!ev) throw new Error('Event not found.');
   const one = (sql, ...args) => db.prepare(sql).get(...args).n;
   const patients = one('SELECT COUNT(*) AS n FROM patients WHERE event_id = ?', evId);
+  // Signed up online and never came, and nobody has said so yet. Finishing now
+  // records every one of them as a patient SEEN, permanently — the kept totals
+  // cannot be corrected once the records are gone.
+  const unmarkedNoShows = noShowCandidates(evId).length;
   // Anyone the clinic has not finished with. These people are still in the
   // building; their records are about to be deleted out from under them.
+  //
+  // Read from the PATIENT's status. It used to read triage.status, which is
+  // never set to 'dismissed' by anything, so a patient an admin checked out
+  // before their visit was marked complete was counted as still queued.
   const queued = one(
-    `SELECT COUNT(*) AS n FROM patients p LEFT JOIN triage t ON t.patient_id = p.id
-      WHERE p.event_id = ? AND COALESCE(t.status, 'waiting') NOT IN ('completed', 'dismissed')`, evId);
+    `SELECT COUNT(*) AS n FROM patients
+      WHERE event_id = ? AND status NOT IN ('completed', 'dismissed', 'no_show')`, evId) - unmarkedNoShows;
   // Seen by a clinician, never signed off. Not an error — signing off is
   // optional — but it is the last moment anyone can do it.
   const unsigned = one(
@@ -2833,6 +2987,7 @@ function finishPreflight(eventId) {
     event_name: ev.name,
     patients,
     queued,
+    unmarked_no_shows: unmarkedNoShows,
     unsigned,
     xrays,
     last_export: lastExport,
@@ -3395,6 +3550,7 @@ module.exports = {
   addXray, updateXrayTooth, getXray, listXrays, deleteXray,
   recordClinicExport, lastClinicExport, finishPreflight, clinicReport,
   addStationNote, listStationNotes,
+  markNoShow, undoNoShow, markNoShows, noShowCandidates,
   rebaselineTriageSig, syncRowState, setSyncRowState,
   dashboardStats, listAudit, audit,
   backupTo, exportEventJson,

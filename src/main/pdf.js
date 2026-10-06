@@ -207,6 +207,12 @@ function triagedByLine(tr) {
   return `<div class="box"><span class="label">Triaged by: </span>${esc(tr.triaged_by_name || 'Not recorded')}${tr.triaged_at ? ' · ' + fmtDate(tr.triaged_at) : ''}</div>`;
 }
 
+// Statuses as a reader outside the app would say them.
+const STATUS_LABEL = {
+  checked_in: 'Checked in', triaged: 'Ready for treatment', in_treatment: 'In treatment',
+  completed: 'Completed', dismissed: 'Checked out', no_show: 'No-show (did not attend)',
+};
+
 function progressNoteBody(p) {
   const t = p.treatment || {};
   const tr = p.triage || {};
@@ -241,7 +247,7 @@ function progressNoteBody(p) {
     <table class="grid">
       <tr>${field('Patient', `${p.first_name} ${p.last_name}`)}${field('Date of Birth', p.dob)}</tr>
       <tr>${field('Age', p.age != null ? p.age : '—')}${field('Event', p.event ? p.event.name : '—')}</tr>
-      <tr>${field('Chief Complaint', tr.complaint)}${field('Status', p.status)}</tr>
+      <tr>${field('Chief Complaint', tr.complaint)}${field('Status', STATUS_LABEL[p.status] || p.status)}</tr>
     </table>
 
     <h2>Clinical Assessment</h2>
@@ -681,6 +687,9 @@ function clinicSummaryBody(data) {
       ${kpiCard(Number(s.flagged) || 0, 'With a medical flag', 'allergy, condition or pregnancy')}
       ${kpiCard(Number(s.checked_out) || 0, 'Checked out')}
     </div>
+    ${Number(s.no_shows) ? `<div class="kpis">
+      ${kpiCard(Number(s.no_shows), 'Signed up but did not attend', 'not counted in patients seen')}
+    </div>` : ''}
 
     <h2>Who the clinic saw</h2>
     <div class="two">
@@ -702,7 +711,7 @@ function rosterBody(data) {
     return `<div class="pagebreak"></div><h2>Patient roster</h2>
       <div class="warn">${r.source === 'kept'
         ? 'This clinic has been closed and its patient records removed from this computer, so there is no roster to print. The figures on the previous page are the totals that were kept.'
-        : 'No patient records were found for this clinic.'}</div>`;
+        : 'No patient records were found for this clinic.'}</div>${noShowList(data)}`;
   }
   const yesNo = (b) => (b ? 'Yes' : '—');
   const rows = roster.map((p) => {
@@ -752,6 +761,21 @@ function rosterBody(data) {
         <td class="n"><b>${esc(sum('xrays'))}</b></td>
         <td></td><td></td>
       </tr></tfoot>
+    </table>
+    ${noShowList(data)}`;
+}
+
+// Who signed up and never came — by name, on the internal copy only, so a
+// coordinator can follow up. Kept out of the roster table on purpose: those
+// columns total to the KPIs, and "Patients seen" does not include them.
+function noShowList(data) {
+  const list = (data && data.no_shows) || [];
+  if (!list.length) return '';
+  const rows = list.map((p) => `<tr><td>${esc(p.last_name)}, ${esc(p.first_name)}</td><td>${esc(p.phone || '—')}</td><td>${esc(p.no_show_by_name || '—')}</td></tr>`).join('');
+  return `<h2>Signed up but did not attend (${esc(list.length)})</h2>
+    <table class="rtable">
+      <thead><tr><th>Patient</th><th>Phone</th><th>Marked by</th></tr></thead>
+      <tbody>${rows}</tbody>
     </table>`;
 }
 

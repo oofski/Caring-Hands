@@ -59,6 +59,7 @@ function clinicSheets(bundle) {
   const STATUS = {
     checked_in: 'Checked in', triaged: 'Ready for treatment',
     in_treatment: 'In treatment', completed: 'Completed', dismissed: 'Checked out',
+    no_show: 'No-show (did not attend)',
   };
 
   const patientRows = patients.map((p) => {

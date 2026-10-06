@@ -62,6 +62,7 @@ const PERMS = {
   'usbLoad': ['admin', 'doctor', 'triage', 'checkout'], 'usbUploadCheckout': ['admin', 'doctor', 'triage', 'checkout'], 'usbClear': ['admin', 'doctor', 'triage', 'checkout'],
   'triageSave': ['admin', 'doctor', 'triage'], 'treatmentSave': ['admin', 'doctor', 'hygienist'],
   'triageStationNote': ['admin', 'registration', 'emt'],
+  'patientsNoShow': ['admin', 'registration'], 'patientsNoShowUndo': ['admin', 'registration'], 'patientsNoShowAll': ['admin', 'registration'],
   'triageStationNotes': ['admin', 'registration', 'emt', 'doctor', 'triage', 'hygienist', 'checkout'],
   'xrayAdd': ['admin', 'doctor', 'triage'], 'xraySetTooth': ['admin', 'doctor'], 'xrayGet': ['admin', 'doctor', 'triage', 'hygienist'], 'xrayList': ['admin', 'doctor', 'triage', 'hygienist'], 'xrayDelete': ['admin', 'doctor', 'triage'],
   'xrayFolderConfig': ['admin', 'doctor'], 'xrayFolderChoose': ['admin', 'doctor'], 'xrayFolderLock': ['admin', 'doctor'], 'xrayFolderDelete': ['admin', 'doctor'], 'xrayDeleteFile': ['admin', 'doctor'],
@@ -117,6 +118,9 @@ window.api = {
   treatmentSave: okWrap(({ patientId, data, finalize }) => db.saveTreatment(currentUser, patientId, data, finalize), 'treatmentSave'),
   vitalsSave: okWrap(({ patientId, data }) => db.saveVitals(currentUser, patientId, data), 'vitalsSave'),
   triageStationNote: okWrap(({ patientId, note }) => db.addStationNote(currentUser, patientId, note), 'triageStationNote'),
+  patientsNoShow: okWrap(({ id }) => db.markNoShow(currentUser, id), 'patientsNoShow'),
+  patientsNoShowUndo: okWrap(({ id }) => db.undoNoShow(currentUser, id), 'patientsNoShowUndo'),
+  patientsNoShowAll: okWrap(({ eventId } = {}) => db.markNoShows(currentUser, eventId), 'patientsNoShowAll'),
   triageStationNotes: okWrap(({ patientId }) => db.listStationNotes(patientId), 'triageStationNotes'),
   patientsRoute: okWrap(({ patientId, route }) => db.routePatient(currentUser, patientId, route), 'patientsRoute'),
   consentSetTeeth: okWrap(({ consentId, tooth_numbers }) => db.updateConsentTeeth(currentUser, consentId, tooth_numbers), 'consentSetTeeth'),
@@ -3715,6 +3719,212 @@ async function main() {
 
     currentUser = db.login('admin', 'admin');
     storeF.setUser(currentUser);
+  }
+
+  // ---- v1.13.0: no-shows — signed up online, never came ----
+  {
+    currentUser = db.login('admin', 'admin');
+    const storeN = (await import('../src/renderer/js/store.js')).store;
+    storeN.setUser(currentUser);
+    const pdfN = require('../src/main/pdf.js');
+    const nCtx = { navigate: () => {}, toast: () => {}, store: storeN, setDetail: () => {} };
+    const refuses = (fn) => { try { fn(); return ''; } catch (e) { return e.message; } };
+    const confirmModal = async (re) => {
+      for (let i = 0; i < 6; i++) await tick();
+      const b = Array.from(document.querySelectorAll('.modal-card button')).find((x) => re.test(x.textContent));
+      if (b) b.click();
+      for (let i = 0; i < 10; i++) await tick();
+      return !!b;
+    };
+
+    const evN = db.createEvent(currentUser, { name: 'No-show Clinic' });
+    db.setActiveEvent(currentUser, evN.id);
+    const pre = (first, last, extra = {}) => db.createPatient(currentUser, {
+      first_name: first, last_name: last, dob: '1975-05-05', gender: 'female', phone: extra.phone || '5035553000',
+      demographics: { preregistered: true, city: 'Sandy', state: 'OR' }, medical_history: {},
+      dental_history: { reason: 'Pain', visit_type: 'filling' }, route: 'dentist', consents: SIGNED,
+    });
+    const nora = pre('Nora', 'Absent', { phone: '5035553111' });
+    const ned = pre('Ned', 'Missing');
+    const ana = pre('Ana', 'Arrived');
+    const sam = pre('Sam', 'Seen');
+    const walk = db.createPatient(currentUser, {
+      first_name: 'Wally', last_name: 'Walkin', demographics: { city: 'Sandy', state: 'OR' }, medical_history: {},
+      dental_history: { reason: 'Pain', visit_type: 'filling' }, route: 'dentist', consents: SIGNED,
+    });
+    db.confirmArrival(currentUser, ana.id, { route: 'dentist' });
+    db.saveVitals(currentUser, sam.id, { bp_systolic: 120, bp_diastolic: 78, heart_rate: 70 });
+    db.routePatient(currentUser, sam.id, 'dentist');
+    db.saveTreatment(currentUser, sam.id, { fillings: [{ tooth: '3', surfaces: ['O'] }], provider_name: 'Dr Admin' }, 'complete');
+    db.dismissPatient(currentUser, sam.id);
+
+    // BEFORE: the bug. Every row was a patient seen.
+    const seenBefore = db.reportRollup(evN.id).summary.patients_seen;
+    log(seenBefore === 5, 'v1.13.0: (setup) before anyone is marked, all 5 rows count as seen — including the two who never came');
+
+    // Marking: only a pre-registration that never showed any sign of coming.
+    const desk = db.createUser(currentUser, { username: 'desk13', full_name: 'Dana Desk', role: 'registration', password: 'x' });
+    const r1 = db.markNoShow(db.login('desk13', 'x'), nora.id);
+    log(r1 && r1.status === 'no_show' && db.getPatient(nora.id).status === 'no_show',
+      'v1.13.0: the front desk can mark a pre-registered patient who never came as a no-show');
+    log(db.getPatient(nora.id).demographics.no_show_by_name === 'Dana Desk' && !!db.getPatient(nora.id).demographics.no_show_at,
+      'v1.13.0: ...and it records who marked them and when, in a field that travels between laptops');
+    log(!('treatment' in r1) && !('medical_history' in r1),
+      'v1.13.0: ...and hands the front desk back the outcome, never the chart');
+    log(/registered at the desk/.test(refuses(() => db.markNoShow(currentUser, walk.id))),
+      'v1.13.0: a desk registration cannot be a no-show — they were in front of the desk');
+    log(/confirmed they are here/.test(refuses(() => db.markNoShow(currentUser, ana.id))),
+      'v1.13.0: someone the desk confirmed as here cannot be a no-show');
+    log(/already been seen|vitals/.test(refuses(() => db.markNoShow(currentUser, sam.id))),
+      'v1.13.0: someone already seen at a station cannot be a no-show');
+
+    // EVERY onward path refuses a no-show. These all failed open before.
+    const noShowErr = /marked as a no-show/;
+    log(noShowErr.test(refuses(() => db.dismissPatient(currentUser, nora.id))), 'v1.13.0: a no-show cannot be checked out (it used to be allowed, and counted as a visit)');
+    log(noShowErr.test(refuses(() => db.saveVitals(currentUser, nora.id, { bp_systolic: 120, bp_diastolic: 80, heart_rate: 70 }))), 'v1.13.0: ...cannot have vitals recorded');
+    log(noShowErr.test(refuses(() => db.routePatient(currentUser, nora.id, 'dentist'))), 'v1.13.0: ...cannot be sent to a station');
+    log(noShowErr.test(refuses(() => db.confirmArrival(currentUser, nora.id, { route: 'dentist' }))), 'v1.13.0: ...cannot be confirmed as here without undoing the no-show first');
+    log(noShowErr.test(refuses(() => db.saveTriage(currentUser, nora.id, { complaint: 'x' }, { attribute: true }))), 'v1.13.0: ...cannot be triaged');
+    log(noShowErr.test(refuses(() => db.saveTreatment(currentUser, nora.id, { fillings: [] }, 'complete'))), 'v1.13.0: ...cannot have treatment recorded');
+    log(noShowErr.test(refuses(() => db.adminMovePatient(currentUser, nora.id, 'dismiss'))), 'v1.13.0: ...and an admin override cannot check them out either');
+    log(db.getPatient(nora.id).status === 'no_show', 'v1.13.0: ...and none of those attempts changed anything');
+
+    // The counts. A no-show is a sign-up and nothing else.
+    const sm = db.reportRollup(evN.id).summary;
+    log(sm.patients_seen === 4, 'v1.13.0: a no-show is NOT counted as a patient seen');
+    log(sm.no_shows === 1 && sm.pre_no_show === 1, 'v1.13.0: ...it is counted as a no-show');
+    log(sm.pre_signups === 4, 'v1.13.0: ...and still as an online sign-up, which is what the sign-up card measures');
+    log(Object.values(sm.by_gender || {}).reduce((a, b) => a + b, 0) === 4 && Object.values(sm.by_city || {}).reduce((a, b) => a + b, 0) === 4,
+      'v1.13.0: ...and left out of every breakdown of who the clinic saw');
+    log(db.dashboardStats().total === 4, 'v1.13.0: the dashboard does not count a no-show as a patient today');
+
+    // End of clinic: the pre-flight warns, and the sweep marks the rest.
+    const pf = db.finishPreflight(evN.id);
+    log(pf.unmarked_no_shows === 1, 'v1.13.0: Finish Clinic warns that one pre-registration never arrived and is not marked');
+    log(pf.queued === 2, 'v1.13.0: ...and counts the arrived patient and the walk-in as still queued, but not the person who never came');
+    const swept = db.markNoShows(currentUser, evN.id);
+    log(swept.marked === 1 && db.getPatient(ned.id).status === 'no_show',
+      'v1.13.0: the end-of-clinic sweep marks exactly the pre-registrations who never arrived');
+    log(db.getPatient(ana.id).status === 'checked_in' && db.getPatient(walk.id).status === 'checked_in' && db.getPatient(sam.id).status === 'dismissed',
+      'v1.13.0: ...and leaves alone the arrived patient, the walk-in, and the one who was seen');
+    log(db.finishPreflight(evN.id).unmarked_no_shows === 0, 'v1.13.0: ...after which Finish Clinic has nothing to warn about');
+
+    // Reversible: they came after all.
+    const back = db.undoNoShow(currentUser, ned.id);
+    log(back.status === 'checked_in' && !db.getPatient(ned.id).demographics.no_show_at,
+      'v1.13.0: "They came after all" puts a no-show back in the waiting list with the stamp removed');
+    db.confirmArrival(currentUser, ned.id, { route: 'dentist' });
+    log(!!db.getPatient(ned.id).arrived_at, 'v1.13.0: ...and they can then be confirmed as here as normal');
+    // Admin's "back to check-in" is also an undo, and clears the stamp too.
+    db.adminMovePatient(currentUser, nora.id, 'checkin');
+    log(db.getPatient(nora.id).status === 'checked_in' && !db.getPatient(nora.id).demographics.no_show_at,
+      'v1.13.0: an admin moving a no-show back to check-in clears the no-show too');
+    db.markNoShow(currentUser, nora.id);
+
+    // Permissions: the desk's call.
+    currentUser = db.login('admin', 'admin'); storeN.setUser(currentUser);
+    const docU = db.listUsers().find((u) => u.role === 'doctor');
+    await window.api.authLogin({ username: docU.username, password: 'x' }); currentUser = db.login(docU.username, 'x');
+    const denied = await window.api.patientsNoShow({ id: walk.id });
+    log(denied.ok === false && /permission/i.test(denied.error || ''), 'v1.13.0: a dentist cannot mark a no-show — it is the front desk’s call');
+
+    // Sync: the status travels like any other.
+    currentUser = db.login('admin', 'admin'); storeN.setUser(currentUser);
+    const pushed = db.collectSyncRows(5000).rows.find((r) => r.entity === 'patient' && r.data && r.data.first_name === 'Nora');
+    log(!!pushed && pushed.data.status === 'no_show' && /no_show_by_name/.test(pushed.data.demographics || ''),
+      'v1.13.0: a no-show reaches the other laptops, with who marked it');
+
+    // The coordinator PDF: separate from the roster, counted, and named only on the internal copy.
+    const rep = db.clinicReport(evN.id);
+    log(rep.roster.every((r) => r.last_name !== 'Absent') && rep.no_shows.some((r) => r.last_name === 'Absent'),
+      'v1.13.0: the coordinator roster lists no-shows separately, not as rows of zeros');
+    const internal = pdfN.buildClinicHtml(rep, { withRoster: true });
+    const shareable = pdfN.buildClinicHtml(rep, { withRoster: false });
+    log(/Signed up but did not attend \(1\)/.test(internal) && /Absent/.test(internal),
+      'v1.13.0: ...the internal copy names them for follow-up');
+    log(/Signed up but did not attend/.test(shareable) && !/Absent/.test(shareable),
+      'v1.13.0: ...and the shareable copy gives the count with no names');
+    log(/No-show \(did not attend\)/.test(pdfN.buildHtml(db.getPatient(nora.id), 'progress')),
+      'v1.13.0: a patient record prints "No-show (did not attend)", not a raw code');
+
+    // ---- the screens ----
+    const { renderArrivals } = await import('../src/renderer/js/views/arrivals.js');
+    const fresh = pre('Fran', 'Late');
+    currentUser = db.login('desk13', 'x'); storeN.setUser(currentUser);
+    await window.api.authLogin({ username: 'desk13', password: 'x' });
+    const av = renderArrivals(nCtx, {});
+    document.body.append(av);
+    for (let i = 0; i < 14; i++) await tick();
+    const tabBtn = Array.from(av.querySelectorAll('button')).find((b) => /Pre-registered online/.test(b.textContent));
+    if (tabBtn) { tabBtn.click(); for (let i = 0; i < 6; i++) await tick(); }
+    const rowOf = (re) => Array.from(av.querySelectorAll('.arrival-row')).find((r) => re.test(r.textContent));
+    const franRow = rowOf(/Late, Fran/);
+    const nsBtn = franRow && Array.from(franRow.querySelectorAll('button')).find((b) => /^No-show$/.test(b.textContent.trim()));
+    log(!!nsBtn, 'v1.13.0: Arrivals offers "No-show" on a pre-registered patient still waiting');
+    if (nsBtn) {
+      nsBtn.click();
+      await confirmModal(/Mark as no-show/);
+      for (let i = 0; i < 10; i++) await tick();
+    }
+    log(db.getPatient(fresh.id).status === 'no_show', 'v1.13.0: ...confirming it marks them');
+    const dna = Array.from(av.querySelectorAll('.card')).find((c) => /Did not attend/.test(c.textContent));
+    log(!!dna && /Late, Fran/.test(dna.textContent), 'v1.13.0: ...and they move to a "Did not attend" list on the same screen');
+    const undoBtn = dna && Array.from(dna.querySelectorAll('.arrival-row')).find((r) => /Late, Fran/.test(r.textContent))
+      .querySelector('button');
+    if (undoBtn) { undoBtn.click(); for (let i = 0; i < 12; i++) await tick(); }
+    log(db.getPatient(fresh.id).status === 'checked_in' && !!rowOf(/Late, Fran/) && !!Array.from(rowOf(/Late, Fran/).querySelectorAll('button')).find((b) => /They.re here/.test(b.textContent)),
+      'v1.13.0: ..."They came after all" puts them back in the waiting list, ready to confirm');
+    const deskTab = Array.from(av.querySelectorAll('button')).find((b) => /Registered at the desk/.test(b.textContent));
+    if (deskTab) { deskTab.click(); for (let i = 0; i < 6; i++) await tick(); }
+    const wRow = rowOf(/Walkin, Wally/);
+    log(!!wRow && !Array.from(wRow.querySelectorAll('button')).some((b) => /^No-show$/.test(b.textContent.trim())),
+      'v1.13.0: a desk registration is never offered "No-show"');
+    av.remove();
+
+    currentUser = db.login('admin', 'admin'); storeN.setUser(currentUser);
+    await window.api.authLogin({ username: 'admin', password: 'admin' });
+    const { renderEmt } = await import('../src/renderer/js/views/emt.js');
+    const ev2 = renderEmt(nCtx, {});
+    document.body.append(ev2);
+    for (let i = 0; i < 12; i++) await tick();
+    log(!/Absent, Nora/.test(ev2.textContent) && /Arrived, Ana/.test(ev2.textContent),
+      'v1.13.0: a no-show is not left waiting in the Vitals queue');
+    ev2.remove();
+
+    const { renderDashboard, statusPill } = await import('../src/renderer/js/views/dashboard.js');
+    log(statusPill('no_show').textContent.includes('No-show'), 'v1.13.0: a no-show reads "No-show" on every status pill, not a raw code');
+    const dv = renderDashboard(nCtx, {});
+    document.body.append(dv);
+    for (let i = 0; i < 14; i++) await tick();
+    const board = dv.querySelector('.crm-board') || dv;
+    log(!/Absent/.test(board.textContent), 'v1.13.0: a no-show is not parked in the floor board’s "Checked in" column');
+    dv.remove();
+
+    const { renderRecords } = await import('../src/renderer/js/views/records.js');
+    const rv = renderRecords(nCtx, {});
+    document.body.append(rv);
+    for (let i = 0; i < 14; i++) await tick();
+    const showSel = Array.from(rv.querySelectorAll('select')).find((x) => Array.from(x.options).some((o) => o.value === 'no_show'));
+    log(!!showSel, 'v1.13.0: Records can be filtered to no-shows');
+    if (showSel) { showSel.value = 'no_show'; showSel.dispatchEvent(new window.Event('change', { bubbles: true })); for (let i = 0; i < 12; i++) await tick(); }
+    const recNames = Array.from(rv.querySelectorAll('td strong')).map((n) => n.textContent);
+    log(recNames.includes('Absent, Nora') && recNames.every((n) => ['Absent, Nora', 'Missing, Ned'].includes(n) || !/Seen|Arrived|Walkin/.test(n)),
+      'v1.13.0: ...and that filter lists the no-shows and nobody who came');
+    rv.remove();
+
+    const { renderReports } = await import('../src/renderer/js/views/reports.js');
+    const rpv = renderReports(nCtx);
+    document.body.append(rpv);
+    for (let i = 0; i < 16; i++) await tick();
+    const sel = rpv.querySelector('.view-head-actions select');
+    if (sel) { sel.value = String(evN.id); sel.dispatchEvent(new window.Event('change', { bubbles: true })); for (let i = 0; i < 16; i++) await tick(); }
+    const signup = Array.from(rpv.querySelectorAll('.card')).find((c) => /Sign-ups vs check-outs/.test(c.textContent));
+    log(!!signup && /did not attend/.test(signup.textContent) && /not counted as patients seen/.test(signup.textContent),
+      'v1.13.0: the Reports sign-up card finally accounts for the people who did not attend');
+    log(/signed up and did not attend/.test(rpv.textContent), 'v1.13.0: ...and the Patients-seen figure says how many were left out of it');
+    rpv.remove();
+
+    currentUser = db.login('admin', 'admin'); storeN.setUser(currentUser);
   }
 
   await tick();

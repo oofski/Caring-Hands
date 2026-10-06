@@ -10,6 +10,9 @@ const STATUS_META = {
   in_treatment: ['In treatment', 'var(--warning)'],
   completed: ['Completed', 'var(--success)'],
   dismissed: ['Checked out', 'var(--text-subtle)'],
+  // Never drawn in the status bar (they were never in the clinic, and the bar
+  // is a share of patients seen) but labelled, so nothing prints a raw code.
+  no_show: ['No-show', 'var(--border-strong)'],
 };
 const fmtDay = (d) => { const dt = new Date(d + 'T00:00:00'); return isNaN(dt) ? d : dt.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }); };
 
@@ -124,7 +127,7 @@ export function renderReports(ctx) {
 
       // ---- KPI cards ----
       el('div', { class: 'kpi-grid' }, [
-        kpi('users', total, 'Patients seen', { accent: true }),
+        kpi('users', total, 'Patients seen', { accent: true, sub: sm.no_shows ? `${sm.no_shows} signed up and did not attend` : null }),
         kpi('checkCircle', finished, 'Visits finished', { sub: total ? `${completePct}% of ${total} · ${checkedOut} checked out` : null }),
         kpi('xray', xrays, 'X-rays uploaded', { sub: withXray ? `${withXray} patient(s)` : null }),
         kpi('tooth', extractions, 'Extractions'),
@@ -161,6 +164,7 @@ export function renderReports(ctx) {
         total, checkedOut, outPct,
         preSignups: sm.pre_signups || 0, preFinished: sm.pre_checked_out || 0,
         onSiteSignups: sm.onsite_signups || 0, onSiteFinished: sm.onsite_checked_out || 0,
+        noShows: sm.no_shows || 0, preNoShows: sm.pre_no_show || 0,
         // Totals kept by an older version have no sign-up split. Say so rather
         // than letting the missing figures read as a real 0%.
         legacy: sm.legacy_parts || 0,
@@ -212,49 +216,55 @@ export function renderReports(ctx) {
 // pre-registration link, and nothing in the app was answering it.
 function signupCard(d) {
   const pct = (n, of) => (of ? Math.round((n / of) * 100) : 0);
-  const row = (label, signed, out, hint) => {
-    const p = pct(out, signed);
-    return el('div', { class: 'signup-row' }, [
-      el('div', { class: 'signup-label' }, [
-        el('strong', {}, [label]),
-        hint ? el('div', { class: 'subtle small' }, [hint]) : null,
-      ]),
-      el('div', { class: 'signup-nums' }, [
-        el('span', { class: 'mono signup-n' }, [String(signed)]),
-        el('span', { class: 'subtle small' }, ['signed up']),
-      ]),
-      el('div', { class: 'signup-nums' }, [
-        el('span', { class: 'mono signup-n' }, [String(out)]),
-        el('span', { class: 'subtle small' }, ['checked out']),
-      ]),
-      el('div', { class: 'signup-bar' }, [
-        el('span', { class: 'bar-track' }, [el('span', { class: 'bar-fill', style: `width:${Math.max(2, p)}%` })]),
-        el('span', { class: 'mono signup-pct' }, [p + '%']),
-      ]),
-    ]);
-  };
-  const share = (n) => (d.total ? Math.round((n / d.total) * 100) : 0);
+  // Everyone who signed up, including people who never came. This card used to
+  // divide by patients SEEN and label it "signed up", which only worked while
+  // the two were the same number — i.e. while nobody was ever a no-show.
+  const signups = (d.preSignups || 0) + (d.onSiteSignups || 0);
+  const outOfSignups = pct(d.checkedOut, signups);
+  const cols = (signed, noShow, out, p) => [
+    el('div', { class: 'signup-nums' }, [
+      el('span', { class: 'mono signup-n' }, [String(signed)]),
+      el('span', { class: 'subtle small' }, ['signed up']),
+    ]),
+    el('div', { class: 'signup-nums' }, [
+      el('span', { class: 'mono signup-n' }, [String(noShow)]),
+      el('span', { class: 'subtle small' }, ['did not attend']),
+    ]),
+    el('div', { class: 'signup-nums' }, [
+      el('span', { class: 'mono signup-n' }, [String(out)]),
+      el('span', { class: 'subtle small' }, ['checked out']),
+    ]),
+    el('div', { class: 'signup-bar' }, [
+      el('span', { class: 'bar-track' }, [el('span', { class: 'bar-fill', style: `width:${Math.max(2, p)}%` })]),
+      el('span', { class: 'mono signup-pct' }, [p + '%']),
+    ]),
+  ];
+  const row = (label, signed, noShow, out, hint) => el('div', { class: 'signup-row' }, [
+    el('div', { class: 'signup-label' }, [
+      el('strong', {}, [label]),
+      hint ? el('div', { class: 'subtle small' }, [hint]) : null,
+    ]),
+    ...cols(signed, noShow, out, pct(out, signed)),
+  ]);
+  const share = (n) => (signups ? Math.round((n / signups) * 100) : 0);
   return el('div', { class: 'card' }, [
     el('div', { class: 'card-title' }, [icon('users', { size: 15 }), 'Sign-ups vs check-outs']),
     el('p', { class: 'muted small', style: 'margin:0 0 var(--space-4)' }, [
-      `${d.checkedOut} of ${d.total} patient(s) who signed up were checked out — `,
-      el('strong', {}, [d.outPct + '%']),
-      '. The rest are still in the clinic or did not complete their visit.',
+      `${d.checkedOut} of ${signups} patient(s) who signed up were checked out — `,
+      el('strong', {}, [outOfSignups + '%']),
+      d.noShows
+        ? `. ${d.noShows} signed up and did not attend, and are not counted as patients seen. The rest are still in the clinic or did not complete their visit.`
+        : '. The rest are still in the clinic or did not complete their visit.',
     ]),
     d.legacy ? el('p', { class: 'awareness', style: 'margin:0 0 var(--space-4)' }, [
       `${d.legacy} finished clinic(s) kept their totals before this breakdown existed, so their patients are counted in the sign-ups but not in the check-outs below. Rebuild that clinic's report from its backup file (Backup & Export) to fill them in.`,
     ]) : null,
-    el('div', { class: 'signup-table' }, [
-      row('Pre-registered online', d.preSignups, d.preFinished, `${share(d.preSignups)}% of all sign-ups`),
-      row('Registered on site', d.onSiteSignups, d.onSiteFinished, `${share(d.onSiteSignups)}% of all sign-ups`),
+    el('div', { class: 'signup-table signup-table--noshow' }, [
+      row('Pre-registered online', d.preSignups, d.preNoShows || 0, d.preFinished, `${share(d.preSignups)}% of all sign-ups`),
+      row('Registered on site', d.onSiteSignups, (d.noShows || 0) - (d.preNoShows || 0), d.onSiteFinished, `${share(d.onSiteSignups)}% of all sign-ups`),
       el('div', { class: 'signup-row signup-row--total' }, [
         el('div', { class: 'signup-label' }, [el('strong', {}, ['All patients'])]),
-        el('div', { class: 'signup-nums' }, [el('span', { class: 'mono signup-n' }, [String(d.total)]), el('span', { class: 'subtle small' }, ['signed up'])]),
-        el('div', { class: 'signup-nums' }, [el('span', { class: 'mono signup-n' }, [String(d.checkedOut)]), el('span', { class: 'subtle small' }, ['checked out'])]),
-        el('div', { class: 'signup-bar' }, [
-          el('span', { class: 'bar-track' }, [el('span', { class: 'bar-fill', style: `width:${Math.max(2, d.outPct)}%` })]),
-          el('span', { class: 'mono signup-pct' }, [d.outPct + '%']),
-        ]),
+        ...cols(signups, d.noShows || 0, d.checkedOut, outOfSignups),
       ]),
     ]),
   ]);

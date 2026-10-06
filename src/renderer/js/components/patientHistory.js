@@ -1,5 +1,6 @@
 import { el } from '../dom.js';
 import { icon } from '../icons.js';
+import { statusPill } from '../views/dashboard.js';
 import { conditions, allergies, visitTypeLabel } from '../i18n.js';
 
 // A record created by the old (v1.0) intake bug has no name / empty histories.
@@ -106,7 +107,7 @@ export function patientHistoryCards(p, priorVisits = []) {
           el('td', {}, [new Date(v.created_at).toLocaleDateString()]),
           el('td', {}, [v.event_name]),
           el('td', {}, [v.summary]),
-          el('td', {}, [v.status]),
+          el('td', {}, [statusPill(v.status)]),
         ]))),
       ])])));
   }

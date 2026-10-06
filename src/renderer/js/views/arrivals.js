@@ -66,6 +66,12 @@ export function renderArrivals(ctx) {
     // Anyone past check-in has obviously arrived, so this screen only concerns
     // the checked-in stage.
     const checkedIn = patients.filter((p) => p.status === 'checked_in');
+    // Signed up online and never came. Listed here, on the screen where the
+    // decision was made, so it can be seen and undone where it was made.
+    const allNoShows = patients.filter((p) => p.status === 'no_show').sort(byName);
+    const noShows = allNoShows.filter((p) => matches(p, query));
+    // Whether someone came is the front desk's call.
+    const canMarkNoShow = store.is('admin') || store.is('registration');
     // Two very different queues: people who filled the form online and are being
     // met for the first time, and people registered at the desk just now.
     const tabCounts = {
@@ -179,8 +185,54 @@ export function renderArrivals(ctx) {
               stationSel,
             ]),
             confirmBtn,
+            // Only someone who signed up online and has shown no sign of being
+            // here. A desk registration was in front of the desk by definition.
+            canMarkNoShow && p.preregistered && !p.has_vitals
+              ? el('button', {
+                class: 'btn btn--ghost btn--sm',
+                title: 'They signed up online but did not come to the clinic',
+                onClick: () => markNoShow(p),
+              }, ['No-show'])
+              : null,
           ]),
       ]);
+    }
+
+    async function markNoShow(p) {
+      const ok = await modal({
+        title: `Mark ${p.first_name} ${p.last_name} as a no-show?`,
+        body: 'They signed up online but did not come to the clinic. They will be listed under <b>Did not attend</b>, kept in Records, and <b>not counted as a patient seen</b> in the reports.<br><br>If they turn up later, use <b>They came after all</b> and carry on as normal.',
+        confirmText: 'Mark as no-show',
+        cancelText: 'Cancel',
+      });
+      if (!ok) return;
+      try { await api.markNoShow(p.id); ctx.toast(`${p.first_name} ${p.last_name} is marked as a no-show.`, 'success'); load(); }
+      catch (e) { ctx.toast(e.message, 'error'); }
+    }
+
+    async function undoNoShow(p) {
+      try { await api.undoNoShow(p.id); ctx.toast(`${p.first_name} ${p.last_name} is back in the waiting list.`, 'success'); load(); }
+      catch (e) { ctx.toast(e.message, 'error'); }
+    }
+
+    // The end-of-clinic sweep. Folded away, and confirmed with the names, because
+    // pressing it at ten in the morning would mark everyone still on their way.
+    const sweepable = allWaiting.filter((p) => p.preregistered && !p.has_vitals);
+    async function markAllNoShows() {
+      const names = sweepable.slice(0, 25).map((p) => `${p.last_name}, ${p.first_name}`);
+      const ok = await modal({
+        title: `Mark ${sweepable.length} patient(s) as no-shows?`,
+        body: 'Only do this once the clinic is over. Everyone below signed up online and has not been confirmed here or had vitals taken:<br><br>'
+          + names.map((n) => n.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]))).join('<br>')
+          + (sweepable.length > names.length ? `<br>…and ${sweepable.length - names.length} more` : '')
+          + '<br><br>Any of them can be put back with <b>They came after all</b>.',
+        confirmText: `Mark ${sweepable.length} as no-shows`,
+        cancelText: 'Cancel',
+        danger: true,
+      });
+      if (!ok) return;
+      try { const r = await api.markNoShows(); ctx.toast(`${r.marked} patient(s) marked as no-shows.`, 'success'); load(); }
+      catch (e) { ctx.toast(e.message, 'error'); }
     }
 
     // Its own dialog rather than another control in an already-busy row, and
@@ -260,6 +312,40 @@ export function renderArrivals(ctx) {
       ]),
       section('Waiting to be confirmed', 'Tap “They’re here” when the patient is in front of you. We check their consents and their station at the same time.', waiting, false),
       section('Confirmed here', 'These patients are present and waiting for vitals.', here, true),
+      tab === 'prereg' && canMarkNoShow && sweepable.length
+        ? el('details', { class: 'collapse' }, [
+          el('summary', {}, [`End of clinic — mark everyone who never came (${sweepable.length})`]),
+          el('div', { class: 'collapse-body' }, [
+            el('p', { class: 'muted small', style: 'margin:0 0 var(--space-3)' }, [
+              'Once the clinic is over, anyone who signed up online and never arrived can be marked as a no-show in one go, so they are not counted as patients seen. Each can still be put back individually.',
+            ]),
+            el('button', { class: 'btn btn--soft btn--sm', onClick: markAllNoShows }, [`Mark ${sweepable.length} as no-shows…`]),
+          ]),
+        ])
+        : null,
+      tab === 'prereg' && allNoShows.length
+        ? el('div', { class: 'card' }, [
+          el('div', { class: 'section-title-row' }, [
+            el('h2', { class: 'section-title' }, ['Did not attend']),
+            el('span', { class: 'crm-col-count' }, [String(noShows.length)]),
+          ]),
+          el('p', { class: 'muted small', style: 'margin:0 0 var(--space-3)' }, ['Signed up online but did not come. Not counted as patients seen. Kept in Records under “No-shows only”.']),
+          noShows.length
+            ? el('div', { class: 'arrival-list' }, noShows.map((p) => el('div', { class: 'arrival-row arrival-row--noshow' }, [
+              el('div', { class: 'arrival-who' }, [
+                el('strong', {}, [`${p.last_name}, ${p.first_name}`]),
+                el('div', { class: 'subtle small' }, [[p.age != null ? `${p.age} yrs` : null, p.phone || null].filter(Boolean).join(' · ') || '—']),
+              ]),
+              el('div', { class: 'arrival-actions' }, [
+                el('span', { class: 'pill pill--neutral' }, [el('span', { class: 'pill-dot' }), 'No-show']),
+                canMarkNoShow
+                  ? el('button', { class: 'btn btn--soft btn--sm', onClick: () => undoNoShow(p) }, [icon('refresh', { size: 14 }), 'They came after all'])
+                  : null,
+              ]),
+            ])))
+            : el('p', { class: 'muted', style: 'margin:0' }, [emptyText(false)]),
+        ])
+        : null,
     );
 
     if (hadFocus) { search.focus(); if (caret != null) try { search.setSelectionRange(caret, caret); } catch { /* not supported */ } }

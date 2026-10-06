@@ -60,6 +60,9 @@ export const api = {
   // Front-desk arrivals (v1.5.24)
   arrivalCheck: (id) => call('patientsArrivalCheck', id),
   confirmArrival: (id, route) => call('patientsConfirmArrival', { id, route }),
+  markNoShow: (id) => call('patientsNoShow', { id }),
+  undoNoShow: (id) => call('patientsNoShowUndo', { id }),
+  markNoShows: (eventId) => call('patientsNoShowAll', { eventId }),
   dismissPatient: (id) => call('patientsDismiss', id),
   movePatient: (id, target) => call('patientsMove', { id, target }),
   patientAudit: (id) => call('patientsAudit', id),

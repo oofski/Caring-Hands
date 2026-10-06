@@ -86,7 +86,9 @@ export function renderEmt(ctx, params = {}) {
     if (!inQueue || !patients) return;
     // A–Z by surname, like every other patient list. The Vitals column still
     // shows who needs seeing, so nothing is lost by not ordering by work stage.
-    const all = sortedByName(patients.filter((p) => p.status !== 'dismissed'));
+    // A no-show never came, so they are nobody's vitals to take — without this
+    // they sat at "Needs vitals" for the rest of the clinic.
+    const all = sortedByName(patients.filter((p) => p.status !== 'dismissed' && p.status !== 'no_show'));
     const live = search.filter(all);
     const rows = live.map((p) => el('tr', {
       style: 'cursor:pointer',

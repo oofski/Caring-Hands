@@ -496,6 +496,9 @@ export function renderAdmin(ctx, params = {}) {
           }
 
           const outstanding = [
+            // Finishing keeps the totals for good. A sign-up who never came and
+            // was never marked goes into them as a patient SEEN, permanently.
+            pre.unmarked_no_shows ? `<li><b>${pre.unmarked_no_shows} pre-registered patient(s) never arrived</b> and are not marked as no-shows — finishing now counts them as patients seen. Mark them on <b>Arrivals → Pre-registered online</b> first.</li>` : '',
             pre.queued ? `<li><b>${pre.queued} patient(s) are still in the queue</b> — nobody has marked them complete or dismissed.</li>` : '',
             pre.unsigned ? `<li><b>${pre.unsigned} chart(s) are not signed off</b> — this is the last moment anyone can sign them.</li>` : '',
             pre.xrays ? `<li><b>${pre.xrays} x-ray image(s) will be destroyed</b> — the kept report holds a count, never the films.</li>` : '',

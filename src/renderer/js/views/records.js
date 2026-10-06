@@ -48,13 +48,22 @@ export function renderRecords(ctx, params = {}) {
     const eventSel = el('select', { class: 'input select' });
     eventSel.append(el('option', { value: 'all' }, ['All events']));
     events.forEach((e) => eventSel.append(el('option', { value: String(e.id) }, [`${e.name} (${e.patient_count})`])));
+    // Who to list. "No-shows" is how the clinic tracks the people who signed
+    // up and never came — the reason a no-show is a status at all.
+    const showSel = el('select', { class: 'input select' }, [
+      el('option', { value: 'all' }, ['Everyone']),
+      el('option', { value: 'seen' }, ['Patients seen']),
+      el('option', { value: 'no_show' }, ['No-shows only']),
+    ]);
     const tbody = el('tbody', {});
 
     async function refresh() {
       const eventId = eventSel.value === 'all' ? 'all' : Number(eventSel.value);
-      const patients = sortedByName(await api.listPatients({ eventId, search: searchInput.value.trim() }));
+      const show = showSel.value;
+      const patients = sortedByName(await api.listPatients({ eventId, search: searchInput.value.trim() }))
+        .filter((p) => (show === 'no_show' ? p.status === 'no_show' : show === 'seen' ? p.status !== 'no_show' : true));
       clear(tbody);
-      if (!patients.length) tbody.append(el('tr', {}, [el('td', { colspan: 6, class: 'empty' }, ['No matching records.'])]));
+      if (!patients.length) tbody.append(el('tr', {}, [el('td', { colspan: 6, class: 'empty' }, [show === 'no_show' ? 'No no-shows recorded here.' : 'No matching records.'])]));
       patients.forEach((p) => tbody.append(el('tr', {}, [
         el('td', {}, [el('strong', {}, [`${p.last_name}, ${p.first_name}`])]),
         el('td', {}, [p.dob || '—']),
@@ -66,6 +75,7 @@ export function renderRecords(ctx, params = {}) {
     }
     searchInput.addEventListener('input', debounce(refresh, 200));
     eventSel.addEventListener('change', refresh);
+    showSel.addEventListener('change', refresh);
 
     const allResults = el('div', { class: 'lookup-results' });
     allInput.addEventListener('input', debounce(async () => {
@@ -90,6 +100,7 @@ export function renderRecords(ctx, params = {}) {
         // reaches across every clinic, so it is now visibly a separate tool.
         el('div', { class: 'filter-bar' }, [
           el('div', { class: 'field field--inline' }, [el('span', { class: 'field-label' }, ['Clinic']), eventSel]),
+          el('div', { class: 'field field--inline' }, [el('span', { class: 'field-label' }, ['Show']), showSel]),
           el('div', { class: 'field field--grow' }, [el('span', { class: 'field-label' }, ['Filter this list']), searchInput]),
         ]),
         el('details', { class: 'finder' }, [

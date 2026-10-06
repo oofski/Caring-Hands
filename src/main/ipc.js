@@ -121,6 +121,11 @@ const PERMS = {
   'cloud:resync': ['admin'],
   'patients:arrivalCheck': ['admin', 'registration', 'emt', 'triage', 'doctor', 'hygienist'],
   'patients:confirmArrival': ['admin', 'registration', 'emt', 'triage'],
+  // Whether someone came is the front desk's call — they are the ones who
+  // would have met them. The end-of-clinic sweep is the same call in bulk.
+  'patients:noShow': ['admin', 'registration'],
+  'patients:noShowUndo': ['admin', 'registration'],
+  'patients:noShowAll': ['admin', 'registration'],
   // update:* and app:version are open to any signed-in user (available in any view).
 };
 
@@ -270,6 +275,9 @@ function register(getMainWindow) {
   /* ---- Front-desk arrivals (v1.5.24) ---- */
   handle('patients:arrivalCheck', (id) => db.arrivalReadiness(id));
   handle('patients:confirmArrival', ({ id, route }) => db.confirmArrival(currentUser, id, { route }));
+  handle('patients:noShow', ({ id }) => db.markNoShow(currentUser, id));
+  handle('patients:noShowUndo', ({ id }) => db.undoNoShow(currentUser, id));
+  handle('patients:noShowAll', ({ eventId } = {}) => db.markNoShows(currentUser, eventId));
 
   /* ---- Events ---- */
   handle('events:list', () => db.listEvents(), { });

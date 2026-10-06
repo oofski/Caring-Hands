@@ -20,7 +20,7 @@ export function renderManagement(ctx) {
   async function paint() {
     let patients = [];
     try { patients = await api.listPatients({}); } catch (e) { patients = []; }
-    const live = patients.filter((p) => p.status !== 'dismissed');
+    const live = patients.filter((p) => p.status !== 'dismissed' && p.status !== 'no_show');
     const done = patients.filter((p) => p.status === 'dismissed');
     clear(root);
     add(root,

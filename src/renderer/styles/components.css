@@ -618,6 +618,9 @@ select.input{ appearance:none; background-image:linear-gradient(45deg,transparen
 .signup-bar .bar-track{ flex:1; }
 .signup-pct{ font-weight:var(--fw-semibold); color:var(--text-strong); min-width:38px; text-align:right; }
 @media (max-width:900px){ .signup-row{ grid-template-columns:1fr auto auto; } .signup-bar{ grid-column:1 / -1; } }
+/* v1.13.0: a "did not attend" column between signed up and checked out. */
+.signup-table--noshow .signup-row{ grid-template-columns:minmax(150px,1.4fr) auto auto auto minmax(120px,1fr); }
+@media (max-width:900px){ .signup-table--noshow .signup-row{ grid-template-columns:1fr auto auto auto; } }
 
 /* ============================================================
    v1.8.0 — additions from the interface refresh
