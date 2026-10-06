@@ -17,6 +17,10 @@ import { matchesPatient } from '../patientSort.js';
 
 const remembered = new Map();
 
+// Signing out forgets every search. These are shared clinic laptops: the next
+// volunteer should not open their station onto someone else's filtered list.
+export function forgetSearches() { remembered.clear(); }
+
 export function patientSearch(key, { onChange, placeholder } = {}) {
   let query = remembered.get(key) || '';
   const input = el('input', {

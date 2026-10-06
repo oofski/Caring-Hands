@@ -651,6 +651,9 @@ function clinicSummaryBody(data) {
   const s = r.summary || {};
   const ev = data.event || {};
   const seen = Number(s.patients_seen) || 0;
+  // Of the people SEEN, how many signed up online. pre_signups also counts the
+  // ones who never came, so on its own it could exceed the number seen.
+  const seenOnline = Math.max(0, (Number(s.pre_signups) || 0) - (Number(s.pre_no_show) || 0));
   const done = Number(s.visits_completed) || 0;
   const pct = seen ? Math.round((done / seen) * 100) : 0;
   const treatments = (Number(s.fillings) || 0) + (Number(s.extractions) || 0) + (Number(s.cleanings) || 0);
@@ -673,7 +676,7 @@ function clinicSummaryBody(data) {
 
     <h2>What the clinic did</h2>
     <div class="kpis">
-      ${kpiCard(seen, 'Patients seen', s.pre_signups ? `${s.pre_signups} signed up online` : null)}
+      ${kpiCard(seen, 'Patients seen', seenOnline ? `${seenOnline} signed up online` : null)}
       ${kpiCard(done, 'Visits finished', seen ? `${pct}% of those seen` : null)}
       ${kpiCard(treatments, 'Procedures', 'fillings + extractions + cleanings')}
     </div>

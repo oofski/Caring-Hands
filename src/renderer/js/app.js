@@ -15,6 +15,7 @@ import { renderEmt } from './views/emt.js';
 import { renderCheckout } from './views/checkout.js';
 import { renderHygienist } from './views/hygienist.js';
 import { renderManagement } from './views/management.js';
+import { forgetSearches } from './components/patientSearch.js';
 
 const appRoot = document.getElementById('app');
 
@@ -394,6 +395,7 @@ async function openUpdateModal() {
 
 async function logout() {
   await api.logout();
+  forgetSearches();
   store.setUser(null);
   setLang('en');
   navigate('login');

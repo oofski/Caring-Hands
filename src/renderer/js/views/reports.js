@@ -257,7 +257,7 @@ function signupCard(d) {
         : '. The rest are still in the clinic or did not complete their visit.',
     ]),
     d.legacy ? el('p', { class: 'awareness', style: 'margin:0 0 var(--space-4)' }, [
-      `${d.legacy} finished clinic(s) kept their totals before this breakdown existed, so their patients are counted in the sign-ups but not in the check-outs below. Rebuild that clinic's report from its backup file (Backup & Export) to fill them in.`,
+      `${d.legacy} finished clinic(s) kept their totals before this breakdown existed, so their patients are not in the sign-ups or check-outs below (they are still in Patients seen). Rebuild that clinic's report from its backup file (Backup & Export) to fill them in.`,
     ]) : null,
     el('div', { class: 'signup-table signup-table--noshow' }, [
       row('Pre-registered online', d.preSignups, d.preNoShows || 0, d.preFinished, `${share(d.preSignups)}% of all sign-ups`),

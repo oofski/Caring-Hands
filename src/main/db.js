@@ -1245,10 +1245,15 @@ function startVisitFromExisting(actor, sourceId) {
   if (!src) throw new Error('Patient not found.');
   const dental = Object.assign({}, src.dental_history || {});
   delete dental.reason; delete dental.visit_type; delete dental.may_need_extraction;
+  // Facts about the PREVIOUS visit, not the person. Copied wholesale, a returning
+  // walk-in who once signed up online was listed as "Pre-reg", offered a
+  // No-show button, and swept up by the end-of-clinic no-show sweep.
+  const demo = Object.assign({}, src.demographics || {});
+  delete demo.preregistered; delete demo.prereg_at; delete demo.no_show_at; delete demo.no_show_by_name;
   return createPatient(actor, {
     first_name: src.first_name, last_name: src.last_name, dob: src.dob, gender: src.gender,
     phone: src.phone, email: src.email, language: src.language,
-    demographics: src.demographics || {}, medical_history: src.medical_history || {},
+    demographics: demo, medical_history: src.medical_history || {},
     dental_history: dental, consents: [],
   });
 }
@@ -1871,6 +1876,11 @@ function importPatientFromPortable(actor, portable) {
   let pid;
   if (existing) {
     pid = existing.id;
+    // A chart coming back from a check-out USB means the patient was seen. If
+    // this laptop had marked them a no-show, that was wrong — and leaving it
+    // would make the triage and treatment below refuse, silently dropping the
+    // whole chart (the USB upload skips a file that throws).
+    if (existing.status === NO_SHOW) undoNoShow(actor, pid);
     updatePatient(actor, pid, {
       language: portable.language, first_name: portable.first_name, last_name: portable.last_name,
       dob: portable.dob, gender: portable.gender, phone: portable.phone, email: portable.email,
@@ -2266,6 +2276,8 @@ function recountXrays(patientId) {
 // fail, every four seconds, for the rest of the clinic. The dentist screen
 // shrinks anything this large before saving; this is the backstop.
 const XRAY_MAX_CHARS = 1800 * 1024;
+// The cloud's row limit is ~2,000,000 bytes for the whole row, image included.
+const XRAY_SYNC_MAX_CHARS = 1950000;
 
 function addXray(actor, patientId, { station, image_png, note, tooth }) {
   assertChartUnlocked(patientId, 'add an x-ray');
@@ -2708,13 +2720,14 @@ function reportRollup(scope) {
   }
   for (const ev of wanted) {
     const n = db.prepare('SELECT COUNT(*) AS n FROM patients WHERE event_id = ?').get(ev.id).n;
-    // The partial-restore test compares like with like: a kept "patients seen"
-    // against the live patients who were SEEN. Counting no-show rows here would
-    // let sixteen people who never came hide a genuinely partial restore.
-    const nSeen = db.prepare("SELECT COUNT(*) AS n FROM patients WHERE event_id = ? AND status != 'no_show'").get(ev.id).n;
     const keptRec = keptBy.get(ev.id);
     const keptSeen = keptRec && keptRec.summary ? (Number(keptRec.summary.patients_seen) || 0) : 0;
-    if (n > 0 && keptSeen > nSeen) {
+    // The partial-restore test compares like with like: people on the kept list
+    // (seen + no-shows) against people on the live list. Comparing SEEN with
+    // seen made marking no-shows look like a partial restore, so the kept,
+    // inflated total won and the correction never showed.
+    const keptRows = keptSeen + (keptRec && keptRec.summary ? (Number(keptRec.summary.no_shows) || 0) : 0);
+    if (n > 0 && keptRows > n) {
       // The clinic has a kept report covering MORE people than are on this
       // computer right now — a partial restore, or someone checked in after the
       // clinic was finished. Counting only the live rows made a six-patient
@@ -2848,7 +2861,14 @@ function captureEventSummary(actor, eventId) {
   // which is exactly what happened when an admin used "Finish clinic" and then
   // the "Delete this clinic's patient data" button on the same clinic. The
   // totals were destroyed and the zeros were pushed to every other laptop.
-  if (existing && (existing.patients_seen || 0) > summary.patients_seen) {
+  //
+  // Since v1.13.0 the right invariant is the number of people ON THE LIST — seen
+  // plus no-shows — because "seen" may now legitimately go DOWN: marking the
+  // sign-ups who never came corrects an inflated figure. Comparing seen with
+  // seen kept the inflated one forever.
+  const keptSummary = existing ? (safeJson(existing.summary, {}) || {}) : null;
+  const keptRows = existing ? (existing.patients_seen || 0) + (Number(keptSummary.no_shows) || 0) : 0;
+  if (existing && keptRows > summary.patients_seen + (summary.no_shows || 0)) {
     return safeJson(existing.summary, summary);
   }
   if (existing) {
@@ -3250,7 +3270,7 @@ function collectSyncRows(max = 400, opts = {}) {
   const only = Array.isArray(opts.only) ? opts.only : null;
   const skip = Array.isArray(opts.skip) ? opts.skip : [];
   const xrayBudget = Number(opts.xrayBytes) > 0 ? Number(opts.xrayBytes) : Infinity;
-  let xrayBytes = 0, xrayCount = 0;
+  let xrayBytes = 0, xrayCount = 0, xraysTooBig = 0;
   const rows = [];
   const mark = [];
   for (const entity of APPLY_ORDER) {
@@ -3269,6 +3289,12 @@ function collectSyncRows(max = 400, opts = {}) {
     const oneXray = isXray ? db.prepare(`SELECT * FROM ${table} WHERE id = ?`) : null;
     for (const item of source) {
       if (rows.length >= max) break;
+      // Too big for the clinic cloud's row limit. It cannot be stored there, so
+      // sending it fails every time — and because the lane always sends at
+      // least one image, and this is the lowest unsent id, every image after it
+      // was stuck behind it for good. addXray refuses these now; this catches
+      // the ones saved by an older version or brought in by a restore.
+      if (isXray && (item.size || 0) > XRAY_SYNC_MAX_CHARS) { xraysTooBig++; continue; }
       if (isXray && xrayCount > 0 && xrayBytes + (item.size || 0) > xrayBudget) break;
       const row = isXray ? oneXray.get(item.id) : item;
       if (!row) continue;
@@ -3318,7 +3344,7 @@ function collectSyncRows(max = 400, opts = {}) {
     mark.push({ tombstone: tomb.uid });
   }
   persistStamp(); // survive restarts / clock rewinds
-  return { rows, mark };
+  return { rows, mark, xraysTooBig };
 }
 
 // Confirm rows as synced (called after a successful push). Only marks clean if

@@ -36,6 +36,10 @@ const PULL_LIMIT = 400;
 const XRAY_BATCH_MAX = 3 * 1024 * 1024;
 const XRAY_BATCH_MIN = 1; // always at least one image (see collectSyncRows)
 let xrayBatchBytes = XRAY_BATCH_MAX;
+// The clinical lane is small in the ordinary case, but consents carry signature
+// images, so a backlog of hundreds of them is not. Same rule: halve the row cap
+// after a timeout, double it back after a success.
+let clinicalMax = PULL_LIMIT;
 
 // Pull pages are sized from what the previous page actually weighed, aiming
 // for pages a slow clinic link can fetch well inside the timeout.
@@ -57,6 +61,9 @@ let timer = null;
 let running = false;      // a sync cycle is in flight
 let getWindow = () => null;
 let lastResult = { pushed: 0, pulled: 0, applied: 0 };
+// X-rays too big for the clinic cloud, left on this laptop rather than allowed
+// to jam every upload behind them. Shown on the Management cloud card.
+let xraysTooBig = 0;
 
 // Normalize whatever the admin pasted into a usable base URL. Handles the common
 // mistakes: no scheme (workers.dev address pasted bare), a trailing slash, or an
@@ -81,10 +88,10 @@ async function httpJson(method, url, key, body, info) {
       // The body timed out half-way. This used to be swallowed and returned as
       // an empty success: no rows, cursor unmoved, error cleared, badge green.
       if (controller.signal.aborted) {
-        const err = new Error('The clinic cloud took too long to answer — retrying with a smaller batch.');
+        const err = new Error('The clinic cloud took too long to answer.');
         err.timeout = true; throw err;
       }
-      throw e;
+      throw new Error('The connection to the clinic cloud dropped part-way through. It will try again.');
     }
     if (info) info.bytes = text.length;
     let json = null;
@@ -96,7 +103,7 @@ async function httpJson(method, url, key, body, info) {
     return json || {};
   } catch (e) {
     if (controller.signal.aborted && !e.timeout) {
-      const err = new Error('The clinic cloud took too long to answer — retrying with a smaller batch.');
+      const err = new Error('The clinic cloud took too long to answer.');
       err.timeout = true; throw err;
     }
     throw e;
@@ -114,29 +121,45 @@ async function testConnection(url, key) {
   return { ok: true, service: health.service, version: health.version, time: health.time };
 }
 
-// Two requests, in this order, every cycle:
+// Two requests, in this order:
 //   1. everything clinical — patients, vitals, triage, treatment, consents,
 //      deletions. Small, so it lands in well under a second even on a poor
 //      link, and it is never waiting behind an image again.
-//   2. x-ray images, a few megabytes at a time.
-// Parents still reach the cloud before their children: an x-ray's patient is
-// always in an earlier request than the x-ray.
+//   2. x-ray images, a few megabytes at a time — but ONLY once the clinical
+//      backlog has been fully sent. With more clinical rows than fit in one
+//      request (a day offline, a restored backup), sending images in the same
+//      cycle could put an x-ray on the cloud before its patient; other laptops
+//      would then hold it as an orphan until the patient caught up.
 async function pushOnce(base, key, deviceId) {
   let pushed = 0;
-  const clinical = db.collectSyncRows(PULL_LIMIT, { skip: ['xray'] });
+  const clinical = db.collectSyncRows(clinicalMax, { skip: ['xray'] });
   if (clinical.rows.length) {
-    const r = await httpJson('POST', base + '/v1/push', key, { device_id: deviceId, rows: clinical.rows });
-    if (r && r.ok) { db.markSynced(clinical.mark); db.setSyncMeta({ lastPush: new Date().toISOString() }); }
-    pushed += clinical.rows.length;
+    try {
+      const r = await httpJson('POST', base + '/v1/push', key, { device_id: deviceId, rows: clinical.rows });
+      if (r && r.ok) { db.markSynced(clinical.mark); db.setSyncMeta({ lastPush: new Date().toISOString() }); }
+      pushed += clinical.rows.length;
+      if (clinical.rows.length >= clinicalMax) clinicalMax = Math.min(PULL_LIMIT, clinicalMax * 2);
+    } catch (e) {
+      if (isTimeout(e)) clinicalMax = Math.max(1, Math.floor(clinicalMax / 2));
+      throw e;
+    }
+    // More clinical rows still waiting? They go first, next cycle. (Asking for
+    // one row is a peek: collecting only stamps a row whose content changed,
+    // exactly as the real collect next cycle would.)
+    if (db.collectSyncRows(1, { skip: ['xray'] }).rows.length) return pushed;
   }
   const xr = db.collectSyncRows(PULL_LIMIT, { only: ['xray'], tombstones: false, xrayBytes: xrayBatchBytes });
+  xraysTooBig = xr.xraysTooBig || 0;
   if (xr.rows.length) {
     try {
       const r = await httpJson('POST', base + '/v1/push', key, { device_id: deviceId, rows: xr.rows });
       if (r && r.ok) { db.markSynced(xr.mark); db.setSyncMeta({ lastPush: new Date().toISOString() }); }
       pushed += xr.rows.length;
-      // It fitted; let the next batch be a little bigger again.
-      xrayBatchBytes = Math.min(XRAY_BATCH_MAX, Math.round(xrayBatchBytes * 1.5));
+      // It fitted. Only grow if the budget was actually what limited it: a
+      // one-small-image push says nothing about whether a bigger one would fit,
+      // and growing on it swung a marginal link back into a timeout.
+      const sent = xr.rows.reduce((n, row) => n + String((row.data && row.data.image_png) || '').length, 0);
+      if (sent >= xrayBatchBytes / 2) xrayBatchBytes = Math.min(XRAY_BATCH_MAX, Math.round(xrayBatchBytes * 1.5));
     } catch (e) {
       // Too big for this link: send less next time rather than the identical
       // batch again. Down to a single image, which always goes.
@@ -174,6 +197,13 @@ async function pullOnce(base, key) {
   // delta are parked in the persistent pending buffer and retried next cycle
   // (never dropped, never wedging the cursor).
   const started = Date.now();
+  // try/finally, because the cursor is saved after EVERY page but the orphans
+  // carried between pages were only saved when the loop ended normally. A page
+  // that failed — and since v1.13.0 a timeout fails instead of being swallowed —
+  // dropped every orphan collected so far while the cursor had already moved
+  // past them for good. Reproduced: a patient arrived on another laptop as
+  // "triaged" with NO vitals and NO blood-thinner flag.
+  try {
   for (;;) {
     if (guard++ > 500) break;
     const qs = `?since=${encodeURIComponent(cursor)}&limit=${pullLimit}`;
@@ -214,11 +244,17 @@ async function pullOnce(base, key) {
     // The server sets `more` against the limit we asked for, so it stays right
     // whatever size we choose.
     if (!r || !r.more) break;
-    // Give the push its turn; the next cycle carries on from this cursor.
-    if (Date.now() - started > PULL_TIME_BUDGET_MS) break;
+    // Give the push its turn; the next cycle carries on from this cursor. Not
+    // while orphans are waiting for their parent, though: during a catch-up
+    // the parent is usually a page or two away, and stopping here would park
+    // full x-ray images in the pending buffer instead of applying them.
+    if (Date.now() - started > PULL_TIME_BUDGET_MS && !carry.length) break;
   }
-  // Park still-unresolved orphans for the next cycle (bounded, persisted).
-  db.setSyncPending(carry);
+  } finally {
+    // Park still-unresolved orphans for the next cycle (bounded, persisted) —
+    // on the way out of a failure as much as of a success.
+    db.setSyncPending(carry);
+  }
   return { pulled, applied, deleted: removed };
 }
 
@@ -272,7 +308,7 @@ function status() {
     url: m.url, hasKey: !!m.key, usingDefaultCloud: m.usingDefaultCloud,
     deviceId: m.deviceId, cursor: m.cursor,
     lastOk: m.lastOk, lastPush: m.lastPush, lastError: m.lastError,
-    running, ...lastResult,
+    running, ...lastResult, xraysTooBig,
   };
 }
 
@@ -310,6 +346,10 @@ function stop() { if (timer) { clearInterval(timer); timer = null; } }
 // Forget this station's place in the queue and re-read everything on the next
 // sync — the fix when a laptop is missing patients the other laptops can see.
 async function resyncAll() {
+  // A cycle already running would carry on from the OLD cursor and could save
+  // it back over the reset. Let it finish first. Cycles can now legitimately
+  // take a while on a slow link, so this waits up to two minutes.
+  for (let i = 0; running && i < 240; i++) await new Promise((r) => setTimeout(r, 500));
   db.resetSyncCursor();
   const r = await syncOnce();
   return { ok: true, ...r };
@@ -317,6 +357,6 @@ async function resyncAll() {
 
 // For the tests: the adaptive sizes, and a way to put them back.
 function _tuning() { return { xrayBatchBytes, pullLimit, httpTimeoutMs: HTTP_TIMEOUT_MS }; }
-function _resetTuning() { xrayBatchBytes = XRAY_BATCH_MAX; pullLimit = PULL_FIRST_LIMIT; }
+function _resetTuning() { xrayBatchBytes = XRAY_BATCH_MAX; pullLimit = PULL_FIRST_LIMIT; clinicalMax = PULL_LIMIT; }
 
 module.exports = { start, stop, syncOnce, resyncAll, testConnection, status, applyConfig, normalizeUrl: trimUrl, _tuning, _resetTuning };

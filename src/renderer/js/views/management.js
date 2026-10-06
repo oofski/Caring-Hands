@@ -57,6 +57,10 @@ export function renderManagement(ctx) {
       body.append(
         pill,
         el('span', { class: 'subtle small' }, [`pushed ${st.pushed || 0} · pulled ${st.pulled || 0} · applied ${st.applied || 0}`]),
+        st.xraysTooBig
+          ? el('span', { class: 'pill pill--warning', title: 'Saved on this laptop by an older version. Too large for the clinic cloud, so they stay here instead of blocking every other upload.' },
+            [`${st.xraysTooBig} x-ray(s) too large to share`])
+          : null,
         el('button', { class: 'btn btn--ghost btn--sm', onClick: async () => { try { await api.cloudSyncNow(); toast('Sync run', 'success'); paint(); } catch (e) { toast(e.message, 'error'); } } }, [icon('refresh', { size: 14 }), 'Sync now']),
         st.url ? el('button', { class: 'btn btn--ghost btn--sm', title: 'Open the server health page in your browser', onClick: () => api.openExternal(String(st.url).replace(/\/+$/, '') + '/health') }, [icon('globe', { size: 14 }), 'Open server page']) : el('span'),
       );

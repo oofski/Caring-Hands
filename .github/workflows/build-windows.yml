@@ -79,6 +79,7 @@ jobs:
             - **Fixed: people who never came were counted as patients seen** — in Reports, in the totals kept when a clinic is finished, on the coordinator PDF and in the Excel export. They are now counted as sign-ups who did not attend, and nowhere else. **Finish Clinic warns you** if any pre-registrations were never marked, because the kept totals can't be corrected afterwards.
             - **Records → Show → "No-shows only"** lists them for follow-up. The internal coordinator PDF names them; the shareable one gives the count only.
             - A no-show can't be accidentally checked out, given vitals, or sent to a dentist — each of those now says "marked as a no-show" and how to undo it.
+            - **Update every laptop before anyone uses No-show.** A laptop still on an older version doesn't know what a no-show is: it would put them back in its Vitals queue and count them as seen.
 
             *No clinic-server update is needed for this release — the server is still v1.11.0.*
             **From v1.12.0 — the front desk and vitals can hand a note to the dentist**

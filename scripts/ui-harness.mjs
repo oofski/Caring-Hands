@@ -4071,6 +4071,165 @@ async function main() {
     cloud._resetTuning();
   }
 
+  // ---- v1.13.0: findings from the independent review, each pinned ----
+  {
+    currentUser = db.login('admin', 'admin');
+    const http = require('http');
+    const crypto = require('crypto');
+    const cloud = require('../src/main/cloud.js');
+    const pdfR = require('../src/main/pdf.js');
+    const evR = db.createEvent(currentUser, { name: 'Review Fixes' });
+    db.setActiveEvent(currentUser, evR.id);
+    const before = db.getSyncMeta();
+    // A scripted stand-in server: each pull hands out the next scripted page.
+    const script = { pulls: [], pushes: [] };
+    const srv = http.createServer((req, res) => {
+      let body = '';
+      req.on('data', (c) => { body += c; });
+      req.on('end', () => {
+        const u = new URL(req.url, 'http://x');
+        const send = (code, obj) => { res.writeHead(code, { 'content-type': 'application/json' }); res.end(JSON.stringify(obj)); };
+        if (u.pathname === '/v1/push') {
+          const j = JSON.parse(body || '{}');
+          script.pushes.push((j.rows || []).map((r) => r.entity + ':' + r.uid));
+          return send(200, { ok: true });
+        }
+        if (u.pathname === '/v1/pull') {
+          const pg = script.pulls.shift();
+          if (!pg) return send(200, { ok: true, rows: [], cursor: u.searchParams.get('since') || '0', more: false });
+          if (pg.fail) return send(500, { error: 'boom' });
+          return send(200, { ok: true, rows: pg.rows, cursor: pg.cursor, more: !!pg.more });
+        }
+        return send(200, { ok: true, seq: true });
+      });
+    });
+    await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+    db.setSyncMeta({ url: `http://127.0.0.1:${srv.address().port}`, key: 'k', mode: 'online', cursor: '100' });
+    db.setSyncPending([]);
+    db.markSynced(db.collectSyncRows(100000).mark);
+
+    // R1 (blocker). A patient's vitals arrive on one page, the patient on a
+    // later one, and the page in between FAILS. The vitals must not be lost.
+    const src = db.createPatient(currentUser, {
+      first_name: 'Remote', last_name: 'Vitals', demographics: {}, medical_history: {},
+      dental_history: { reason: 'Pain', visit_type: 'filling' }, route: 'dentist', consents: SIGNED,
+    });
+    db.saveVitals(currentUser, src.id, { bp_systolic: 150, bp_diastolic: 95, heart_rate: 88, blood_thinner: 'yes', blood_thinner_detail: 'Eliquis' });
+    const envs = db.collectSyncRows(100000).rows;
+    const patEnv = envs.find((r) => r.entity === 'patient' && r.data.last_name === 'Vitals');
+    const triEnv = envs.find((r) => r.entity === 'triage' && r.patient_uid === patEnv.uid);
+    // Present them as ANOTHER laptop's patient: fresh uids nobody here has.
+    const newP = crypto.randomUUID(), newT = crypto.randomUUID();
+    const remoteTri = { ...triEnv, uid: newT, patient_uid: newP, updated_at: '2099-01-01T00:00:00.000Z@other' };
+    const remotePat = { ...patEnv, uid: newP, updated_at: '2099-01-01T00:00:01.000Z@other' };
+    cloud._resetTuning();
+    script.pulls = [{ rows: [remoteTri], cursor: '101', more: true }, { fail: true }];
+    const c1 = await cloud.syncOnce();
+    log(c1.ok === false, 'v1.13.0 review: (setup) the second page fails');
+    script.pulls = [{ rows: [remotePat], cursor: '102', more: false }];
+    await cloud.syncOnce();
+    const landed = db.listPatients({ eventId: 'all' }).find((x) => x.last_name === 'Vitals' && x.id !== src.id);
+    const landedFull = landed ? db.getPatient(landed.id) : null;
+    log(!!landedFull && landedFull.triage && landedFull.triage.bp_systolic === 150 && landedFull.triage.blood_thinner === 'yes',
+      'v1.13.0 review: vitals and a blood-thinner flag that arrived before their patient survive a failed page — they used to be dropped while the cursor moved past them');
+
+    // R3. More clinical rows than fit in one request: no x-ray goes until they are all sent.
+    db.markSynced(db.collectSyncRows(100000).mark);
+    script.pushes = [];
+    const many = [];
+    for (let i = 0; i < 410; i++) {
+      many.push(db.createPatient(currentUser, { first_name: 'Bulk' + i, last_name: 'Backlog', demographics: {}, medical_history: {}, dental_history: { reason: 'Pain', visit_type: 'filling' }, route: 'dentist', consents: SIGNED }));
+    }
+    const lastP = many[many.length - 1];
+    db.saveVitals(currentUser, lastP.id, { bp_systolic: 120, bp_diastolic: 78, heart_rate: 70 });
+    db.routePatient(currentUser, lastP.id, 'dentist');
+    db.addXray(currentUser, lastP.id, { image_png: 'data:image/jpeg;base64,' + 'A'.repeat(20000), tooth: '3' });
+    cloud._resetTuning();
+    script.pulls = [];
+    await cloud.syncOnce();
+    log(script.pushes.length >= 1 && script.pushes.every((p) => !p.some((x) => x.startsWith('xray:'))),
+      'v1.13.0 review: with a clinical backlog bigger than one request, no x-ray is sent ahead of the rest of it (it could reach the cloud before its patient)');
+    for (let i = 0; i < 6; i++) await cloud.syncOnce();
+    log(db.collectSyncRows(100000).rows.length === 0, 'v1.13.0 review: ...and once the backlog is through, the x-ray follows');
+
+    // R2. An image too big for the cloud, saved by an older version, must not jam the lane.
+    const holder = many[0];
+    const bigRemote = {
+      entity: 'xray', uid: crypto.randomUUID(), patient_uid: db.exportClinicBundle(evR.id).patients.find((p) => p.id === holder.id).uid,
+      deleted: 0, updated_at: '2099-02-01T00:00:00.000Z@old', event_uid: null,
+      data: { station: null, image_png: 'data:image/jpeg;base64,' + 'B'.repeat(2100000), note: 'legacy', tooth: '7', created_at: '2026-01-01T00:00:00.000Z' },
+    };
+    db.applyRemoteRows([bigRemote]);
+    const bigLocal = db.listXrays(holder.id).find((x) => x.note === 'legacy');
+    db.updateXrayTooth(currentUser, bigLocal.id, '8'); // make it dirty, as an old laptop's edit would
+    db.addXray(currentUser, holder.id, { image_png: 'data:image/jpeg;base64,' + 'C'.repeat(30000), tooth: '9', note: 'fresh' });
+    const lane = db.collectSyncRows(400, { only: ['xray'], tombstones: false, xrayBytes: 3 * 1024 * 1024 });
+    log(lane.xraysTooBig === 1 && !lane.rows.some((r) => r.data.note === 'legacy') && lane.rows.some((r) => r.data.note === 'fresh'),
+      'v1.13.0 review: an image too big for the cloud is left out of sync, and the films behind it still go — it used to block them forever');
+    log(cloud.status().xraysTooBig !== undefined, 'v1.13.0 review: ...and the count is reported in the sync status');
+
+    // R4. A new visit is a new registration, not the old one's sign-up or no-show.
+    const nsSrc = db.createPatient(currentUser, {
+      first_name: 'Return', last_name: 'Noshow', demographics: { preregistered: true, city: 'Sandy' }, medical_history: {},
+      dental_history: { reason: 'Pain', visit_type: 'filling' }, route: 'dentist', consents: SIGNED,
+    });
+    db.markNoShow(currentUser, nsSrc.id);
+    const nv = db.startVisitFromExisting(currentUser, nsSrc.id);
+    const nvd = db.getPatient(nv.id).demographics;
+    log(!nvd.preregistered && !nvd.no_show_at && !nvd.no_show_by_name && nvd.city === 'Sandy',
+      'v1.13.0 review: "Start new visit" for a returning patient does not copy the old visit’s online sign-up or no-show');
+    log(!db.noShowCandidates(evR.id).some((p) => p.id === nv.id),
+      'v1.13.0 review: ...so the end-of-clinic sweep cannot mark a returning walk-in as a no-show');
+
+    // R7. A USB check-out file for someone marked a no-show: they came after all.
+    const usbP = db.createPatient(currentUser, {
+      first_name: 'Usb', last_name: 'Carried', demographics: { preregistered: true }, medical_history: {},
+      dental_history: { reason: 'Pain', visit_type: 'filling' }, route: 'dentist', consents: SIGNED,
+    });
+    const portable = { ...db.getPatient(usbP.id), xrays: [] };
+    portable.triage = { complaint: 'Seen at the other laptop', notes: 'carried on USB' };
+    db.markNoShow(currentUser, usbP.id);
+    let usbErr = '';
+    try { db.importPatientFromPortable(currentUser, portable); } catch (e) { usbErr = e.message; }
+    const usbAfter = db.getPatient(usbP.id);
+    log(!usbErr && usbAfter.status !== 'no_show' && usbAfter.triage && usbAfter.triage.complaint === 'Seen at the other laptop',
+      'v1.13.0 review: a USB check-out file for a patient marked as a no-show un-marks them and loads the chart, instead of silently dropping it');
+
+    // R5. The shareable PDF's "signed up online" under Patients seen counts people SEEN.
+    const html = pdfR.buildClinicHtml({ event: { name: 'X' }, rollup: { source: 'live', summary: { patients_seen: 1, pre_signups: 3, pre_no_show: 2, no_shows: 2 } }, roster: [], no_shows: [] }, { withRoster: false });
+    log(/1 signed up online/.test(html) && !/3 signed up online/.test(html),
+      'v1.13.0 review: the shareable PDF never says more people signed up online than were seen');
+
+    // R6. Restore a finished clinic, mark its no-shows, finish again: the kept
+    //     totals are corrected, not stuck at the inflated figure.
+    const evK = db.createEvent(currentUser, { name: 'Kept Then Corrected' });
+    db.setActiveEvent(currentUser, evK.id);
+    const kp = (f) => db.createPatient(currentUser, { first_name: f, last_name: 'Kept', demographics: { preregistered: true }, medical_history: {}, dental_history: { reason: 'Pain', visit_type: 'filling' }, route: 'dentist', consents: SIGNED });
+    const seenK = kp('Seen');
+    db.saveVitals(currentUser, seenK.id, { bp_systolic: 120, bp_diastolic: 78, heart_rate: 70 });
+    db.routePatient(currentUser, seenK.id, 'dentist');
+    ['A', 'B', 'C', 'D'].forEach(kp);
+    const bundleK = db.exportClinicBundle(evK.id);
+    db.recordClinicExport(evK.id, { patients: 5 });
+    db.finishEvent(currentUser, evK.id);
+    log(db.reportRollup(evK.id).summary.patients_seen === 5, 'v1.13.0 review: (setup) finished before anyone was marked, the kept total reads 5 seen');
+    db.importClinicBundle(currentUser, bundleK);
+    db.markNoShows(currentUser, evK.id);
+    const corrected = db.reportRollup(evK.id).summary;
+    log(corrected.patients_seen === 1 && corrected.no_shows === 4,
+      'v1.13.0 review: marking no-shows on a restored clinic corrects its figures — the inflated kept total no longer wins');
+    db.recordClinicExport(evK.id, { patients: 5 });
+    db.finishEvent(currentUser, evK.id);
+    log(db.reportRollup(evK.id).summary.patients_seen === 1,
+      'v1.13.0 review: ...and finishing it again keeps the corrected total, not the old high-water mark');
+
+    db.setSyncMeta({ url: before.usingDefaultCloud ? '' : before.url, key: before.usingDefaultCloud ? '' : before.key, cursor: before.cursor, lastError: '' });
+    db.setSyncPending([]);
+    srv.close();
+    cloud._resetTuning();
+    currentUser = db.login('admin', 'admin');
+  }
+
   await tick();
   if (errors.length) errors.forEach((e) => log(false, 'RUNTIME: ' + e));
   const failed = results.filter((r) => !r[0]).length;
