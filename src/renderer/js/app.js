@@ -108,9 +108,16 @@ if (api.onCloudChanged) {
     // Never repaint over an open patient detail/chart (whether reached by nav or
     // an internal detail() call), or someone typing, or with a dialog open.
     if (detailOpen || (lastNav.params && lastNav.params.id)) return;
+    if (document.querySelector('.modal-overlay, .modal')) return;
+    // A station that can refresh ITSELF does so in place: same screen, same
+    // search box, same cursor. Replacing the screen instead skipped the refresh
+    // entirely whenever anyone's cursor sat in a box — and with a search box on
+    // every station, that is most of the time, so a patient checked out on
+    // another laptop would simply never appear here until someone pressed
+    // Refresh.
+    if (shellContent && typeof shellContent.__liveRefresh === 'function') { shellContent.__liveRefresh(); return; }
     const ae = document.activeElement;
     if (ae && /^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName)) return;
-    if (document.querySelector('.modal-overlay, .modal')) return;
     const view = VIEWS[lastNav.name];
     if (view && view.roles.includes(store.user.role)) renderShell(lastNav.name, view.render(ctx, lastNav.params));
   });

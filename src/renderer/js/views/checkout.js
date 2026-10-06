@@ -4,6 +4,7 @@ import { api } from '../api.js';
 import { icon } from '../icons.js';
 import { statusPill } from './dashboard.js';
 import { sortedByName } from '../patientSort.js';
+import { patientSearch } from '../components/patientSearch.js';
 
 const fmtWhen = (ts) => { if (!ts) return '—'; const d = new Date(ts); return isNaN(d) ? String(ts) : d.toLocaleString(); };
 
@@ -11,6 +12,12 @@ const fmtWhen = (ts) => { if (!ts) return '—'; const d = new Date(ts); return 
 // dismissing the patient; upload/clear the USB drive at checkout (F19).
 export function renderCheckout(ctx, params = {}) {
   const root = el('div', { class: 'view' });
+  // Fetched once, filtered in memory: typing never refetches or rebuilds the box.
+  let patients = null;
+  let usbNode = null;
+  let inQueue = false;
+  const search = patientSearch('checkout', { onChange: () => paint() });
+  root.__liveRefresh = () => { if (inQueue) queue(); };
   if (params.id) detail(params.id); else queue();
   return root;
 
@@ -29,9 +36,18 @@ export function renderCheckout(ctx, params = {}) {
 
   async function queue() {
     ctx.setDetail && ctx.setDetail(false);
-    const patients = await api.listPatients({});
-    const ready = sortedByName(patients.filter((p) => p.status === 'completed'));
-    const done = sortedByName(patients.filter((p) => p.status === 'dismissed'));
+    inQueue = true;
+    const [list, usb] = await Promise.all([api.listPatients({}), usbNode ? usbNode : usbBar()]);
+    patients = list; usbNode = usb;
+    if (inQueue) paint();
+  }
+
+  function paint() {
+    if (!inQueue || !patients) return;
+    const allReady = sortedByName(patients.filter((p) => p.status === 'completed'));
+    const allDone = sortedByName(patients.filter((p) => p.status === 'dismissed'));
+    const ready = search.filter(allReady);
+    const done = search.filter(allDone);
     const rowFor = (p) => {
       const isDone = p.status === 'dismissed';
       // One-tap tick: check a patient out straight from the list. Opening the
@@ -58,17 +74,17 @@ export function renderCheckout(ctx, params = {}) {
         ])]),
       ]);
     };
-    clear(root);
-    mount(root,
+    search.keepFocus(() => mount(root,
       el('div', { class: 'view-head' }, [
-        el('div', {}, [el('h1', {}, ['Check-Out']), el('p', { class: 'view-sub' }, [`${ready.length} ready to check out · ${done.length} checked out`])]),
+        el('div', {}, [el('h1', {}, ['Check-Out']), el('p', { class: 'view-sub' }, [`${allReady.length} ready to check out · ${allDone.length} checked out`])]),
         el('div', { class: 'view-head-actions' }, [el('button', { class: 'btn btn--ghost btn--sm', onClick: queue }, [icon('refresh', { size: 15 }), 'Refresh'])]),
       ]),
+      search.card({ shown: ready.length + done.length, total: allReady.length + allDone.length }),
       el('div', { class: 'card' }, [
         el('div', { class: 'card-title' }, [icon('checkCircle', { size: 15 }), 'Ready to check out']),
         el('div', { class: 'data-table-wrap' }, [el('table', { class: 'data-table' }, [
           el('thead', {}, [el('tr', {}, ['Patient', 'Age', 'Complaint', 'Status', ''].map((h) => el('th', {}, [h])))]),
-          el('tbody', {}, ready.length ? ready.map(rowFor) : [el('tr', {}, [el('td', { colspan: 5, class: 'empty' }, ['No patients waiting for check-out.'])])]),
+          el('tbody', {}, ready.length ? ready.map(rowFor) : [el('tr', {}, [el('td', { colspan: 5, class: 'empty' }, [search.emptyText('No patients waiting for check-out.')])])]),
         ])]),
       ]),
       done.length ? el('div', { class: 'card' }, [
@@ -81,13 +97,14 @@ export function renderCheckout(ctx, params = {}) {
       // default to declutter; upload/clear stay fully available inside.
       el('details', { class: 'collapse' }, [
         el('summary', {}, [el('span', { style: 'display:flex; align-items:center; gap:9px;' }, [icon('usb', { size: 15 }), 'USB tools'])]),
-        el('div', { class: 'collapse-body' }, [await usbBar()]),
+        el('div', { class: 'collapse-body' }, [usbNode]),
       ]),
-    );
+    ));
   }
 
   async function detail(id) {
     ctx.setDetail && ctx.setDetail(true);
+    inQueue = false; // a queue fetch still in flight must not paint over the chart
     const p = await api.getPatient(id);
     const tx = p.treatment || {};
     // v1.2.1: locking is optional now — a patient can be checked out once their

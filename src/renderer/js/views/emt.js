@@ -3,6 +3,7 @@ import { t } from '../i18n.js';
 import { api } from '../api.js';
 import { icon } from '../icons.js';
 import { stationNoteComposer } from '../components/stationNotes.js';
+import { patientSearch } from '../components/patientSearch.js';
 import { patientHistoryPanel } from '../components/patientHistory.js';
 import { bloodThinnerStatus, bloodThinnerText, bpStatus, BP_SYS_MAX, BP_DIA_MAX } from '../medFlags.js';
 import { statusPill } from './dashboard.js';
@@ -63,15 +64,30 @@ function fmtWhen(w) {
 // blood thinners, then sign the patient off to the dentist or hygienist queue.
 export function renderEmt(ctx, params = {}) {
   const root = el('div', { class: 'view' });
+  // The queue is fetched once and then filtered in memory, so typing in the
+  // search box never refetches and never rebuilds the box out from under you.
+  let patients = null;
+  let inQueue = false;
+  const search = patientSearch('emt', { onChange: () => paint() });
+  // Cloud sync refreshes THIS view in place rather than replacing it, so the
+  // search and the cursor survive another laptop syncing. See app.js.
+  root.__liveRefresh = () => { if (inQueue) queue(); };
   if (params.id) detail(params.id); else queue();
   return root;
 
   async function queue() {
     ctx.setDetail && ctx.setDetail(false);
-    const patients = await api.listPatients({});
+    inQueue = true;
+    patients = await api.listPatients({});
+    if (inQueue) paint();
+  }
+
+  function paint() {
+    if (!inQueue || !patients) return;
     // A–Z by surname, like every other patient list. The Vitals column still
     // shows who needs seeing, so nothing is lost by not ordering by work stage.
-    const live = sortedByName(patients.filter((p) => p.status !== 'dismissed'));
+    const all = sortedByName(patients.filter((p) => p.status !== 'dismissed'));
+    const live = search.filter(all);
     const rows = live.map((p) => el('tr', {
       style: 'cursor:pointer',
       onClick: () => detail(p.id),
@@ -101,26 +117,29 @@ export function renderEmt(ctx, params = {}) {
         }, ['Open', icon('chevron', { size: 15 })]),
       ])]),
     ]));
-    clear(root);
-    add(root,
-      el('div', { class: 'view-head' }, [
-        el('div', {}, [
-          el('h1', {}, ['Vitals & Routing']),
-          el('p', { class: 'view-sub' }, [
-            `Station 2 — record vitals, then sign each patient off to the dentist or hygienist · ${live.length} patient(s)`,
+    search.keepFocus(() => {
+      clear(root);
+      add(root,
+        el('div', { class: 'view-head' }, [
+          el('div', {}, [
+            el('h1', {}, ['Vitals & Routing']),
+            el('p', { class: 'view-sub' }, [
+              `Station 2 — record vitals, then sign each patient off to the dentist or hygienist · ${all.length} patient(s)`,
+            ]),
+          ]),
+          el('button', { class: 'btn btn--ghost btn--sm', onClick: queue }, [icon('refresh', { size: 15 }), 'Refresh']),
+        ]),
+        search.card({ shown: live.length, total: all.length }),
+        el('div', { class: 'card' }, [
+          el('div', { class: 'data-table-wrap' }, [
+            el('table', { class: 'data-table' }, [
+              el('thead', {}, [el('tr', {}, ['Patient', 'Age', 'Complaint', 'Vitals', 'Next', 'Status', ''].map((h) => el('th', {}, [h])))]),
+              el('tbody', {}, rows.length ? rows : [el('tr', {}, [el('td', { colspan: 7, class: 'empty' }, [search.emptyText('Nobody is waiting for vitals right now.')])])]),
+            ]),
           ]),
         ]),
-        el('button', { class: 'btn btn--ghost btn--sm', onClick: queue }, [icon('refresh', { size: 15 }), 'Refresh']),
-      ]),
-      el('div', { class: 'card' }, [
-        el('div', { class: 'data-table-wrap' }, [
-          el('table', { class: 'data-table' }, [
-            el('thead', {}, [el('tr', {}, ['Patient', 'Age', 'Complaint', 'Vitals', 'Next', 'Status', ''].map((h) => el('th', {}, [h])))]),
-            el('tbody', {}, rows.length ? rows : [el('tr', {}, [el('td', { colspan: 7, class: 'empty' }, ['Nobody is waiting for vitals right now.'])])]),
-          ]),
-        ]),
-      ]),
-    );
+      );
+    });
   }
 
   // C3: generate a summary PDF for a patient (used from the list rows).
@@ -152,6 +171,7 @@ export function renderEmt(ctx, params = {}) {
 
   async function detail(id) {
     ctx.setDetail && ctx.setDetail(true);
+    inQueue = false; // a queue fetch still in flight must not paint over the chart
     const p = await api.getPatient(id);
     const tr = p.triage || {};
     const m = p.medical_history || {};

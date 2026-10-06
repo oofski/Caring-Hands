@@ -14,6 +14,7 @@ import { captureConsent as sharedCaptureConsent } from '../components/consentCap
 import { visitNotesPanel } from '../components/visitNotes.js';
 import { triageFindings } from '../components/triageFindings.js';
 import { stationNotes } from '../components/stationNotes.js';
+import { patientSearch } from '../components/patientSearch.js';
 
 const QUADRANTS = [['UR', 'UR'], ['UL', 'UL'], ['LR', 'LR'], ['LL', 'LL']];
 const fmtWhen = (ts) => { if (!ts) return ''; const d = new Date(ts); return isNaN(d) ? String(ts) : d.toLocaleString(); };
@@ -29,12 +30,23 @@ const CLEANING_OPTS = [
 
 export function renderProvider(ctx, params = {}) {
   const root = el('div', { class: 'view' });
+  // Fetched once, filtered in memory: typing never refetches or rebuilds the box.
+  let patients = null;
+  let inQueue = false;
+  const search = patientSearch('provider', { onChange: () => paint() });
+  root.__liveRefresh = () => { if (inQueue) queue(); };
   if (params.id) detail(params.id); else queue();
   return root;
 
   async function queue() {
     ctx.setDetail && ctx.setDetail(false);
-    const patients = await api.listPatients({});
+    inQueue = true;
+    patients = await api.listPatients({});
+    if (inQueue) paint();
+  }
+
+  function paint() {
+    if (!inQueue || !patients) return;
     const ready = patients.filter((p) => ['triaged', 'in_treatment'].includes(p.status));
     // EMT routing: 'dentist' and 'both' belong here; route null = legacy rows
     // (pre-routing data) which default to the dentist. Patients routed only to
@@ -44,8 +56,8 @@ export function renderProvider(ctx, params = {}) {
     const byTriageThenName = (list) => sortedByName(list)
       .slice()
       .sort((a, b) => (a.triaged_at ? 1 : 0) - (b.triaged_at ? 1 : 0));
-    const dentistQueue = byTriageThenName(ready.filter((p) => p.route === 'dentist' || p.route === 'both' || p.route == null));
-    const atHygienist = sortedByName(ready.filter((p) => p.route === 'hygienist'));
+    const allDentist = byTriageThenName(ready.filter((p) => p.route === 'dentist' || p.route === 'both' || p.route == null));
+    const allAtHygienist = sortedByName(ready.filter((p) => p.route === 'hygienist'));
     // Finishing a visit used to be a one-way door: the patient dropped out of
     // this queue and there was no route back to the record, so a note the
     // dentist thought of a minute later had nowhere to go. They stay listed
@@ -56,7 +68,12 @@ export function renderProvider(ctx, params = {}) {
     // patient whose x-ray turns up late: the dentist is the only station with
     // an x-ray panel, so a hygiene-only chart had nowhere to put a film that
     // arrived after the chair was cleared.
-    const finished = sortedByName(patients.filter((p) => ['completed', 'dismissed'].includes(p.status)));
+    const allFinished = sortedByName(patients.filter((p) => ['completed', 'dismissed'].includes(p.status)));
+    // The search covers all three lists: the triage dentist and the treating
+    // dentist are both looking for one named person, wherever they are.
+    const dentistQueue = search.filter(allDentist);
+    const atHygienist = search.filter(allAtHygienist);
+    const finished = search.filter(allFinished);
     const row = (p) => el('tr', {}, [
       el('td', {}, [el('strong', {}, [`${p.last_name}, ${p.first_name}`]),
         p.on_thinner ? el('span', { class: 'pill pill--danger', style: 'margin-left:8px' }, ['Blood thinner']) : null,
@@ -85,25 +102,31 @@ export function renderProvider(ctx, params = {}) {
         el('tbody', {}, list.length ? list.map(row) : [el('tr', {}, [el('td', { colspan: 7, class: 'empty' }, [emptyMsg])])]),
       ]),
     ]);
-    mount(root,
+    const shown = dentistQueue.length + finished.length + atHygienist.length;
+    const total = allDentist.length + allFinished.length + allAtHygienist.length;
+    search.keepFocus(() => mount(root,
       el('div', { class: 'view-head' }, [
-        el('div', {}, [el('h1', {}, [t('nav.provider')]), el('p', { class: 'view-sub' }, [`${dentistQueue.length} patient(s) in the dentist queue — patients arrive here once the EMT station records vitals and routes them`])]),
+        el('div', {}, [el('h1', {}, [t('nav.provider')]), el('p', { class: 'view-sub' }, [`${allDentist.length} patient(s) in the dentist queue — patients arrive here once the EMT station records vitals and routes them`])]),
         ghostBtn('refresh', 'Refresh', queue),
       ]),
-      el('div', { class: 'card' }, [table(dentistQueue, 'No patients in the dentist queue yet — the EMT station sends patients here after vitals.')]),
-      finished.length ? el('details', { class: 'collapse' }, [
+      search.card({ shown, total }),
+      el('div', { class: 'card' }, [table(dentistQueue, search.emptyText('No patients in the dentist queue yet — the EMT station sends patients here after vitals.'))]),
+      // A search that finds someone in a collapsed section opens it — a match
+      // hidden inside a closed section reads exactly like no match at all.
+      finished.length ? el('details', { class: 'collapse', open: !!search.query }, [
         el('summary', {}, [`Finished today (${finished.length}) — open one to add a note, attach a late x-ray, or correct it`]),
         el('div', { class: 'collapse-body' }, [table(finished, '')]),
       ]) : null,
-      atHygienist.length ? el('details', { class: 'collapse' }, [
+      atHygienist.length ? el('details', { class: 'collapse', open: !!search.query }, [
         el('summary', {}, [`At the hygienist (${atHygienist.length})`]),
         el('div', { class: 'collapse-body' }, [table(atHygienist, '')]),
       ]) : null,
-    );
+    ));
   }
 
   async function detail(id) {
     ctx.setDetail && ctx.setDetail(true);
+    inQueue = false; // a queue fetch still in flight must not paint over the chart
     const p = await api.getPatient(id);
     const tr = p.triage || {};
     const tx = p.treatment || {};

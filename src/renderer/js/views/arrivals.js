@@ -4,6 +4,7 @@ import { api } from '../api.js';
 import { icon } from '../icons.js';
 import { store } from '../store.js';
 import { stationNoteComposer } from '../components/stationNotes.js';
+import { matchesPatient } from '../patientSort.js';
 
 // The front desk's arrival check. Everyone who has checked in — at the desk or
 // online, sometimes days earlier — waits here until someone confirms they are
@@ -20,12 +21,13 @@ const STATION_LABEL = { dentist: 'Dentist', hygienist: 'Hygienist' };
 
 // Find someone by what the desk actually has in front of them: a name said out
 // loud, a phone number, or a date of birth off an ID.
+//
+// The matching itself is shared with every other station (patientSort.js), which
+// also fixed two things this copy got wrong: a date of birth typed as 03/04/1977
+// — the format the date box asks for — and a phone typed with dashes or brackets
+// both found nobody.
 function matches(p, q) {
-  if (!q) return true;
-  const hay = [p.first_name, p.last_name, p.dob, p.phone, VISIT_LABEL[p.visit_type], p.complaint]
-    .filter(Boolean).join(' ').toLowerCase();
-  // Every word must appear somewhere, so "ruiz car" finds Carmen Ruiz.
-  return q.toLowerCase().split(/\s+/).filter(Boolean).every((w) => hay.includes(w));
+  return matchesPatient(p, q, [VISIT_LABEL[p.visit_type]]);
 }
 
 // Surname first, the way a desk list is read down.

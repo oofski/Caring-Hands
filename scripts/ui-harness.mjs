@@ -82,6 +82,7 @@ const okWrap = (fn, name) => async (payload) => { try { if (name) guard(name); r
 let mockFolder = { dir: '', locked: false, clearAfter: true, images: [] };
 // Records absolute paths the renderer asked to delete from the computer's drive.
 const mockDeletedFromDrive = [];
+const cloudChangedHandlers = [];
 window.api = {
   invoke: async () => ({ ok: true }),
   authLogin: okWrap(({ username, password }) => { const u = db.login(username, password); if (!u) throw new Error('Invalid username or password.'); currentUser = u; return u; }),
@@ -166,7 +167,8 @@ window.api = {
   cloudConfig: async () => ({ ok: true, data: { enabled: true, mode: 'online', online: true, url: 'https://little-block-222a.randy-982.workers.dev', hasKey: true, usingDefaultCloud: true } }),
   cloudTest: async () => ({ ok: true, data: { service: 'caring-hands-sync', version: '1.1.0' } }),
   cloudSyncNow: async () => ({ ok: true, data: { ok: true, pushed: 0, pulled: 0, applied: 0 } }),
-  onCloudChanged: () => () => {},
+  // Captured, so a test can fire a real "another laptop synced" event at the app shell.
+  onCloudChanged: (cb) => { cloudChangedHandlers.push(cb); return () => {}; },
 };
 
 const tick = () => new Promise((r) => setTimeout(r, 5));
@@ -3536,6 +3538,183 @@ async function main() {
       'v1.12.0: ...and a real edit still gets a fresh timestamp');
 
     currentUser = db.login('admin', 'admin');
+  }
+
+  // ---- v1.13.0: find a patient on every station, not just Arrivals ----
+  {
+    currentUser = db.login('admin', 'admin');
+    const storeF = (await import('../src/renderer/js/store.js')).store;
+    storeF.setUser(currentUser);
+    const { matchesPatient } = await import('../src/renderer/js/patientSort.js');
+    const fCtx = { navigate: () => {}, toast: () => {}, store: storeF, setDetail: () => {} };
+    const type = async (box, v) => { box.value = v; box.dispatchEvent(new window.Event('input', { bubbles: true })); for (let i = 0; i < 3; i++) await tick(); };
+    const names = (root) => Array.from(root.querySelectorAll('td strong')).map((n) => n.textContent);
+
+    // The matcher: the two gaps the old Arrivals copy had.
+    const yz = { first_name: 'Yolanda', last_name: 'Zaragoza', dob: '1977-03-04', phone: '5035559876' };
+    log(matchesPatient(yz, '03/04/1977'), 'v1.13.0: a date of birth typed MM/DD/YYYY finds the patient (it is stored as 1977-03-04)');
+    log(matchesPatient(yz, '(503) 555-9876') && matchesPatient(yz, '555-9876'),
+      'v1.13.0: a phone typed with brackets or dashes finds the patient (it is stored as bare digits)');
+    log(matchesPatient(yz, 'zaragoza yol') && !matchesPatient(yz, 'zaragoza 03/05/1977'),
+      'v1.13.0: every word must match, in any order');
+
+    // A busy clinic: people at every stage.
+    const evF = db.createEvent(currentUser, { name: 'Busy Clinic' });
+    db.setActiveEvent(currentUser, evF.id);
+    const mk = (first, last, route, visit, extra = {}) => {
+      const pt = db.createPatient(currentUser, {
+        first_name: first, last_name: last, dob: extra.dob || '1980-01-01', phone: extra.phone || '5035550000',
+        demographics: {}, medical_history: {}, dental_history: { reason: 'Pain', visit_type: visit }, route,
+        consents: visit.startsWith('extraction') ? SIGNED_SURGERY : SIGNED,
+      });
+      return pt;
+    };
+    const vit = (pt, route) => { db.saveVitals(currentUser, pt.id, { bp_systolic: 120, bp_diastolic: 78, heart_rate: 70 }); db.routePatient(currentUser, pt.id, route); };
+    const waitA = mk('Abel', 'Waiting', 'dentist', 'filling', { phone: '5035551111' });
+    const waitB = mk('Bea', 'Waitress', 'hygienist', 'cleaning');
+    const dent1 = mk('Dora', 'Molar', 'dentist', 'filling', { dob: '1966-07-15' }); vit(dent1, 'dentist');
+    const dent2 = mk('Dan', 'Canine', 'dentist', 'filling'); vit(dent2, 'dentist');
+    const hyg1 = mk('Hal', 'Scaler', 'hygienist', 'cleaning', { phone: '5035552222' }); vit(hyg1, 'hygienist');
+    const hyg2 = mk('Hana', 'Polish', 'hygienist', 'cleaning'); vit(hyg2, 'hygienist');
+    const doneD = mk('Fay', 'Finished', 'dentist', 'filling'); vit(doneD, 'dentist');
+    db.saveTreatment(currentUser, doneD.id, { fillings: [{ tooth: '3', surfaces: ['O'] }], provider_name: 'Dr Admin' }, 'complete');
+    const doneH = mk('Flo', 'Flossed', 'hygienist', 'cleaning'); vit(doneH, 'hygienist');
+    db.saveTreatment(currentUser, doneH.id, { cleaning: { adult_prophy: true }, provider_name: 'Dr Admin' }, 'complete');
+    const out = mk('Otto', 'Gone', 'dentist', 'filling'); vit(out, 'dentist');
+    db.saveTreatment(currentUser, out.id, { fillings: [{ tooth: '4', surfaces: ['O'] }], provider_name: 'Dr Admin' }, 'complete');
+    db.dismissPatient(currentUser, out.id);
+
+    const views = [
+      ['Vitals', 'emt', 'renderEmt'],
+      ['Dentist', 'provider', 'renderProvider'],
+      ['Cleanings', 'hygienist', 'renderHygienist'],
+      ['Check-Out', 'checkout', 'renderCheckout'],
+    ];
+    for (const [label, file, fn] of views) {
+      const mod = await import(`../src/renderer/js/views/${file}.js`);
+      const v = mod[fn](fCtx, {});
+      document.body.append(v);
+      for (let i = 0; i < 12; i++) await tick();
+      const box = v.querySelector('input[type="search"]');
+      log(!!box, `v1.13.0: ${label} has a Find-a-patient box`);
+      if (!box) continue;
+      const before = names(v).length;
+      // Search by a surname that is on this screen.
+      const target = { Vitals: 'Waiting', Dentist: 'Molar', Cleanings: 'Scaler', 'Check-Out': 'Finished' }[label];
+      await type(box, target.toLowerCase());
+      const after = names(v);
+      log(after.length >= 1 && after.length < before && after.every((n) => new RegExp(target).test(n)),
+        `v1.13.0: ...typing a surname on ${label} narrows the list to that patient`);
+      log(v.querySelector('input[type="search"]') === box && box.value === target.toLowerCase(),
+        `v1.13.0: ...and the box is not rebuilt out from under the person typing (${label})`);
+      log(/hidden by the search/.test(v.textContent), `v1.13.0: ...and ${label} says how many people the search is hiding`);
+      await type(box, 'nobody-by-this-name');
+      log(names(v).length === 0 && /No match for/.test(v.textContent),
+        `v1.13.0: ...a search that finds nobody says so on ${label}, instead of "nobody is waiting"`);
+      await type(box, '');
+      log(names(v).length === before, `v1.13.0: ...and clearing it brings the whole ${label} list back`);
+      v.remove();
+    }
+
+    // Dentist: a match inside a collapsed section opens it.
+    const { renderProvider } = await import('../src/renderer/js/views/provider.js');
+    const pv = renderProvider(fCtx, {});
+    document.body.append(pv);
+    for (let i = 0; i < 12; i++) await tick();
+    const pbox = pv.querySelector('input[type="search"]');
+    await type(pbox, 'flossed');
+    const openPane = Array.from(pv.querySelectorAll('details')).find((d) => /Finished today/.test(d.textContent));
+    log(!!openPane && openPane.hasAttribute('open') && /Flossed, Flo/.test(openPane.textContent),
+      'v1.13.0: on the Dentist screen a match in "Finished today" opens that section, so it is not hidden behind a closed fold');
+    // By date of birth in the typed form, on a clinical screen.
+    await type(pbox, '07/15/1966');
+    log(names(pv).join('|') === 'Molar, Dora', 'v1.13.0: the dentist can find a patient by a typed date of birth');
+
+    // Sync from another laptop must not wipe the search. The screen refreshes
+    // ITSELF in place — same box, same text, same filter, fresh data.
+    await type(pbox, 'molar');
+    const dent3 = mk('Mo', 'Molarson', 'dentist', 'filling'); vit(dent3, 'dentist');
+    pbox.focus();
+    pv.__liveRefresh();
+    for (let i = 0; i < 12; i++) await tick();
+    log(pv.querySelector('input[type="search"]') === pbox && pbox.value === 'molar',
+      'v1.13.0: a sync from another laptop refreshes the Dentist screen without wiping the search');
+    log(names(pv).includes('Molarson, Mo') && names(pv).includes('Molar, Dora') && !names(pv).includes('Canine, Dan'),
+      'v1.13.0: ...the new patient appears, and the search is still applied');
+    log(document.activeElement === pbox, 'v1.13.0: ...and the cursor stays in the box');
+    // A brand-new copy of the screen (navigating away and back) remembers it too.
+    const pv2 = renderProvider(fCtx, {});
+    document.body.append(pv2);
+    for (let i = 0; i < 12; i++) await tick();
+    log(pv2.querySelector('input[type="search"]').value === 'molar',
+      'v1.13.0: ...and a fresh copy of the screen remembers what was being searched');
+    await type(pv2.querySelector('input[type="search"]'), '');
+    pv.remove(); pv2.remove();
+
+    // THE APP SHELL, end to end. The station's own refresh was tested above;
+    // this is the path a real sync takes: app.js receives "cloud changed" and
+    // decides what to repaint. It used to skip the repaint whenever a cursor
+    // sat in any box — with a search box on every station, that would have
+    // meant a patient checked out elsewhere never appeared here at all.
+    {
+      // Sign in through the real login screen so the real shell is showing.
+      document.querySelectorAll('.modal-overlay').forEach((m) => m.remove());
+      const appRoot = document.querySelector('#app') || document.body;
+      const { store: appStore } = await import('../src/renderer/js/store.js');
+      // The first test in this file leaves the kiosk on its "Thank you" page;
+      // Done returns it to the sign-in screen, exactly as at a real desk.
+      if (!document.querySelector('.auth-form')) {
+        const done = Array.from(document.querySelectorAll('.app-fullscreen button')).find((b) => /^\s*Done\s*$/.test(b.textContent));
+        if (done) { done.click(); for (let i = 0; i < 10; i++) await tick(); }
+      }
+      const authForm = document.querySelector('.auth-form');
+      let shellUp = false;
+      if (authForm) {
+        const ins = authForm.querySelectorAll('input');
+        setInput(ins[0], 'admin'); setInput(ins[1], 'admin');
+        const go = Array.from(authForm.querySelectorAll('button')).find((b) => /sign in/i.test(b.textContent)) || authForm.querySelector('button');
+        go.click();
+        for (let i = 0; i < 16; i++) await tick();
+      }
+      const dentNav = Array.from(document.querySelectorAll('.nav-item')).find((b) => /Dentist/.test(b.textContent));
+      if (dentNav) { dentNav.click(); for (let i = 0; i < 16; i++) await tick(); shellUp = true; }
+      log(shellUp, 'v1.13.0: (setup) the real app shell is showing the Dentist screen');
+      const shellBox = document.querySelector('.app-shell input[type="search"]');
+      if (shellUp && shellBox) {
+        await type(shellBox, 'canine');
+        shellBox.focus();
+        // Another laptop adds a patient who matches, then sync lands here.
+        const late = mk('Cy', 'Canineson', 'dentist', 'filling'); vit(late, 'dentist');
+        currentUser = db.login('admin', 'admin');
+        cloudChangedHandlers.forEach((cb) => cb());
+        for (let i = 0; i < 16; i++) await tick();
+        const shellNames = Array.from(document.querySelectorAll('.app-shell td strong')).map((n) => n.textContent);
+        log(shellNames.includes('Canineson, Cy'),
+          'v1.13.0: a sync from another laptop reaches the Dentist screen even while the cursor is in the search box');
+        log(document.querySelector('.app-shell input[type="search"]') === shellBox && shellBox.value === 'canine',
+          'v1.13.0: ...without replacing the screen or wiping the search');
+        await type(shellBox, '');
+      }
+    }
+
+    // Arrivals picks up the same fixes.
+    const { renderArrivals } = await import('../src/renderer/js/views/arrivals.js');
+    const av = renderArrivals(fCtx, {});
+    document.body.append(av);
+    for (let i = 0; i < 12; i++) await tick();
+    const pickTab = (root, label) => { const b = Array.from(root.querySelectorAll('button')).find((x) => x.textContent.includes(label)); if (b) b.click(); };
+    pickTab(av, 'Registered at the desk');
+    for (let i = 0; i < 6; i++) await tick();
+    const abox = av.querySelector('input[type="search"]');
+    abox.value = '555-1111'; abox.dispatchEvent(new window.Event('input', { bubbles: true }));
+    for (let i = 0; i < 4; i++) await tick();
+    const arows = Array.from(av.querySelectorAll('.arrival-row')).map((r) => r.textContent);
+    log(arows.length === 1 && /Waiting, Abel/.test(arows[0]),
+      'v1.13.0: Arrivals now finds a phone number typed with a dash');
+    av.remove();
+
+    currentUser = db.login('admin', 'admin');
+    storeF.setUser(currentUser);
   }
 
   await tick();

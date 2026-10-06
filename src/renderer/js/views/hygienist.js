@@ -13,6 +13,7 @@ import { visitNotesPanel } from '../components/visitNotes.js';
 import { triageFindings } from '../components/triageFindings.js';
 import { stationNotes } from '../components/stationNotes.js';
 import { sortedByName } from '../patientSort.js';
+import { patientSearch } from '../components/patientSearch.js';
 
 // Cleaning options a hygienist performs (mirrors the provider's cleaning set).
 const CLEANING_OPTS = [
@@ -30,20 +31,33 @@ const needsDoctor = (cl = {}) => !!(cl.extraction || cl.filling);
 // roles can work the same chart without overwriting each other.
 export function renderHygienist(ctx, params = {}) {
   const root = el('div', { class: 'view' });
+  // Fetched once, filtered in memory: typing never refetches or rebuilds the box.
+  let patients = null;
+  let inQueue = false;
+  const search = patientSearch('hygienist', { onChange: () => paint() });
+  root.__liveRefresh = () => { if (inQueue) queue(); };
   if (params.id) detail(params.id); else queue();
   return root;
 
   async function queue() {
     ctx.setDetail && ctx.setDetail(false);
-    const patients = await api.listPatients({});
+    inQueue = true;
+    patients = await api.listPatients({});
+    if (inQueue) paint();
+  }
+
+  function paint() {
+    if (!inQueue || !patients) return;
     const live = patients.filter((p) => p.status !== 'dismissed');
     // B1/B2 QUEUE GATE: a patient only belongs in the cleaning queue once the EMT
     // has signed them off into a clinical queue (status 'triaged'/'in_treatment')
     // AND they were routed to the hygienist. Checked-in patients stay with the EMT.
-    const forCleaning = sortedByName(live.filter((p) => routedToHygienist(p) && ['triaged', 'in_treatment'].includes(p.status)));
+    const allForCleaning = sortedByName(live.filter((p) => routedToHygienist(p) && ['triaged', 'in_treatment'].includes(p.status)));
     // Same reason as the dentist queue: a finished cleaning used to vanish from
     // this screen, so there was no way back to the record to add a note.
-    const finished = sortedByName(patients.filter((p) => routedToHygienist(p) && ['completed', 'dismissed'].includes(p.status)));
+    const allFinished = sortedByName(patients.filter((p) => routedToHygienist(p) && ['completed', 'dismissed'].includes(p.status)));
+    const forCleaning = search.filter(allForCleaning);
+    const finished = search.filter(allFinished);
     const rowFor = (p) => el('tr', { style: 'cursor:pointer', onClick: () => detail(p.id) }, [
       el('td', {}, [el('strong', {}, [`${p.last_name}, ${p.first_name}`])]),
       el('td', { class: 'num' }, [p.age != null ? String(p.age) : '—']),
@@ -52,45 +66,44 @@ export function renderHygienist(ctx, params = {}) {
       el('td', {}, [statusPill(p.status)]),
       el('td', {}, [el('button', { class: 'btn btn--primary btn--sm', onClick: (e) => { e.stopPropagation(); detail(p.id); } }, ['Open', icon('chevron', { size: 15 })])]),
     ]);
-    const rows = forCleaning.map((p) => el('tr', { style: 'cursor:pointer', onClick: () => detail(p.id) }, [
-      el('td', {}, [el('strong', {}, [`${p.last_name}, ${p.first_name}`])]),
-      el('td', { class: 'num' }, [p.age != null ? String(p.age) : '—']),
-      el('td', {}, [p.complaint || '—']),
-      el('td', {}, [routedToHygienist(p) ? el('span', { class: 'pill pill--teal' }, [icon('sparkle', { size: 12 }), 'Cleaning']) : el('span', { class: 'subtle small' }, ['—'])]),
-      el('td', {}, [statusPill(p.status)]),
-      el('td', {}, [el('button', { class: 'btn btn--primary btn--sm', onClick: (e) => { e.stopPropagation(); detail(p.id); } }, ['Open', icon('chevron', { size: 15 })])]),
-    ]));
-    clear(root);
-    add(root,
-      el('div', { class: 'view-head' }, [
-        el('div', {}, [el('h1', {}, ['Cleanings']), el('p', { class: 'view-sub' }, [`${forCleaning.length} routed for cleaning · ${live.length} patient(s) in clinic`])]),
-        el('button', { class: 'btn btn--ghost btn--sm', onClick: queue }, [icon('refresh', { size: 15 }), 'Refresh']),
-      ]),
-      el('div', { class: 'card' }, [
-        el('div', { class: 'card-title' }, [icon('sparkle', { size: 15 }), 'Routed for cleaning']),
-        el('div', { class: 'data-table-wrap' }, [
-          el('table', { class: 'data-table' }, [
-            el('thead', {}, [el('tr', {}, ['Patient', 'Age', 'Complaint', 'Cleaning', 'Status', ''].map((h) => el('th', {}, [h])))]),
-            el('tbody', {}, rows.length ? rows : [el('tr', {}, [el('td', { colspan: 6, class: 'empty' }, ["No patients sent to the hygienist yet — they'll appear here once the EMT signs them off."])])]),
-          ]),
+    const rows = forCleaning.map(rowFor);
+    search.keepFocus(() => {
+      clear(root);
+      add(root,
+        el('div', { class: 'view-head' }, [
+          el('div', {}, [el('h1', {}, ['Cleanings']), el('p', { class: 'view-sub' }, [`${allForCleaning.length} routed for cleaning · ${live.length} patient(s) in clinic`])]),
+          el('button', { class: 'btn btn--ghost btn--sm', onClick: queue }, [icon('refresh', { size: 15 }), 'Refresh']),
         ]),
-      ]),
-      finished.length ? el('details', { class: 'collapse' }, [
-        el('summary', {}, [`Finished today (${finished.length}) — open one to add a note or correct it`]),
-        el('div', { class: 'collapse-body' }, [
+        search.card({ shown: forCleaning.length + finished.length, total: allForCleaning.length + allFinished.length }),
+        el('div', { class: 'card' }, [
+          el('div', { class: 'card-title' }, [icon('sparkle', { size: 15 }), 'Routed for cleaning']),
           el('div', { class: 'data-table-wrap' }, [
             el('table', { class: 'data-table' }, [
               el('thead', {}, [el('tr', {}, ['Patient', 'Age', 'Complaint', 'Cleaning', 'Status', ''].map((h) => el('th', {}, [h])))]),
-              el('tbody', {}, finished.map(rowFor)),
+              el('tbody', {}, rows.length ? rows : [el('tr', {}, [el('td', { colspan: 6, class: 'empty' }, [search.emptyText("No patients sent to the hygienist yet — they'll appear here once the EMT signs them off.")])])]),
             ]),
           ]),
         ]),
-      ]) : null,
-    );
+        // A search that finds someone in here opens it — a match hidden inside
+        // a closed section reads exactly like no match at all.
+        finished.length ? el('details', { class: 'collapse', open: !!search.query }, [
+          el('summary', {}, [`Finished today (${finished.length}) — open one to add a note or correct it`]),
+          el('div', { class: 'collapse-body' }, [
+            el('div', { class: 'data-table-wrap' }, [
+              el('table', { class: 'data-table' }, [
+                el('thead', {}, [el('tr', {}, ['Patient', 'Age', 'Complaint', 'Cleaning', 'Status', ''].map((h) => el('th', {}, [h])))]),
+                el('tbody', {}, finished.map(rowFor)),
+              ]),
+            ]),
+          ]),
+        ]) : null,
+      );
+    });
   }
 
   async function detail(id) {
     ctx.setDetail && ctx.setDetail(true);
+    inQueue = false; // a queue fetch still in flight must not paint over the chart
     const p = await api.getPatient(id);
     // The hygienist needs the medical history as much as the dentist does — they
     // decide whether it is safe to scale someone on a blood thinner, and they are
