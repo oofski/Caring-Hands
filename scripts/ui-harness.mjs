@@ -3927,6 +3927,150 @@ async function main() {
     currentUser = db.login('admin', 'admin'); storeN.setUser(currentUser);
   }
 
+  // ---- v1.13.0: a check-out is never stuck behind x-ray images ----
+  {
+    currentUser = db.login('admin', 'admin');
+    const http = require('http');
+    const cloud = require('../src/main/cloud.js');
+    cloud._resetTuning();
+    const evY = db.createEvent(currentUser, { name: 'X-ray Heavy' });
+    db.setActiveEvent(currentUser, evY.id);
+    const py = db.createPatient(currentUser, {
+      first_name: 'Iris', last_name: 'Imaged', demographics: {}, medical_history: {},
+      dental_history: { reason: 'Pain', visit_type: 'filling' }, route: 'dentist', consents: SIGNED,
+    });
+    db.saveVitals(currentUser, py.id, { bp_systolic: 120, bp_diastolic: 78, heart_rate: 70 });
+    db.routePatient(currentUser, py.id, 'dentist');
+    // Clear the decks so only what this block creates is dirty.
+    db.markSynced(db.collectSyncRows(100000).mark);
+    // Twelve ~400KB films, as a busy chair produces them.
+    const film = 'data:image/jpeg;base64,' + 'A'.repeat(400 * 1024);
+    for (let i = 0; i < 12; i++) db.addXray(currentUser, py.id, { image_png: film, tooth: String(i + 1) });
+    db.saveTreatment(currentUser, py.id, { fillings: [{ tooth: '3', surfaces: ['O'] }], provider_name: 'Dr Admin' }, 'complete');
+    db.dismissPatient(currentUser, py.id);
+
+    // The lanes, at the data layer.
+    const clinical = db.collectSyncRows(400, { skip: ['xray'] });
+    log(clinical.rows.length > 0 && clinical.rows.every((r) => r.entity !== 'xray')
+      && clinical.rows.some((r) => r.entity === 'patient' && r.data.status === 'dismissed'),
+      'v1.13.0: the clinical lane carries the check-out and no images');
+    const films = db.collectSyncRows(400, { only: ['xray'], tombstones: false, xrayBytes: 1024 * 1024 });
+    const filmBytes = films.rows.reduce((n, r) => n + String(r.data.image_png || '').length, 0);
+    log(films.rows.length >= 1 && films.rows.every((r) => r.entity === 'xray') && filmBytes <= 1024 * 1024,
+      'v1.13.0: the x-ray lane stops at its byte budget instead of a row count');
+    const one = db.collectSyncRows(400, { only: ['xray'], tombstones: false, xrayBytes: 10 });
+    log(one.rows.length === 1, 'v1.13.0: ...but always sends at least one image, so a large film is never stuck behind the budget');
+    const all = db.collectSyncRows(400);
+    log(all.rows.some((r) => r.entity === 'xray') && all.rows.some((r) => r.entity === 'patient'),
+      'v1.13.0: with no options, collecting rows behaves exactly as before');
+
+    // The image cap.
+    const huge = 'data:image/jpeg;base64,' + 'A'.repeat(2 * 1024 * 1024);
+    log(/too large to share between laptops/.test((() => { try { db.addXray(currentUser, py.id, { image_png: huge }); return ''; } catch (e) { return e.message; } })()),
+      'v1.13.0: an image too big for the clinic cloud is refused before it can jam every upload from that laptop');
+
+    // The real sync engine, against a stand-in server that records what it is
+    // sent and can be told to fail. No timer: syncOnce is called by hand.
+    const seen = [];
+    let failImages = false;
+    const srv = http.createServer((req, res) => {
+      let body = '';
+      req.on('data', (c) => { body += c; });
+      req.on('end', () => {
+        const u = new URL(req.url, 'http://x');
+        if (u.pathname === '/v1/push') {
+          const j = JSON.parse(body || '{}');
+          const kinds = [...new Set((j.rows || []).map((r) => r.entity))];
+          seen.push({ path: 'push', kinds, n: (j.rows || []).length, bytes: body.length });
+          if (failImages && kinds.includes('xray')) { res.writeHead(500, { 'content-type': 'application/json' }); res.end(JSON.stringify({ error: 'row too big' })); return; }
+          res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: true }));
+          return;
+        }
+        if (u.pathname === '/v1/pull') {
+          seen.push({ path: 'pull', limit: Number(u.searchParams.get('limit')) });
+          res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: true, rows: [], cursor: '7', more: false }));
+          return;
+        }
+        res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: true, seq: true }));
+      });
+    });
+    await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+    const base = `http://127.0.0.1:${srv.address().port}`;
+    const before = db.getSyncMeta();
+    db.setSyncMeta({ url: base, key: 'test-key', mode: 'online', cursor: '0' });
+
+    // 1. A failed IMAGE upload does not stop the check-out, and does not stop the pull.
+    failImages = true;
+    const r1 = await cloud.syncOnce();
+    const pushes = seen.filter((x) => x.path === 'push');
+    log(pushes.length >= 2 && !pushes[0].kinds.includes('xray') && pushes[0].kinds.includes('patient'),
+      'v1.13.0: the check-out is pushed in its own request, before any image');
+    log(pushes.length >= 2 && pushes[1].kinds.length === 1 && pushes[1].kinds[0] === 'xray' && pushes[1].bytes <= 3.5 * 1024 * 1024,
+      'v1.13.0: ...and the images follow in a separate request of a few megabytes');
+    log(seen.some((x) => x.path === 'pull'),
+      'v1.13.0: when the image upload fails, this laptop still PULLS — it no longer stops hearing about other laptops’ check-outs');
+    log(r1.ok === false && /row too big/.test(db.getSyncMeta().lastError),
+      'v1.13.0: ...and the failure is reported, not hidden behind a green "synced"');
+    log(db.collectSyncRows(400, { skip: ['xray'] }).rows.length === 0,
+      'v1.13.0: ...while the check-out itself is confirmed sent and is not sent again');
+
+    // 2. Images catch up once the server takes them.
+    failImages = false;
+    for (let i = 0; i < 12; i++) { await cloud.syncOnce(); if (!db.collectSyncRows(400, { only: ['xray'], tombstones: false }).rows.length) break; }
+    log(db.collectSyncRows(400, { only: ['xray'], tombstones: false }).rows.length === 0,
+      'v1.13.0: the images then go through a few megabytes per cycle until none are left');
+    log(!db.getSyncMeta().lastError, 'v1.13.0: ...and the error clears once everything is through');
+
+    // 3. Page sizing. A server that hands out pages of a chosen weight, and a
+    //    record of the limit this laptop asks for each time.
+    const asks = [];
+    let pages = [];
+    const srv2 = http.createServer((req, res) => {
+      const u = new URL(req.url, 'http://x');
+      if (u.pathname === '/v1/push') { res.writeHead(200, { 'content-type': 'application/json' }); res.end('{"ok":true}'); return; }
+      if (u.pathname === '/v1/pull') {
+        const limit = Number(u.searchParams.get('limit'));
+        asks.push(limit);
+        const pg = pages.shift() || { n: 0, size: 10 };
+        const n = Math.min(pg.n, limit);
+        // Rows of an entity this app does not know: skipped on apply, so only
+        // their WEIGHT matters here, which is what the sizing reads.
+        const rows = Array.from({ length: n }, (_, i) => ({ entity: 'padding', uid: 'p' + asks.length + '-' + i, updated_at: '1', data: { pad: 'x'.repeat(pg.size) } }));
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, rows, cursor: String(asks.length * 1000), more: !!pg.more && n === limit }));
+        return;
+      }
+      res.writeHead(200, { 'content-type': 'application/json' }); res.end('{"ok":true,"seq":true}');
+    });
+    await new Promise((r) => srv2.listen(0, '127.0.0.1', r));
+    db.setSyncMeta({ url: `http://127.0.0.1:${srv2.address().port}`, key: 'k', mode: 'online', cursor: '0' });
+    cloud._resetTuning();
+    // A caught-up laptop: three tiny rows. That says nothing about the next page.
+    pages = [{ n: 3, size: 200 }];
+    await cloud.syncOnce();
+    pages = [{ n: 0, size: 10 }];
+    await cloud.syncOnce();
+    log(asks[0] === 50 && asks[1] <= 50,
+      'v1.13.0: a short page of small rows does not let the next page grow — that is what sent a laptop into the x-ray backlog at 400 rows');
+    // A backlog of x-rays: a full page of ~400KB rows shrinks the next page to fit ~4MB.
+    asks.length = 0; cloud._resetTuning();
+    pages = [{ n: 50, size: 400 * 1024, more: true }, { n: 50, size: 400 * 1024, more: false }];
+    await cloud.syncOnce();
+    log(asks[0] === 50 && asks[1] >= 1 && asks[1] <= 12,
+      'v1.13.0: a page of x-rays shrinks the next page to a few megabytes');
+    // A backlog of check-ins: full, light pages may grow — but only double each time.
+    asks.length = 0; cloud._resetTuning();
+    pages = [{ n: 50, size: 300, more: true }, { n: 100, size: 300, more: true }, { n: 200, size: 300, more: true }, { n: 1, size: 300, more: false }];
+    await cloud.syncOnce();
+    log(asks.slice(0, 4).join(',') === '50,100,200,400',
+      'v1.13.0: full pages of light rows grow the page size, doubling at most each time');
+    srv2.close();
+
+    db.setSyncMeta({ url: before.usingDefaultCloud ? '' : before.url, key: before.usingDefaultCloud ? '' : before.key, cursor: before.cursor, lastError: '' });
+    srv.close();
+    cloud._resetTuning();
+  }
+
   await tick();
   if (errors.length) errors.forEach((e) => log(false, 'RUNTIME: ' + e));
   const failed = results.filter((r) => !r[0]).length;

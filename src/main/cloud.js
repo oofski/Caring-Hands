@@ -8,8 +8,50 @@
 const db = require('./db');
 
 const INTERVAL_MS = 4000;
-const HTTP_TIMEOUT_MS = 12000;
+const HTTP_TIMEOUT_MS = 20000;
 const PULL_LIMIT = 400;
+
+// v1.13.0 — the 15-minute check-out delay.
+//
+// Reported from a large clinic with 200+ x-rays: a patient checked out on one
+// laptop could take a quarter of an hour to show as checked out on the others.
+// Reproduced against the real worker with four simulated laptops on a throttled
+// link. Every x-ray row carries the whole image, and batches and pages were
+// capped by ROW COUNT only under a flat 12-second timeout, so:
+//   - the laptop taking x-rays sent one request with the check-out at the top
+//     and 60 images behind it, which never finished uploading in time, was
+//     retried identically every 4 seconds, and — because a failed push skipped
+//     the pull — also never received anyone else's check-outs;
+//   - a laptop that fell behind (sleep, wifi drop, restart, "Re-sync
+//     everything") asked for a 400-row page holding ~80MB of images, timed out,
+//     and asked for the identical page again, forever;
+//   - and a timeout while reading the response was swallowed, reported as an
+//     empty success, and the badge kept saying "Cloud · synced".
+// Nothing produced 15 minutes deliberately; that was how long it took for a
+// stuck laptop to come unstuck by luck. The fixes below are all on this side,
+// so they work against the clinic server as it is — no Cloudflare paste.
+
+// Images go in their own requests, after the clinical rows, at most this many
+// bytes at a time. Halved after a timeout, regrown after a success.
+const XRAY_BATCH_MAX = 3 * 1024 * 1024;
+const XRAY_BATCH_MIN = 1; // always at least one image (see collectSyncRows)
+let xrayBatchBytes = XRAY_BATCH_MAX;
+
+// Pull pages are sized from what the previous page actually weighed, aiming
+// for pages a slow clinic link can fetch well inside the timeout.
+const PULL_TARGET_BYTES = 4 * 1024 * 1024;
+// The FIRST page after the app starts is a guess, so guess small: 50 rows is
+// nothing for a page of check-outs, and at most ~20MB for a page of x-rays.
+// Starting at 400 cost a laptop that had fallen behind two full timeouts before
+// it found a size that fitted. After one page, the measured weight takes over.
+const PULL_FIRST_LIMIT = 50;
+let pullLimit = PULL_FIRST_LIMIT;
+
+// Stop paging after this long so the laptop gets back to PUSHING its own
+// check-outs; the next cycle carries on from the same cursor.
+const PULL_TIME_BUDGET_MS = 20000;
+
+const isTimeout = (e) => !!(e && (e.name === 'AbortError' || e.timeout || /abort/i.test(String(e.message || ''))));
 
 let timer = null;
 let running = false;      // a sync cycle is in flight
@@ -27,20 +69,37 @@ function trimUrl(u) {
   try { return new URL(s).origin; } catch { return s.replace(/\/+$/, ''); }
 }
 
-async function httpJson(method, url, key, body) {
+async function httpJson(method, url, key, body, info) {
   const controller = new AbortController();
   const to = setTimeout(() => controller.abort(), HTTP_TIMEOUT_MS);
   try {
     const headers = { 'content-type': 'application/json' };
     if (key) headers.authorization = 'Bearer ' + key;
     const res = await fetch(url, { method, headers, body: body ? JSON.stringify(body) : undefined, signal: controller.signal });
+    let text = '';
+    try { text = await res.text(); } catch (e) {
+      // The body timed out half-way. This used to be swallowed and returned as
+      // an empty success: no rows, cursor unmoved, error cleared, badge green.
+      if (controller.signal.aborted) {
+        const err = new Error('The clinic cloud took too long to answer — retrying with a smaller batch.');
+        err.timeout = true; throw err;
+      }
+      throw e;
+    }
+    if (info) info.bytes = text.length;
     let json = null;
-    try { json = await res.json(); } catch { /* non-json */ }
+    try { json = text ? JSON.parse(text) : null; } catch { /* non-json */ }
     if (!res.ok) {
       const msg = (json && json.error) || `HTTP ${res.status}`;
       const err = new Error(msg); err.status = res.status; throw err;
     }
     return json || {};
+  } catch (e) {
+    if (controller.signal.aborted && !e.timeout) {
+      const err = new Error('The clinic cloud took too long to answer — retrying with a smaller batch.');
+      err.timeout = true; throw err;
+    }
+    throw e;
   } finally { clearTimeout(to); }
 }
 
@@ -55,12 +114,37 @@ async function testConnection(url, key) {
   return { ok: true, service: health.service, version: health.version, time: health.time };
 }
 
+// Two requests, in this order, every cycle:
+//   1. everything clinical — patients, vitals, triage, treatment, consents,
+//      deletions. Small, so it lands in well under a second even on a poor
+//      link, and it is never waiting behind an image again.
+//   2. x-ray images, a few megabytes at a time.
+// Parents still reach the cloud before their children: an x-ray's patient is
+// always in an earlier request than the x-ray.
 async function pushOnce(base, key, deviceId) {
-  const { rows, mark } = db.collectSyncRows(PULL_LIMIT);
-  if (!rows.length) return 0;
-  const r = await httpJson('POST', base + '/v1/push', key, { device_id: deviceId, rows });
-  if (r && r.ok) { db.markSynced(mark); db.setSyncMeta({ lastPush: new Date().toISOString() }); }
-  return rows.length;
+  let pushed = 0;
+  const clinical = db.collectSyncRows(PULL_LIMIT, { skip: ['xray'] });
+  if (clinical.rows.length) {
+    const r = await httpJson('POST', base + '/v1/push', key, { device_id: deviceId, rows: clinical.rows });
+    if (r && r.ok) { db.markSynced(clinical.mark); db.setSyncMeta({ lastPush: new Date().toISOString() }); }
+    pushed += clinical.rows.length;
+  }
+  const xr = db.collectSyncRows(PULL_LIMIT, { only: ['xray'], tombstones: false, xrayBytes: xrayBatchBytes });
+  if (xr.rows.length) {
+    try {
+      const r = await httpJson('POST', base + '/v1/push', key, { device_id: deviceId, rows: xr.rows });
+      if (r && r.ok) { db.markSynced(xr.mark); db.setSyncMeta({ lastPush: new Date().toISOString() }); }
+      pushed += xr.rows.length;
+      // It fitted; let the next batch be a little bigger again.
+      xrayBatchBytes = Math.min(XRAY_BATCH_MAX, Math.round(xrayBatchBytes * 1.5));
+    } catch (e) {
+      // Too big for this link: send less next time rather than the identical
+      // batch again. Down to a single image, which always goes.
+      if (isTimeout(e)) xrayBatchBytes = Math.max(XRAY_BATCH_MIN, Math.floor(xrayBatchBytes / 2));
+      throw e;
+    }
+  }
+  return pushed;
 }
 
 // A cursor is either the server's delivery counter (a plain number, v1.5.0+
@@ -89,11 +173,35 @@ async function pullOnce(base, key) {
   // boundary, so the cursor can always advance — orphans that outlive the whole
   // delta are parked in the persistent pending buffer and retried next cycle
   // (never dropped, never wedging the cursor).
+  const started = Date.now();
   for (;;) {
     if (guard++ > 500) break;
-    const qs = `?since=${encodeURIComponent(cursor)}&limit=${PULL_LIMIT}`;
-    const r = await httpJson('GET', base + '/v1/pull' + qs, key);
+    const qs = `?since=${encodeURIComponent(cursor)}&limit=${pullLimit}`;
+    const info = {};
+    let r;
+    try {
+      r = await httpJson('GET', base + '/v1/pull' + qs, key, null, info);
+    } catch (e) {
+      // A page too heavy for this link: ask for half as many rows next time.
+      // It used to ask for the identical 400-row page again, forever.
+      if (isTimeout(e)) pullLimit = Math.max(1, Math.floor(pullLimit / 2));
+      throw e;
+    }
     const rows = (r && r.rows) || [];
+    // Size the NEXT page from what this one weighed: a page of check-outs is a
+    // few KB a row; a page of x-rays is half a megabyte a row.
+    //
+    // Shrinking is immediate. GROWING is only allowed after a page came back
+    // FULL and light, and then at most double: a short page of three check-outs
+    // says nothing about how heavy the next page will be, and letting it set the
+    // limit back to 400 sent a laptop straight into a timeout on the x-ray
+    // backlog behind it (seen in the reproduction).
+    if (rows.length && info.bytes) {
+      const asked = pullLimit;
+      const fit = Math.floor(PULL_TARGET_BYTES / Math.max(1, info.bytes / rows.length));
+      const ceiling = rows.length >= asked ? asked * 2 : asked;
+      pullLimit = Math.max(1, Math.min(PULL_LIMIT, fit, ceiling));
+    }
     const batch = carry.length ? carry.concat(rows) : rows;
     if (batch.length) {
       const res = db.applyRemoteRows(batch);
@@ -103,7 +211,11 @@ async function pullOnce(base, key) {
     // Accept "0" as a real cursor value (a counter can legitimately be 0).
     const pageCursor = (r && r.cursor != null && r.cursor !== '') ? String(r.cursor) : cursor;
     if (pageCursor !== cursor) { cursor = pageCursor; db.setSyncMeta({ cursor }); }
+    // The server sets `more` against the limit we asked for, so it stays right
+    // whatever size we choose.
     if (!r || !r.more) break;
+    // Give the push its turn; the next cycle carries on from this cursor.
+    if (Date.now() - started > PULL_TIME_BUDGET_MS) break;
   }
   // Park still-unresolved orphans for the next cycle (bounded, persisted).
   db.setSyncPending(carry);
@@ -118,16 +230,28 @@ async function syncOnce() {
   running = true;
   const base = trimUrl(meta.url);
   const deviceId = db.ensureDeviceId();
+  // Push and pull fail separately. A failed push used to skip the pull, so the
+  // laptop busy uploading x-rays was exactly the one that stopped hearing about
+  // everyone else's check-outs. Applying rows is last-write-wins, so pulling
+  // while our own push is unfinished is safe.
+  let pushed = 0, pushError = null;
   try {
-    const pushed = await pushOnce(base, meta.key, deviceId);
+    pushed = await pushOnce(base, meta.key, deviceId);
+  } catch (e) { pushError = e; }
+  try {
     const { pulled, applied, deleted } = await pullOnce(base, meta.key);
-    db.setSyncMeta({ lastOk: new Date().toISOString(), lastError: '' });
     lastResult = { pushed, pulled, applied, deleted };
     if (applied > 0) notifyRenderer();
+    if (pushError) {
+      db.setSyncMeta({ lastError: pushError.message || String(pushError) });
+      return { ok: false, error: pushError.message || String(pushError), pushed, pulled, applied, deleted };
+    }
+    db.setSyncMeta({ lastOk: new Date().toISOString(), lastError: '' });
     return { ok: true, pushed, pulled, applied, deleted };
   } catch (e) {
-    db.setSyncMeta({ lastError: e.message || String(e) });
-    return { ok: false, error: e.message || String(e) };
+    const msg = (pushError ? (pushError.message || String(pushError)) + ' · ' : '') + (e.message || String(e));
+    db.setSyncMeta({ lastError: msg });
+    return { ok: false, error: msg };
   } finally {
     running = false;
   }
@@ -191,4 +315,8 @@ async function resyncAll() {
   return { ok: true, ...r };
 }
 
-module.exports = { start, stop, syncOnce, resyncAll, testConnection, status, applyConfig, normalizeUrl: trimUrl };
+// For the tests: the adaptive sizes, and a way to put them back.
+function _tuning() { return { xrayBatchBytes, pullLimit, httpTimeoutMs: HTTP_TIMEOUT_MS }; }
+function _resetTuning() { xrayBatchBytes = XRAY_BATCH_MAX; pullLimit = PULL_FIRST_LIMIT; }
+
+module.exports = { start, stop, syncOnce, resyncAll, testConnection, status, applyConfig, normalizeUrl: trimUrl, _tuning, _resetTuning };

@@ -401,19 +401,45 @@ export function renderProvider(ctx, params = {}) {
     // Re-encode any renderable image to a JPEG data URL (canvas). Already-JPEG
     // images pass through untouched; PNG/BMP and images extracted from a .dex are
     // converted so the chart always stores a .jpg, as requested.
+    // An x-ray as it will be stored and synced.
+    //
+    // Anything that already fits is left EXACTLY as it was — a JPEG passes
+    // straight through, anything else becomes a full-size JPEG at 0.92, as
+    // before. Only an image too big to travel between laptops is made smaller,
+    // and only as far as it has to be: first a lower quality at full size, then
+    // the long edge stepped down from 2400px.
+    //
+    // Why this exists (v1.13.0): the clinic cloud cannot store a row much over
+    // 2MB, and one oversized image made every upload from that laptop fail,
+    // every four seconds, for the rest of the clinic — taking every check-out on
+    // that laptop down with it.
+    const XRAY_FITS = 1200 * 1024; // data-URL characters; ~900KB of image
     function toJpegDataUrl(dataUrl) {
-      if (/^data:image\/jpe?g/i.test(dataUrl || '')) return Promise.resolve(dataUrl);
+      const isJpeg = /^data:image\/jpe?g/i.test(dataUrl || '');
+      if (isJpeg && String(dataUrl).length <= XRAY_FITS) return Promise.resolve(dataUrl);
       return new Promise((resolve) => {
         const img = new Image();
         img.onload = () => {
           try {
-            const c = document.createElement('canvas');
-            c.width = img.naturalWidth || img.width; c.height = img.naturalHeight || img.height;
-            if (!c.width || !c.height) { resolve(dataUrl); return; }
-            const cx = c.getContext('2d');
-            cx.fillStyle = '#000'; cx.fillRect(0, 0, c.width, c.height);
-            cx.drawImage(img, 0, 0);
-            resolve(c.toDataURL('image/jpeg', 0.92));
+            const w0 = img.naturalWidth || img.width, h0 = img.naturalHeight || img.height;
+            if (!w0 || !h0) { resolve(dataUrl); return; }
+            const encode = (maxEdge, q) => {
+              const k = Math.min(1, maxEdge / Math.max(w0, h0));
+              const c = document.createElement('canvas');
+              c.width = Math.max(1, Math.round(w0 * k)); c.height = Math.max(1, Math.round(h0 * k));
+              const cx = c.getContext('2d');
+              cx.fillStyle = '#000'; cx.fillRect(0, 0, c.width, c.height);
+              cx.drawImage(img, 0, 0, c.width, c.height);
+              return c.toDataURL('image/jpeg', q);
+            };
+            // Full size first, as before.
+            let out = isJpeg ? dataUrl : encode(Infinity, 0.92);
+            const steps = [[Infinity, 0.85], [2400, 0.85], [2000, 0.82], [1600, 0.8], [1280, 0.75]];
+            for (const [edge, q] of steps) {
+              if (out.length <= XRAY_FITS) break;
+              out = encode(edge, q);
+            }
+            resolve(out);
           } catch (_) { resolve(dataUrl); }
         };
         img.onerror = () => resolve(dataUrl);

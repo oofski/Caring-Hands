@@ -52,16 +52,36 @@ jobs:
         continue-on-error: true
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.12.0-build.${{ github.run_number }}
-          name: Caring Hands v1.12.0 (build ${{ github.run_number }})
+          tag_name: v1.13.0-build.${{ github.run_number }}
+          name: Caring Hands v1.13.0 (build ${{ github.run_number }})
           prerelease: false
           make_latest: true
           body: |
-            ## Caring Hands Worldwide — Practice Management Software (v1.12.0)
+            ## Caring Hands Worldwide — Practice Management Software (v1.13.0)
 
             Offline-first dental clinic app for Windows. **Download the installer once — it auto-updates from here on.**
 
-            **New in v1.12.0 — the front desk and vitals can hand a note to the dentist**
+            **New in v1.13.0 — three things from the large Sandy clinic**
+
+            *A check-out no longer takes up to 15 minutes to reach the other laptops*
+            - **What was happening.** Every x-ray travels between laptops with its whole image, and it travelled in the same queue as check-outs. Requests were sized by how many rows they held, not how big they were, and given 12 seconds to finish. On a clinic connection, the laptop taking x-rays sent one request with the check-out at the top and dozens of images behind it — it never finished in time, was retried identically every four seconds, and because a failed upload also skipped the download, that laptop stopped hearing about everyone else's check-outs too. A laptop that fell behind (sleep, a wifi drop, a restart) asked for a page holding 80MB of images, timed out, and asked for the same page again, forever. **And the badge kept saying "Cloud · synced" the whole time**, because a timeout part-way through a download was being reported as success. The 15 minutes was how long it took a stuck laptop to come unstuck by luck.
+            - **What changed.** Check-outs, vitals, notes and every other clinical change now go in their own small request, ahead of any image, so they arrive in well under a second. X-rays follow a few megabytes at a time, and the batch shrinks if the connection can't keep up. Downloads size themselves from what the last page weighed. A failed upload no longer stops the download. And a laptop that is genuinely behind now **says so** instead of showing green.
+            - **Tested the way it failed**: four real copies of the app syncing through the real clinic server, 200 x-rays, on a throttled 20/5 Mbit link. Before: the behind laptop never caught up, and the x-ray laptop's completed visit never left it. After: the behind laptop saw the check-out in about a minute, and the completed visit reached the server in 52 milliseconds.
+            - **X-rays that are too big to share are made smaller before they're saved** — the clinic server can't store a single image much over 2MB, and one such image used to jam every upload from its laptop for the rest of the day. Ordinary x-rays are untouched.
+
+            *Find a patient on every station*
+            - **Vitals, Dentist, Cleanings and Check-Out now each have the same "Find a patient" box as Arrivals.** On the Dentist screen it also searches "Finished today" and "At the hygienist", and opens them when they hold a match. It shows how many people the search is hiding, and an empty result says "No match" rather than "nobody is waiting".
+            - **Fixed: searching by date of birth or phone didn't work the way people type them.** A date typed 03/04/1977 — the format the date box asks for — and a phone typed with dashes or brackets both found nobody. Both now work, on Arrivals too.
+            - **What you type survives another laptop syncing.** Without this, every sync would have wiped the search box — and a cursor sitting in a search box used to stop the screen refreshing at all, so a patient checked out elsewhere would never have appeared.
+
+            *No-shows*
+            - **Arrivals → Pre-registered online now has a "No-show" button** for someone who signed up and never came, a **"Did not attend"** list, and **"They came after all"** to undo it. Once the clinic is over, **"End of clinic — mark everyone who never came"** does them all at once, after showing you the names.
+            - **Fixed: people who never came were counted as patients seen** — in Reports, in the totals kept when a clinic is finished, on the coordinator PDF and in the Excel export. They are now counted as sign-ups who did not attend, and nowhere else. **Finish Clinic warns you** if any pre-registrations were never marked, because the kept totals can't be corrected afterwards.
+            - **Records → Show → "No-shows only"** lists them for follow-up. The internal coordinator PDF names them; the shareable one gives the count only.
+            - A no-show can't be accidentally checked out, given vitals, or sent to a dentist — each of those now says "marked as a no-show" and how to undo it.
+
+            *No clinic-server update is needed for this release — the server is still v1.11.0.*
+            **From v1.12.0 — the front desk and vitals can hand a note to the dentist**
 
             - **The two stations that meet the patient first can now leave a short note for whoever sees them next.** The front desk hears things the form never asks about — very anxious about needles, came with a translator, hard of hearing on the left — and the vitals station has the patient in front of them for several minutes. Until now none of it reached the chair unless somebody remembered to say it out loud. **Arrivals** has a *Note for the clinician* button on every patient; the **Vitals** screen has the same box under the EMT review.
             - **The dentist and the hygienist see it at the top of the chart**, right under the blood pressure and above the triage findings — the order the patient actually met the stations. Each note carries the station it came from, who wrote it and when, so the clinician knows who to ask. The dentist's queue flags a patient carrying one, so it is visible before the chart is even opened.
@@ -69,7 +89,6 @@ jobs:
             - **They print on the clinical record and NOT on the patient's copy.** "Patient seems agitated" is a fair thing for one clinician to tell the next and the wrong thing to print on what somebody takes home, so they appear on the progress note and the full record only — never on the summary check-out hands the patient.
             - A dentist cannot write one. Their later thoughts belong in the clinical note, which is signed; **Add a note** on a finished visit already does that.
 
-            *No clinic-server update is needed for this release — the server is still v1.11.0.*
             **From v1.11.0 — the six things the clinic asked for**
 
             *Two dentists, one chart*
@@ -206,8 +225,8 @@ jobs:
             Every release from v1.0.2 to v1.6.9 — pre-registration, cloud sync, the reporting rebuild, the A–Z patient lists, per-event staff, the USB workflow and the rest — is listed with its full notes at
             https://github.com/oofski/Caring-Hands/releases
 
-            - **Caring-Hands-Setup-1.12.0.exe** — installer (recommended; required for auto-update).
-            - **Caring-Hands-Portable-1.12.0.exe** — portable (no auto-update).
+            - **Caring-Hands-Setup-1.13.0.exe** — installer (recommended; required for auto-update).
+            - **Caring-Hands-Portable-1.13.0.exe** — portable (no auto-update).
 
             First sign-in: `admin / admin` — then create your staff accounts. All clinical data stays on the device unless you enable Cloud Sync.
           files: |
@@ -231,7 +250,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          tag="v1.12.0-build.${{ github.run_number }}"
+          tag="v1.13.0-build.${{ github.run_number }}"
           for attempt in 1 2 3; do
             missing=0
             for f in release/*.exe release/latest.yml release/*.blockmap; do
@@ -257,7 +276,7 @@ jobs:
       - name: Verify both installers are on the release
         shell: bash
         run: |
-          tag="v1.12.0-build.${{ github.run_number }}"
+          tag="v1.13.0-build.${{ github.run_number }}"
           api="https://api.github.com/repos/${{ github.repository }}/releases/tags/$tag"
           json=$(curl -sS -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" "$api")
           names=$(echo "$json" | grep -o '"name": *"[^"]*\.exe"' || true)

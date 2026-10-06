@@ -2260,8 +2260,20 @@ function recountXrays(patientId) {
   return cnt;
 }
 
+// The clinic cloud stores each synced row as one database row, and it cannot
+// store one much over 2MB. An image over this size never reaches another
+// laptop — and until v1.13.0 it also made every upload from its own laptop
+// fail, every four seconds, for the rest of the clinic. The dentist screen
+// shrinks anything this large before saving; this is the backstop.
+const XRAY_MAX_CHARS = 1800 * 1024;
+
 function addXray(actor, patientId, { station, image_png, note, tooth }) {
   assertChartUnlocked(patientId, 'add an x-ray');
+  const size = String(image_png || '').length;
+  if (size > XRAY_MAX_CHARS) {
+    throw new Error(`This image is too large to share between laptops (${(size / 1048576).toFixed(1)}MB). `
+      + 'Export it from the x-ray software as a JPEG, or at a smaller size, and add it again.');
+  }
   const info = db.prepare(
     `INSERT INTO xrays (patient_id, station, image_png, note, tooth, created_at, updated_at) VALUES (?,?,?,?,?,?,?)`
   ).run(patientId, station || null, image_png, note || null, tooth != null && String(tooth).trim() ? String(tooth).trim() : null, now(), now());
@@ -3220,16 +3232,46 @@ function ensureUids() {
 // Local-change cursor: gather dirty rows (content sig != synced_rev) as sync
 // envelopes. Stamps updated_at only when the content actually changed (tracked
 // by content_rev) so an offline edit keeps its original timestamp for fair LWW.
-function collectSyncRows(max = 400) {
+// opts (all optional; with none, behaviour is exactly as before):
+//   only        — entities to collect, e.g. ['xray']
+//   skip        — entities to leave out, e.g. ['xray']
+//   tombstones  — false to leave deletions for another batch (default true)
+//   xrayBytes   — stop adding x-ray rows once their images reach this many
+//                 bytes. At least ONE x-ray always goes, so a single large
+//                 image still moves instead of being stuck behind the limit.
+//
+// Why the x-ray lane exists (v1.13.0): a batch was capped by ROW COUNT only, and
+// every x-ray row carries the whole image. 400 rows could be 150MB, which no
+// clinic connection uploads inside the request timeout — so the batch failed,
+// was retried identically four seconds later, failed again, forever. The
+// patient checked out at the top of that batch never reached the other laptops.
+function collectSyncRows(max = 400, opts = {}) {
   ensureUids();
+  const only = Array.isArray(opts.only) ? opts.only : null;
+  const skip = Array.isArray(opts.skip) ? opts.skip : [];
+  const xrayBudget = Number(opts.xrayBytes) > 0 ? Number(opts.xrayBytes) : Infinity;
+  let xrayBytes = 0, xrayCount = 0;
   const rows = [];
   const mark = [];
   for (const entity of APPLY_ORDER) {
     if (rows.length >= max) break;
+    if (only && !only.includes(entity)) continue;
+    if (skip.includes(entity)) continue;
     const table = ENTITY_TABLE[entity];
-    const all = db.prepare(`SELECT * FROM ${table}`).all();
-    for (const row of all) {
+    // X-rays are read one at a time, by id, and only until the budget is spent:
+    // loading every image in the clinic into memory on every 4-second cycle just
+    // to send three of them was the expensive part. (Not .iterate(): the loop
+    // below writes, and better-sqlite3 refuses writes during an open read.)
+    const isXray = entity === 'xray';
+    const source = isXray
+      ? db.prepare(`SELECT id, LENGTH(image_png) AS size FROM ${table} ORDER BY id`).all()
+      : db.prepare(`SELECT * FROM ${table}`).all();
+    const oneXray = isXray ? db.prepare(`SELECT * FROM ${table} WHERE id = ?`) : null;
+    for (const item of source) {
       if (rows.length >= max) break;
+      if (isXray && xrayCount > 0 && xrayBytes + (item.size || 0) > xrayBudget) break;
+      const row = isXray ? oneXray.get(item.id) : item;
+      if (!row) continue;
       const data = buildData(entity, row);
       const s = sig(data);
       if (s === row.synced_rev) continue; // clean
@@ -3259,12 +3301,14 @@ function collectSyncRows(max = 400) {
         deleted: 0, updated_at: updatedAt, data,
       });
       mark.push({ table, id: row.id, sig: s, undelete: reviving ? row.uid : null });
+      if (entity === 'xray') { xrayCount++; xrayBytes += String(row.image_png || '').length; }
     }
   }
   // Deletions travel too. A tombstone carries a uid and nothing else, so a
   // purge reaches every other station and the cloud instead of being quietly
   // undone by the next pull.
-  for (const tomb of db.prepare('SELECT * FROM tombstones WHERE synced_rev IS NULL').all()) {
+  const wantTombs = opts.tombstones !== false;
+  for (const tomb of (wantTombs ? db.prepare('SELECT * FROM tombstones WHERE synced_rev IS NULL').all() : [])) {
     if (rows.length >= max) break;
     rows.push({
       entity: tomb.entity, uid: tomb.uid,
