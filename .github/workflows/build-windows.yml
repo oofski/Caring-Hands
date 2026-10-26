@@ -52,16 +52,47 @@ jobs:
         continue-on-error: true
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.13.0-build.${{ github.run_number }}
-          name: Caring Hands v1.13.0 (build ${{ github.run_number }})
+          tag_name: v1.14.0-build.${{ github.run_number }}
+          name: Caring Hands v1.14.0 (build ${{ github.run_number }})
           prerelease: false
           make_latest: true
           body: |
-            ## Caring Hands Worldwide — Practice Management Software (v1.13.0)
+            ## Caring Hands Worldwide — Practice Management Software (v1.14.0)
 
             Offline-first dental clinic app for Windows. **Download the installer once — it auto-updates from here on.**
 
-            **New in v1.13.0 — three things from the large Sandy clinic**
+            **New in v1.14.0 — sync rebuilt for big clinics** *(the clinic server needs pasting for the speed-ups — see the end of this section; the safety fixes work either way)*
+
+            *A check-out reaches a laptop that has fallen behind in seconds, not minutes*
+            - **What was still slow after v1.13.** v1.13 stopped check-outs queueing behind x-rays on the laptop that *sends* them. But a laptop that had fallen behind (lid shut, wifi drop, restart, "Re-sync everything") still downloaded the x-ray backlog in the order it was taken before it reached the check-outs behind it: 27 seconds for 200 x-rays on a good connection, over 2 minutes on a slow one.
+            - **What changed.** The clinic server now hands changes out in four lanes — deletions and clinics, then patients, then the rest of the chart, then x-ray images — and a laptop always gets the first three before any image. Pages are capped by size and sized to the laptop's actual connection, and while images are still downloading the laptop keeps sending its own check-outs every few seconds.
+            - **Measured** with real copies of the app syncing through the real server, a laptop 200 x-rays behind: the check-out arrived in its **first** sync — **5.4 seconds** on a 20/5 Mbit link (was 27 s), **6.6 seconds** on a slow 5/2 Mbit link (was over 2 minutes). Every image still arrives after.
+            - **A laptop no longer downloads its own x-rays back.** Uploading 20 images used to mean downloading the same 7.8 MB straight back; now it is 0.0 MB.
+            - **On a very slow link, a large x-ray still arrives.** A request is given up when nothing moves, not after a fixed 20 seconds — below about 0.8 Mbit a 2 MB image used to be retried for ever.
+
+            *Fixes to things that could lose records*
+            - **Fixed: the clinic server could let a laptop skip a change for good.** Saving a change took two separate steps on the server, and a laptop downloading at exactly the wrong moment could step past it and never be offered it again. It is now one step. The first time each laptop syncs on v1.14 it re-reads every patient record once (not the images) to recover anything it skipped. If a laptop is still missing an x-ray another laptop has, **Re-sync everything** fetches it.
+            - **Fixed: a laptop catching up on a whole clinic could drop records.** Vitals, consents and x-rays that arrive before their patient wait for them — but only 5,000 could wait, and the rest were thrown away. Nothing is thrown away now, and what is waiting is saved in the same step as the laptop's place in the queue, so a crash or a dropped page cannot lose it either.
+            - **Fixed: "Re-sync everything" could be undone** by a sync already running when it was pressed.
+            - **Fixed: a laptop could mark records as sent that the server had not stored** (a partial upload on the free plan, or an answer that did not match the upload). Every record is now confirmed one by one; anything not stored is sent again straight away, and a record the server can never store (one huge signature, say) is set aside instead of being re-sent every four seconds while everything behind it waits.
+            - **Moving to a new server now copies everything across.** Changing the Cloud URL, or a new database behind the same address — even after "Re-sync everything" — used to leave the new server without what had been sent to the old one.
+            - **Older laptops are told the truth.** A v1.12 or v1.13 laptop whose upload still has records waiting to be stored shows the error instead of "Cloud · synced".
+
+            *Finish clinic won't delete what this laptop hasn't received*
+            - **Finish clinic**, **Delete this clinic's patient data** and deleting an event that still has patients remove every record of the clinic from every laptop — including x-rays still on their way to the laptop doing it, which are therefore not in the export taken there. They now **wait while records are still arriving** (the badge says *Cloud · catching up*; wait for it to go, export again, then finish), and **ask you to confirm** when this laptop can't reach the cloud, when records are waiting for their patient, or when **another station still has x-rays it hasn't uploaded** — named, with when it last reported, so you know which laptop to check. Your confirmation covers exactly what was listed; anything new is shown first. (Deleting an event that still has patients does not offer the confirmation — it points you to Finish clinic, which keeps the clinic's totals.)
+            - **An export taken before other stations' records arrived no longer counts** — for Finish and for Delete. If a check-out or an x-ray reaches this laptop after the export (even while the save dialog is open), you are asked to export again.
+            - The Management screen's Cloud card shows *X-rays still arriving*, *X-rays still sending*, *Waiting for their patient*, *Refused by the cloud*, and which other station still has records to send.
+
+            *Faster on the laptop*
+            - Deciding which x-rays need uploading re-read and re-checked every image in the clinic every four seconds — over a second of the laptop's attention each time on a clinic with 200 films. It now takes under 2 milliseconds, and an idle sync checks the chart once instead of twice.
+
+            *The clinic server needs pasting for this release (v1.14.0)*
+            - **Paste `cloud/worker.js` into the Cloudflare dashboard, at a quiet time, all at once** (Workers & Pages → your worker → Edit code → select all, paste, Deploy). The first request after the paste upgrades the database in place.
+            - **Order doesn't matter.** Laptops on v1.12, v1.13 and v1.14 all work with both the old and the new server — tested with mixed fleets, and with the old server pasted back in the middle of the day. The speed-ups need both; the safety fixes on the laptop work with either.
+            - **On Cloudflare's free plan** the clinic cloud has daily limits (100,000 database writes and 5 million reads, reset at 00:00 UTC). An ordinary clinic day is well inside them. Moving to a new database, or "Re-sync everything" on several laptops at once, can use a lot — do those outside clinic hours (see docs/CLOUD_SETUP.md).
+            - If anything looks wrong after the paste, add a Variable `SYNC_V2` = `off` to the worker and Deploy: it then talks to every laptop the old way. Pasting the old file back is also safe.
+
+            **From v1.13.0 — three things from the large Sandy clinic**
 
             *A check-out no longer takes up to 15 minutes to reach the other laptops*
             - **What was happening.** Every x-ray travels between laptops with its whole image, and it travelled in the same queue as check-outs. Requests were sized by how many rows they held, not how big they were, and given 12 seconds to finish. On a clinic connection, the laptop taking x-rays sent one request with the check-out at the top and dozens of images behind it — it never finished in time, was retried identically every four seconds, and because a failed upload also skipped the download, that laptop stopped hearing about everyone else's check-outs too. A laptop that fell behind (sleep, a wifi drop, a restart) asked for a page holding 80MB of images, timed out, and asked for the same page again, forever. **And the badge kept saying "Cloud · synced" the whole time**, because a timeout part-way through a download was being reported as success. The 15 minutes was how long it took a stuck laptop to come unstuck by luck.
@@ -81,7 +112,7 @@ jobs:
             - A no-show can't be accidentally checked out, given vitals, or sent to a dentist — each of those now says "marked as a no-show" and how to undo it.
             - **Update every laptop before anyone uses No-show.** A laptop still on an older version doesn't know what a no-show is: it would put them back in its Vitals queue and count them as seen.
 
-            *No clinic-server update is needed for this release — the server is still v1.11.0.*
+            *v1.13.0 needed no clinic-server update (its server was still v1.11.0).*
             **From v1.12.0 — the front desk and vitals can hand a note to the dentist**
 
             - **The two stations that meet the patient first can now leave a short note for whoever sees them next.** The front desk hears things the form never asks about — very anxious about needles, came with a translator, hard of hearing on the left — and the vitals station has the patient in front of them for several minutes. Until now none of it reached the chair unless somebody remembered to say it out loud. **Arrivals** has a *Note for the clinician* button on every patient; the **Vitals** screen has the same box under the EMT review.
@@ -226,8 +257,8 @@ jobs:
             Every release from v1.0.2 to v1.6.9 — pre-registration, cloud sync, the reporting rebuild, the A–Z patient lists, per-event staff, the USB workflow and the rest — is listed with its full notes at
             https://github.com/oofski/Caring-Hands/releases
 
-            - **Caring-Hands-Setup-1.13.0.exe** — installer (recommended; required for auto-update).
-            - **Caring-Hands-Portable-1.13.0.exe** — portable (no auto-update).
+            - **Caring-Hands-Setup-1.14.0.exe** — installer (recommended; required for auto-update).
+            - **Caring-Hands-Portable-1.14.0.exe** — portable (no auto-update).
 
             First sign-in: `admin / admin` — then create your staff accounts. All clinical data stays on the device unless you enable Cloud Sync.
           files: |
@@ -251,7 +282,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          tag="v1.13.0-build.${{ github.run_number }}"
+          tag="v1.14.0-build.${{ github.run_number }}"
           for attempt in 1 2 3; do
             missing=0
             for f in release/*.exe release/latest.yml release/*.blockmap; do
@@ -277,7 +308,7 @@ jobs:
       - name: Verify both installers are on the release
         shell: bash
         run: |
-          tag="v1.13.0-build.${{ github.run_number }}"
+          tag="v1.14.0-build.${{ github.run_number }}"
           api="https://api.github.com/repos/${{ github.repository }}/releases/tags/$tag"
           json=$(curl -sS -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" "$api")
           names=$(echo "$json" | grep -o '"name": *"[^"]*\.exe"' || true)
