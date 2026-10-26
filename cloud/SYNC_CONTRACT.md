@@ -130,11 +130,16 @@ first row of a response always goes, so one row bigger than the cap still moves 
   the response, keeping every lane close to the frontier.
 - `reset: "cursor_ahead"` (a cursor past `head`) or a changed `instance` means a different
   database behind the same address: the app starts from nothing and re-sends everything.
-- `backlog` (`{c, x, b, w}`: unsent clinical rows, x-rays, bytes, station name) is stored
-  only when it changes (or every 5 minutes while something is outstanding), outside the
-  read batch so a refused write never fails the pull, and is reported to the other laptops
-  as `peers` for 7 days — long on purpose, because the station that matters is one that
-  went offline holding unsent x-rays and cannot update its report. Finish clinic names it.
+- `backlog` (`{c, x, b, t, w}`: unsent clinical rows, x-rays, bytes, records this laptop can
+  never send — too big for the cloud, or refused — and the station name) is stored when it
+  changes and otherwise about every 5 minutes, all-clears included, so the server knows when
+  each laptop was last heard from. It is written outside the read batch, so a refused write
+  never fails the pull. An older app is recorded from its uploads (it cannot report what it
+  holds), and a report it left from v1.14 is counted down by the x-rays it uploads. Other
+  laptops receive every report as `peers`: ones with something outstanding for 60 days, the
+  rest for 2 days. Finish clinic names a station with something outstanding, one holding
+  records the cloud can never take, one not heard from for 15 minutes (it may be working
+  offline), and one on an older version — each as a problem the person confirms.
 
 **App side (v1.14).** Settings: `cloud_lanes` (`{v:1, e, p, k, x, base}`), `cloud_cursor` =
 the lowest lane (so an older version, if a laptop is downgraded, re-reads rather than
