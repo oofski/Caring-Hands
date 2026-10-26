@@ -330,8 +330,34 @@ async function main() {
     check('v2 push: one result per row, in order', r.proto === 2 && JSON.stringify(r.results) === JSON.stringify(['invalid', 'too_big', 'skipped', 'applied']), JSON.stringify(r.results));
     const legacy = await push(e, [R('patient', 'fresh2', { v: 1 }), R('xray', 'big2', { image_png: img(2000) })]);
     check('legacy push with an oversized row is NOT reported as ok (an older app would mark it synced and lose it)', legacy.data.ok === false && legacy.data.partial === true && /too large/.test(legacy.data.error));
-    check('...and it is an HTTP error, as the old server\'s was, so an older app does not show "synced"', legacy.status >= 500, `HTTP ${legacy.status}`);
+    check('...but not an HTTP error when the only rows left can never be stored: v1.12 skips its pull after a failed push, and would never receive anything again', legacy.status === 200, `HTTP ${legacy.status}`);
     check('...while the rest of that push is stored', table(e).has('fresh2') && !table(e).has('big2'));
+    const alone = await push(e, [R('xray', 'big3', { image_png: img(2000) })]);
+    check('...and a push of nothing but an oversized row is not an HTTP error either', alone.status === 200 && alone.data.ok === false, `HTTP ${alone.status}`);
+  }
+
+  // max_rows means "this is all a request can store" only when the request
+  // really ran out of room; an error mid-request does not shrink later uploads.
+  {
+    const e = await mkEnv({ maxQueries: 50 });
+    await push(e, [R('event', 'ev1', { name: 'C' })]);
+    const full = (await push(e, Array.from({ length: 120 }, (_, i) => R('patient', 'lm' + i, { i })), { proto: 2, origin: 'origin-lim-0001' })).data;
+    const e2 = await mkEnv();
+    await push(e2, [R('event', 'ev1', { name: 'C' })]);
+    e2.DB.setFaults({ failBatches: 6, failBatchMessage: 'D1_ERROR: D1 DB is overloaded. Too many requests queued.' });
+    const hiccup = (await push(e2, Array.from({ length: 40 }, (_, i) => R('patient', 'hc' + i, { i })), { proto: 2, origin: 'origin-lim-0002' })).data;
+    check('push: an answer cut short by the statement limit says so (limited), one cut short by an error does not', full.complete === false && full.limited === true && hiccup.complete === false && hiccup.limited === false,
+      JSON.stringify({ full: [full.complete, full.limited], hiccup: [hiccup.complete, hiccup.limited] }));
+    // A passing error in the pre-read does not switch it to the slow form for good.
+    const e3 = await mkEnv();
+    await push(e3, [R('event', 'ev1', { name: 'C' })]);
+    e3.DB.setFaults({ failSql: { re: /json_each/, message: 'D1_ERROR: D1 DB is overloaded. Too many requests queued.', times: 1 } });
+    await push(e3, [R('patient', 'pr0', { i: 0 })], { proto: 2, origin: 'origin-lim-0003' });
+    const many = Array.from({ length: 400 }, (_, i) => R('patient', 'pr' + i, { i }, { updated_at: '2020-01-01T00:00:00.000Z@x' + i }));
+    await push(e3, many, { proto: 2, origin: 'origin-lim-0003' }); // store them
+    await push(e3, many, { proto: 2, origin: 'origin-lim-0003' }); // all skipped now: the cost is the pre-read
+    const preReads = e3.DB.queriesThisRequest;
+    check('push: a passing error in the pre-read does not leave it reading 90 rows a statement instead of 900', preReads <= 3, `${preReads} statements to pre-read 400 rows`);
   }
 
   // ------------------------------------------------------------------ 8

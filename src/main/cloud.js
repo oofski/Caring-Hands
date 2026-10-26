@@ -144,12 +144,14 @@ function trimUrl(u) {
 const UPLOAD_FLOOR_BPS = 32 * 1024;
 const HTTP_MAX_MS = 5 * 60 * 1000;
 
-async function httpJson(method, url, key, body, info) {
+// opts.deadlineMs: a limit on the WHOLE request instead — for a page from a
+// server that does not cap its pages in bytes (see pullLegacy).
+async function httpJson(method, url, key, body, info, opts = {}) {
   const controller = new AbortController();
   const payload = body ? JSON.stringify(body) : undefined;
   let stall = null;
   const arm = (ms) => { clearTimeout(stall); stall = setTimeout(() => controller.abort(), ms); };
-  const cap = setTimeout(() => controller.abort(), HTTP_MAX_MS);
+  const cap = setTimeout(() => controller.abort(), opts.deadlineMs || HTTP_MAX_MS);
   arm(HTTP_TIMEOUT_MS + (payload ? Math.round((Buffer.byteLength(payload) / UPLOAD_FLOOR_BPS) * 1000) : 0));
   const t0 = Date.now();
   try {
@@ -278,7 +280,7 @@ async function pushOnce(base, key, deviceId, ctx) {
   if (xr.rows.length) {
     let res;
     try {
-      res = await pushBatch(base, key, deviceId, xr, ctx);
+      res = await pushBatch(base, key, deviceId, xr, ctx, 'xray');
     } catch (e) {
       // Too big for this link: send less next time rather than the identical
       // batch again. Down to a single image, which always goes.
@@ -318,7 +320,7 @@ function xrayBacklogNow() {
 //   retry   — not stored this time (the server ran out of room in this
 //             request); still waiting, sent again
 // An older server answers ok:true for the whole batch, or fails it.
-async function pushBatch(base, key, deviceId, batch, ctx) {
+async function pushBatch(base, key, deviceId, batch, ctx, lane = 'clinical') {
   const r = await httpJson('POST', base + '/v1/push', key, { device_id: deviceId, proto: 2, origin: echoToken, rows: batch.rows });
   // A reset (Re-sync everything, a new server address) happened while this
   // upload was in flight. Marking now would mark rows sent that the reset just
@@ -337,12 +339,18 @@ async function pushBatch(base, key, deviceId, batch, ctx) {
     // gives is kept for a while, and only grown back after a request of that
     // size came back complete: taking every answer at its word sent a
     // 200-row request after every 26-row one on the free plan, each storing 26.
+    // Only when the server says it truly ran out of room (limited): an answer
+    // cut short by a passing error says nothing about how much fits, and
+    // taking its count pinned uploads at one row a request for ten minutes.
+    // Only from chart uploads, whose size this governs.
     const mr = Number(r.max_rows);
-    if (!r.complete && mr >= 1) {
-      serverMaxRows = Math.min(serverMaxRows, PULL_LIMIT, Math.floor(mr));
-      serverRowsUntil = Date.now() + CEILING_MS;
-    } else if (r.complete && batch.rows.length >= serverMaxRows && Date.now() >= serverRowsUntil) {
-      serverMaxRows = Math.min(PULL_LIMIT, serverMaxRows * 2);
+    if (lane === 'clinical') {
+      if (!r.complete && r.limited && mr >= 1) {
+        serverMaxRows = Math.min(serverMaxRows, PULL_LIMIT, Math.floor(mr));
+        serverRowsUntil = Date.now() + CEILING_MS;
+      } else if (r.complete && batch.rows.length >= serverMaxRows && Date.now() >= serverRowsUntil) {
+        serverMaxRows = Math.min(PULL_LIMIT, serverMaxRows * 2);
+      }
     }
     return { v2: true, settled: done.length + refused.length, complete: !!r.complete, error: r.error || (refused.length ? 'Some items are too large for the clinic cloud to store; they stay on this laptop.' : null) };
   }
@@ -405,7 +413,14 @@ async function pullLegacy(base, key, ctx) {
     const info = {};
     let r;
     try {
-      r = await httpJson('GET', base + '/v1/pull' + qs, key, null, info);
+      // An older server caps a page by rows only, so one can be tens of MB of
+      // images: give it 20 s in all, as v1.13 did, so a page too big for the
+      // link times out, the page shrinks, and this laptop's own uploads get
+      // their turn. Waiting "until nothing moves" held a cycle — and every
+      // check-out made meanwhile — for up to five minutes. A page of ONE row
+      // has nowhere smaller to go, so that one may take as long as it keeps
+      // arriving.
+      r = await httpJson('GET', base + '/v1/pull' + qs, key, null, info, { deadlineMs: pullLimit > 1 ? HTTP_TIMEOUT_MS : 0 });
     } catch (e) {
       // A page too heavy for this link: ask for half as many rows next time.
       // It used to ask for the identical 400-row page again, forever.
@@ -502,9 +517,16 @@ function noteV2Failure(body) {
 // laptop holds, since the new database may have none of it.
 function newDatabase() {
   db.startOver();
+  db.unmarkResendXrays(XRAY_UNMARK_PER_CYCLE);
   rotateEchoToken();
   forgetPullState();
 }
+// X-rays to send again are recorded in a side table, which older versions of
+// the app do not read; they decide by the "sent" mark on the image row. So the
+// marks are also cleared, a few dozen images per cycle — clearing them all at
+// once rewrote every image in the clinic in one go — and a laptop put back on
+// an older version still sends them.
+const XRAY_UNMARK_PER_CYCLE = 40;
 // What the last pull said about how complete this laptop is no longer holds
 // after a reset. Kept, it told the Finish guard "caught up and reachable" until
 // the first page after the reset arrived.
@@ -624,6 +646,7 @@ async function syncOnce() {
   // Captured once. A reset while this cycle is in flight changes it, and then
   // nothing this cycle learned is saved over the reset.
   const ctx = { gen: db.syncGen(), deviceId };
+  try { db.unmarkResendXrays(XRAY_UNMARK_PER_CYCLE); } catch (_e) { /* next cycle */ }
   // Push and pull fail separately. A failed push used to skip the pull, so the
   // laptop busy uploading x-rays was exactly the one that stopped hearing about
   // everyone else's check-outs. Applying rows is last-write-wins, so pulling

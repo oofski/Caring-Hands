@@ -47,7 +47,9 @@ export function makeD1(opts = {}) {
   //   failBatches   — the next N batches throw failBatchMessage (nothing commits)
   //   failWritesWith — every INSERT/UPDATE throws this (e.g. a full database)
   //   beforeBatch   — called with the batch's SQL before it runs; may write
-  const faults = { failBatches: 0, failBatchMessage: 'D1_ERROR: network connection lost', failWritesWith: null, beforeBatch: null };
+  //   failSql       — { re, message, times }: the next `times` statements whose
+  //                   SQL matches `re` throw `message`
+  const faults = { failBatches: 0, failBatchMessage: 'D1_ERROR: network connection lost', failWritesWith: null, beforeBatch: null, failSql: null };
 
   function normalise(args) {
     return args.map((a) => {
@@ -63,6 +65,7 @@ export function makeD1(opts = {}) {
   function checkLimits(sql, binds) {
     queries++; totalQueries++;
     if (faults.failWritesWith && /^\s*(INSERT|REPLACE|UPDATE)/i.test(sql)) throw new Error(faults.failWritesWith);
+    if (faults.failSql && faults.failSql.times > 0 && faults.failSql.re.test(sql)) { faults.failSql.times--; throw new Error(faults.failSql.message); }
     if (limits.maxQueries && queries > limits.maxQueries) {
       throw new Error('Too many API requests by single worker invocation.');
     }

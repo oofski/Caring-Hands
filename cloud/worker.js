@@ -301,7 +301,10 @@ async function writeRows(db, env, rows, origin, { budget } = {}) {
           s += part.length;
           continue;
         } catch (e) {
-          if (isLimitError(e)) throw e;
+          // Only when json_each itself is what failed. Any other error (a
+          // passing D1 hiccup) is not a reason to use the IN (...) form — ten
+          // times the statements — for the rest of the isolate's life.
+          if (!/json_each|no such function/i.test(errMessage(e))) throw e;
           preReadJson = false; // fall through to the IN (...) form
         }
       }
@@ -337,12 +340,13 @@ async function writeRows(db, env, rows, origin, { budget } = {}) {
   }
   let applied = 0;
   let stopped = false;
+  let limited = false; // stopped by the request's statement budget, not by an error
   while (queue.length && !stopped) {
     let batch = queue.shift();
     // Stay inside the request's statement budget: shrink the batch to fit, or
     // stop and leave the rest for the next request.
     const room = cap() - db.used - 1;
-    if (room < 1) { stopped = true; queue.unshift(batch); break; }
+    if (room < 1) { stopped = true; limited = true; queue.unshift(batch); break; }
     if (batch.length > room) { queue.unshift(batch.slice(room)); batch = batch.slice(0, room); }
     try {
       const outcome = await writeBatch(db, batch, origin);
@@ -356,6 +360,7 @@ async function writeRows(db, env, rows, origin, { budget } = {}) {
         queue.unshift(batch);
         error = errMessage(e);
         stopped = true;
+        limited = true;
       } else if (batch.length > 1) {
         const mid = Math.ceil(batch.length / 2);
         queue.unshift(batch.slice(mid));
@@ -370,7 +375,7 @@ async function writeRows(db, env, rows, origin, { budget } = {}) {
     }
   }
   for (const b of queue) for (const t of b) if (results[t.i] == null) results[t.i] = 'retry';
-  return { results, applied, error };
+  return { results, applied, error, limited };
 }
 
 // One D1 batch: reserve n delivery numbers, then upsert n rows numbered in
@@ -557,7 +562,7 @@ async function handlePush(request, env, db) {
   // The app process that sent these rows: they come back to it as stubs, not
   // as full copies (see handlePullV2). Only a v2 app sends one.
   const origin = wantV2 && typeof body.origin === 'string' && ORIGIN_RE.test(body.origin) ? body.origin : null;
-  const { results, applied, error } = await writeRows(db, env, rows, origin);
+  const { results, applied, error, limited } = await writeRows(db, env, rows, origin);
   const count = (s) => results.reduce((n, r) => n + (r === s ? 1 : 0), 0);
   // A laptop uploading the old way (an older app, or the kill switch on) cannot
   // keep a "still to send" report current, so drop the one it left: otherwise a
@@ -575,6 +580,9 @@ async function handlePush(request, env, db) {
     return json({
       ok: true, proto: 2, applied, skipped, complete,
       max_rows: complete ? 400 : Math.max(1, rows.length - retry),
+      // max_rows is a real capacity only when the request ran out of room. An
+      // answer cut short by an error says nothing about how much fits.
+      limited: !!limited,
       results, time: nowIso(), ...(error ? { error } : {}),
     });
   }
@@ -591,6 +599,15 @@ async function handlePush(request, env, db) {
   // server's 500 was: v1.12 and v1.13 treat ANY 2xx answer as a good cycle and
   // show "Cloud · synced", so a 200 here let a laptop say synced while a row
   // it holds was never stored (and, past 400 such rows, rows were never sent).
+  //
+  // But NOT when the only rows left are ones that can never be stored (too
+  // big): resending them changes nothing, and v1.12 skips its pull after any
+  // failed push, so a laptop holding one oversized x-ray never received another
+  // station's patients again. That answer stays a 200 (still ok:false).
+  if (retry === 0) {
+    // Every row is final, and some can never be stored.
+    return json({ ok: false, partial: true, applied, skipped, time: nowIso(), error: why }, 200);
+  }
   if (applied + count('skipped') + count('invalid') > 0) {
     return json({ ok: false, partial: true, applied, skipped, time: nowIso(), error: error ? `${why} (${error})` : why }, 503);
   }

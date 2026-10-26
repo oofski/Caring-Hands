@@ -762,17 +762,22 @@ console.log(`client under test: ${path.relative(REPO, SRC) || SRC}`);
   await freshLaptop(A.url);
   localClinic('Images Move');
   const p = localPatient('Imaged');
-  for (let i = 0; i < 3; i++) db.addXray(admin, p.id, { image_png: 'data:image/jpeg;base64,' + crypto.randomBytes(200 * 1024).toString('base64'), tooth: String(i + 1) });
-  await syncUntil(() => db.collectSyncRows(100000).rows.length === 0, 8);
+  for (let i = 0; i < 120; i++) db.addXray(admin, p.id, { image_png: 'data:image/jpeg;base64,' + crypto.randomBytes(30 * 1024).toString('base64'), tooth: String((i % 32) + 1) });
+  await syncUntil(() => db.collectSyncRows(100000).rows.length === 0, 16);
   raw.exec('CREATE TABLE IF NOT EXISTS xw (n INTEGER); DELETE FROM xw; INSERT INTO xw VALUES (0);');
   raw.exec('CREATE TRIGGER IF NOT EXISTS xw_u AFTER UPDATE ON xrays BEGIN UPDATE xw SET n = n + 1; END;');
-  cloud.applyConfig({ url: B.url });
+  const pxB = await proxy(B.url);
+  pxB.failPush = true; // hold the uploads, to count what the move itself rewrites
+  cloud.applyConfig({ url: pxB.url });
   cloud.stop(); await idle();
-  await syncUntil(() => [...B.DB._store.values()].filter((r) => r.entity === 'xray').length === 3, 8);
-  const rewrites = raw.prepare('SELECT n FROM xw').get().n;
+  const atMove = raw.prepare('SELECT n FROM xw').get().n;
+  pxB.failPush = false;
+  await syncUntil(() => [...B.DB._store.values()].filter((r) => r.entity === 'xray').length === 120, 30);
   raw.exec('DROP TRIGGER xw_u; DROP TABLE xw;');
-  check([...B.DB._store.values()].filter((r) => r.entity === 'xray').length === 3, 'new database: the images are sent to it too');
-  check(rewrites === 0, '...without rewriting a single image row on this laptop to mark them', `${rewrites} image row(s) rewritten`);
+  check([...B.DB._store.values()].filter((r) => r.entity === 'xray').length === 120, 'new database: the images are sent to it too');
+  // The move plus the first cycle it starts: two batches of 40, not all 120.
+  check(atMove <= 80, '...and the move does not rewrite every image row at once to mark them (a few dozen a cycle at most)', `${atMove} of 120 rewritten by the move`);
+  await pxB.close();
   await A.close(); await B.close();
 }
 
@@ -791,6 +796,76 @@ console.log(`client under test: ${path.relative(REPO, SRC) || SRC}`);
   server.clearLinks();
   check(n('SELECT COUNT(*) AS n FROM xrays') === 1, 'slow link: an image that takes longer than 20 s to arrive is not given up on while it is still arriving', db.getSyncMeta().lastError || '');
   await server.close();
+}
+
+// ===========================================================================
+// 26. On the worker clinics run today, a slow catch-up still lets this laptop's
+//     own check-outs out (its pages are not capped in bytes).
+// ===========================================================================
+{
+  const server = await startServer({ workerPath: OLD_WORKER });
+  const c = clinic(4);
+  await peer(server, c.rows);
+  await freshLaptop(server.url);
+  localClinic('Old Slow');
+  await sync(); await sync();
+  await peer(server, Array.from({ length: 60 }, (_, j) => xrayRow(c.pts[j % 4].uid, 300 * 1024)));
+  server.setOpts({ downBps: 125000 }); // 1 Mbit: ~24 MB of images, minutes of downloading
+  const flying = cloud.syncOnce();
+  await sleep(2000);
+  localPatient('MadeDuringCatchup');
+  const t0 = Date.now();
+  let reached = null;
+  for (let i = 0; i < 240 && reached == null; i++) {
+    if (server.serverPatient('MadeDuringCatchup')) { reached = Date.now() - t0; break; }
+    await sleep(250);
+    if (!cloud.status().running) cloud.syncOnce();
+  }
+  await flying.catch(() => {});
+  server.clearLinks();
+  await idle();
+  check(reached != null && reached < 45000, 'old server, slow link: a check-out made during a long image catch-up goes out within the 20 s page deadline (not after a five-minute page)', reached == null ? 'not within 60 s' : `${reached} ms`);
+  await server.close();
+}
+
+// ===========================================================================
+// 27. A few passing errors do not pin uploads at one row a request.
+// ===========================================================================
+{
+  const server = await startServer({ workerPath: CUR_WORKER });
+  await freshLaptop(server.url);
+  localClinic('Hiccups');
+  await sync(); await sync();
+  for (let i = 0; i < 100; i++) localPatient('Hic' + i);
+  server.DB.setFaults({ failBatches: 6, failBatchMessage: 'D1_ERROR: D1 DB is overloaded. Too many requests queued.' });
+  const cycles = await syncUntil(() => db.collectSyncRows(100000).rows.length === 0, 12);
+  check(cycles >= 0 && cycles <= 6, 'push: after a few passing D1 errors, a 300-row backlog drains in a few cycles (not one row a request for ten minutes)', `${cycles < 0 ? 'not in 12' : cycles} cycle(s)`);
+  await server.close();
+}
+
+// ===========================================================================
+// 28. Put back on v1.13 straight after a start-over, a laptop still sends its x-rays.
+// ===========================================================================
+if (SRC === path.join(REPO, 'src/main') && fs.existsSync(path.join(REPO, 'scripts/syncrig/.versions/1f8c3c2/db.js'))) {
+  const A = await startServer({ workerPath: CUR_WORKER });
+  const B = await startServer({ workerPath: CUR_WORKER });
+  const pxB = await proxy(B.url);
+  pxB.failPush = true; // the move has started, but nothing has gone up to the new database yet
+  await freshLaptop(A.url);
+  localClinic('Downgrade Move');
+  const p = localPatient('Filmed');
+  for (let i = 0; i < 3; i++) db.addXray(admin, p.id, { image_png: 'data:image/jpeg;base64,' + crypto.randomBytes(100 * 1024).toString('base64'), tooth: String(i + 1) });
+  await syncUntil(() => db.collectSyncRows(100000).rows.length === 0, 8);
+  cloud.applyConfig({ url: pxB.url });
+  cloud.stop(); await idle();
+  db.close();
+  const old = require(path.join(REPO, 'scripts/syncrig/.versions/1f8c3c2/db.js'));
+  old.init(dataDir);
+  const films = old.collectSyncRows(100000, { only: ['xray'], tombstones: false }).rows.length;
+  old.close();
+  db.init(dataDir);
+  check(films === 3, 'downgrade: put back on v1.13 right after moving to a new database, the laptop still sees its x-rays as unsent', `${films}/3`);
+  await pxB.close(); await A.close(); await B.close();
 }
 
 // ===========================================================================

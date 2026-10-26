@@ -3981,6 +3981,12 @@ function pendingCounts(eventUid) {
   return { rows: r.n, xrays: r.x };
 }
 function eventUid(eventId) { return eventId ? uidOf('events', eventId) : null; }
+// See cloud.js (XRAY_UNMARK_PER_CYCLE). Returns how many were cleared.
+function unmarkResendXrays(n) {
+  const r = db.prepare(`UPDATE xrays SET synced_rev = NULL WHERE id IN (
+      SELECT u.id FROM xray_unsent AS u JOIN xrays AS x ON x.id = u.id WHERE x.synced_rev IS NOT NULL LIMIT ?)`).run(n);
+  return r.changes;
+}
 // Start over against a different database: reset AND re-send everything, in
 // one transaction. As two, a laptop killed between them (marking every row to
 // send is the slow part) came back reset but with nothing marked, and never
@@ -4028,5 +4034,5 @@ module.exports = {
   getSyncPending, setSyncPending, resetSyncCursor,
   // v1.14.0 lanes
   syncGen, getSyncLanes, commitPull, getSyncState, echoMissing, getRefused, markRefused, markAllDirty,
-  xrayBacklog, syncArrivals, PENDING_WARN, pendingCounts, startOver, eventUid,
+  xrayBacklog, syncArrivals, PENDING_WARN, pendingCounts, startOver, eventUid, unmarkResendXrays,
 };

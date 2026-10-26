@@ -281,7 +281,11 @@ function register(getMainWindow) {
     }
     if (c.orphans > 0) add(`orphans:${c.orphans}:${c.orphanXrays}`, `${c.orphans} record(s) from other stations${c.orphanXrays ? ` (${c.orphanXrays} x-ray image(s))` : ''} are waiting here for a patient this laptop has not received yet`);
     if (!c.reachable) add('unreachable', c.lastContactAt ? `this laptop has not reached the clinic cloud since ${new Date(c.lastContactAt).toLocaleString()}${c.behind ? ', and it was still receiving records then' : ''}` : 'this laptop has not reached the clinic cloud');
-    else if (lastSync && lastSync.ok === false && !lastSync.skipped && !lastSync.busy) add('sync-failed', `the sync just before finishing did not complete (${lastSync.error || 'unknown error'})`);
+    else if (lastSync && lastSync.ok === false && !lastSync.skipped) {
+      add('sync-failed', lastSync.busy
+        ? 'the sync just before finishing could not run — another one was still going after a minute'
+        : `the sync just before finishing did not complete (${lastSync.error || 'unknown error'})`);
+    }
     for (const p of c.peers || []) {
       // A report can be old: the station that matters most is one that went
       // offline holding unsent x-rays, and it cannot update its report.
