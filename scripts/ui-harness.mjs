@@ -4346,6 +4346,25 @@ async function main() {
       root.remove();
     }
 
+    // c3. The "Finishing…" window cannot be hidden: the screen behind it is
+    //     being emptied. (Only the check before it can.)
+    {
+      sync = { blocked: false, problems: [] };
+      let release;
+      const slow = new Promise((r) => { release = r; });
+      const realFin = window.api.eventFinish;
+      window.api.eventFinish = async (p) => { await slow; return realFin(p); };
+      root = await finishFrom();
+      await press(/Finish clinic & remove/);
+      const working = Array.from(document.querySelectorAll('.modal-card')).find((c) => /Finishing/.test(c.textContent));
+      log(!!working && !Array.from(working.querySelectorAll('button')).some((b) => /Hide/.test(b.textContent)), 'v1.14.0: the "Finishing…" window has no Hide button — only the check before it can be hidden');
+      release();
+      for (let i = 0; i < 8; i++) await tick();
+      window.api.eventFinish = realFin;
+      root.remove();
+      document.querySelectorAll('.modal-overlay').forEach((m) => m.remove());
+    }
+
     // d. Records arrived after the export.
     preExtra = { needs_export: true, arrivals_since_export: 2 };
     root = await finishFrom();
@@ -4388,6 +4407,78 @@ async function main() {
     log(purges.length === 1 && delBtn && delBtn.disabled, '...deletes nothing, and the button disarms until the next export');
     root.remove();
     preExtra = {};
+
+    // e2. While Delete patient data checks, its button stays disabled — pressed
+    //     again it would start a second check and a second deletion — and
+    //     Cancel arms it again while the export still counts.
+    {
+      sync = { blocked: false, problems: [] };
+      let release;
+      const slow = new Promise((r) => { release = r; });
+      const realPre = window.api.eventPreflight;
+      window.api.eventPreflight = async (p) => { await slow; return realPre(p); };
+      root = await dataView();
+      const delB = Array.from(root.querySelectorAll('button')).find((b) => /Delete this clinic/.test(b.textContent));
+      const checking = Array.from(document.querySelectorAll('.modal-card')).find((c) => /Checking with the clinic cloud/.test(c.textContent));
+      log(!!delB && delB.disabled === true && !!checking && Array.from(checking.querySelectorAll('button')).some((b) => /Hide/.test(b.textContent)),
+        'v1.14.0: while Delete patient data checks with the cloud, its button is disabled and a window (which can be hidden) says so');
+      release();
+      await press(/^Cancel$/);
+      log(!!delB && delB.disabled === false, '...and Cancel at the confirmation arms it again (the export still counts)');
+      window.api.eventPreflight = realPre;
+      let releaseP;
+      const slowP = new Promise((r) => { releaseP = r; });
+      const realPurge = window.api.eventPurge;
+      window.api.eventPurge = async (p) => { await slowP; return realPurge(p); };
+      delB.click();
+      await press(/Delete the patient data/);
+      const deleting = Array.from(document.querySelectorAll('.modal-card')).find((c) => /Deleting this clinic/.test(c.textContent));
+      log(!!deleting && !Array.from(deleting.querySelectorAll('button')).some((b) => /Hide/.test(b.textContent)) && delB.disabled === true,
+        'v1.14.0: ...and while it deletes, the window has no Hide and the button stays disabled');
+      releaseP();
+      for (let i = 0; i < 8; i++) await tick();
+      window.api.eventPurge = realPurge;
+      root.remove();
+      document.querySelectorAll('.modal-overlay').forEach((m) => m.remove());
+    }
+
+    // e3. Deleting a clinic that has patients: the same check first, and the
+    //     go-ahead only after the confirmation that lists what may be missing.
+    {
+      sync = { blocked: false, problems: [{ key: 'quiet:d9:1', text: 'DESK-9 has not been heard from since 9:00' }] };
+      const savedDel = window.api.eventsDelete;
+      const dels = [];
+      let releaseD;
+      const slowD = new Promise((r) => { releaseD = r; });
+      window.api.eventsDelete = async (p) => {
+        dels.push(p);
+        if (!p.force) return { ok: false, error: 'This event has 1 patient record(s).' };
+        await slowD;
+        return { ok: true, data: { ok: true } };
+      };
+      root = renderAdmin({ navigate: () => {}, toast: () => {}, store: storeG }, { section: 'events' });
+      document.body.append(root);
+      for (let i = 0; i < 8; i++) await tick();
+      const row = Array.from(root.querySelectorAll('tr')).find((tr) => /Guard Screen/.test(tr.textContent));
+      const trash = row && Array.from(row.querySelectorAll('button.btn--danger')).find((b) => !b.textContent.trim());
+      if (trash) trash.click();
+      await press(/^Delete$/);
+      const body3 = (modalBody() || {}).textContent || '';
+      log(/Permanently delete with patients/.test(modalTitle()) && /DESK-9 has not been heard from/.test(body3) && dels.length === 1 && dels[0].force === false,
+        'v1.14.0: deleting a clinic with patients checks with the cloud first, and lists what this laptop may be missing', JSON.stringify({ title: modalTitle(), dels }));
+      await press(/Delete everything/);
+      const working = Array.from(document.querySelectorAll('.modal-card')).find((c) => /Deleting “Guard Screen”/.test(c.textContent));
+      log(!!working && !Array.from(working.querySelectorAll('button')).some((b) => /Hide/.test(b.textContent)) && !!trash && trash.disabled === true,
+        '...shows a window (with no Hide) while it deletes, its button disabled');
+      log(dels.length === 2 && dels[1].force === true && dels[1].allowIncompleteSync === true && JSON.stringify(dels[1].acceptedProblems) === '["quiet:d9:1"]' && Number.isFinite(dels[1].checkedAt),
+        '...and sends the go-ahead for exactly what was listed, with when it was checked', JSON.stringify(dels[1] || {}));
+      releaseD();
+      for (let i = 0; i < 8; i++) await tick();
+      window.api.eventsDelete = savedDel;
+      root.remove();
+      document.querySelectorAll('.modal-overlay').forEach((m) => m.remove());
+      sync = { blocked: false, problems: [] };
+    }
 
     // f. The Management cloud card.
     window.api.cloudStatus = async () => ({ ok: true, data: { enabled: true, mode: 'online', online: true, url: 'http://127.0.0.1:1', hasKey: true, lastOk: new Date().toISOString(), lastError: '', pushed: 0, pulled: 0, applied: 0, caughtUp: false,

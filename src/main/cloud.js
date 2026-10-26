@@ -115,6 +115,7 @@ const sizeFailure = (e) => isTimeout(e) || (e && e.status >= 500);
 
 let timer = null;
 let againTimer = null;    // v1.14.0: the quick follow-up cycle while catching up
+let signingOff = false;   // v1.14.0: closing — no further pages (see signOff)
 let running = false;      // a sync cycle is in flight
 let getWindow = () => null;
 let lastResult = { pushed: 0, pulled: 0, applied: 0 };
@@ -326,9 +327,11 @@ function activeEventUid() {
 async function signOff({ reason = 'closed' } = {}) {
   const m = db.getSyncMeta();
   if (!m.enabled || !m.url || !m.key || serverProto !== 2) return { ok: false, skipped: true };
-  // No cycle may land after it and overwrite it with an ordinary report.
+  // No cycle may land after it and overwrite it with an ordinary report: the
+  // timer stops, and a cycle in flight stops at its next page.
   stop();
-  for (let i = 0; running && i < 40; i++) await new Promise((r) => setTimeout(r, 50));
+  signingOff = true;
+  for (let i = 0; running && i < 20; i++) await new Promise((r) => setTimeout(r, 50));
   const clinicalLeft = db.collectSyncRows(1, { skip: ['xray'] }).rows.length;
   const b = { c: clinicalLeft ? 1 : 0, ...xrayBacklogNow(), w: String(os.hostname() || '').slice(0, 60), e: activeEventUid() };
   const run = httpJson('POST', trimUrl(m.url) + '/v1/signoff', m.key, { device_id: db.ensureDeviceId(), reason, backlog: b }).catch(() => null);
@@ -582,6 +585,9 @@ async function pullV2(base, key, ctx) {
   const who = String(os.hostname() || '').slice(0, 60);
   for (;;) {
     if (guard++ > 500) break;
+    // Signed off: every page carries this laptop's report, and one landing
+    // after the sign-off would overwrite it with an ordinary report.
+    if (signingOff) break;
     const q = new URLSearchParams({
       proto: '2', since: PROBE_SINCE, limit: '1',
       since_e: String(lanes.e), since_p: String(lanes.p), since_k: String(lanes.k), since_x: String(lanes.x),
@@ -822,6 +828,9 @@ function restartTimer() {
   if (againTimer) { clearTimeout(againTimer); againTimer = null; }
   const m = db.getSyncMeta();
   if (m.enabled && m.url && m.key) {
+    // (Switched back online after a sign-off: reporting again. Switching to
+    // offline lands here too, and must leave the sign-off standing.)
+    signingOff = false;
     // Kick one immediately, then on an interval.
     syncOnce();
     timer = setInterval(syncOnce, INTERVAL_MS);

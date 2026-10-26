@@ -877,6 +877,85 @@ if (SRC === path.join(REPO, 'src/main') && fs.existsSync(path.join(REPO, 'script
 }
 
 // ===========================================================================
+// 29. Signing off (closing, or switched to run offline): said once, and no
+//     page of a sync still in flight lands after it to overwrite it. The
+//     other stations' reports are asked for about once a minute, not on
+//     every page.
+// ===========================================================================
+if (typeof require(path.join(SRC, 'cloud.js')).signOff !== 'function') check(false, 'sign-off: the client signs off when closing (v1.14)');
+else {
+  const so = { signoffs: [], pulls: [], more: false, delayMs: 0, x: 0 };
+  const wall = Date.now; // the server's clock, which the test's fast-forward below does not move
+  const srv = http.createServer((req, res) => {
+    let body = ''; req.on('data', (c) => { body += c; });
+    req.on('end', () => {
+      const u = new URL(req.url, 'http://x');
+      const send = (o) => { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify(o)); };
+      if (u.pathname === '/v1/signoff') { so.signoffs.push({ at: wall(), ...JSON.parse(body || '{}') }); return send({ ok: true }); }
+      if (u.pathname === '/v1/push') {
+        const rows = (JSON.parse(body || '{}').rows || []);
+        return send({ ok: true, proto: 2, applied: rows.length, skipped: 0, complete: true, max_rows: 400, results: rows.map(() => 'applied') });
+      }
+      if (u.pathname === '/v1/pull') {
+        so.pulls.push({ at: wall(), peers: u.searchParams.get('peers') });
+        // An image download that goes on for a while: every page moves on.
+        if (so.more) so.x++;
+        const lane = (more, cursor = '0') => ({ cursor, more, left: more ? 50 : 0, left_exact: true });
+        const out = { ok: true, proto: 2, mode: 'seq', head: '100000', instance: 'signoff-db-0001', more: so.more,
+          lanes: { e: lane(false), p: lane(false), k: lane(false), x: lane(so.more, String(so.x)) },
+          ...(u.searchParams.get('peers') !== '0' ? { peers: [] } : {}), rows: [] };
+        setTimeout(() => send(out), so.delayMs);
+        return undefined;
+      }
+      return send({ ok: true, seq: true });
+    });
+  });
+  await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+  await freshLaptop(`http://127.0.0.1:${srv.address().port}`);
+  localClinic('Signing Off');
+  await sync();
+  // Reports: about once a minute, and always before a removal is checked.
+  let k = so.pulls.length;
+  await sync(); await sync();
+  const quick = so.pulls.slice(k).map((p) => p.peers);
+  k = so.pulls.length;
+  await idle(); await cloud.syncOnce({ reports: true });
+  const asked = so.pulls.slice(k).map((p) => p.peers);
+  const realNow = Date.now;
+  Date.now = () => realNow() + 61000;
+  let later;
+  try { k = so.pulls.length; await sync(); later = so.pulls.slice(k).map((p) => p.peers); } finally { Date.now = realNow; }
+  check(quick.length > 0 && quick.every((p) => p === '0') && asked.includes('1') && later.includes('1'),
+    'reports: the other stations\' reports are asked for about once a minute, and before a removal — not on every pull', JSON.stringify({ quick, asked, later }));
+  // Switched to run offline while an image download is in flight.
+  so.more = true; so.delayMs = 120;
+  cloud.applyConfig({ mode: 'online' }); // the four-second timer running, as in the app
+  await sleep(400);
+  cloud.applyConfig({ mode: 'offline' });
+  for (let i = 0; i < 80 && so.signoffs.length < 1; i++) await sleep(25);
+  await idle(); await sleep(300);
+  const off = so.signoffs[0];
+  const afterOff = off ? so.pulls.filter((p) => p.at > off.at).length : -1;
+  check(!!off && off.reason === 'offline' && off.backlog && typeof off.backlog.x === 'number' && afterOff === 0,
+    'sign-off: switched to run offline mid-download, the laptop says so, and no page of the download lands after it', JSON.stringify({ reason: off && off.reason, pagesAfter: afterOff }));
+  // Closing while an image download is in flight, the timer running.
+  cloud.applyConfig({ mode: 'online' });
+  await sleep(400);
+  const closing = await cloud.signOff({ reason: 'closed' });
+  const closed = so.signoffs[1];
+  await sleep(4500); // a four-second timer, had it been left running, would have synced again
+  const afterClose = closed ? so.pulls.filter((p) => p.at > closed.at).length : -1;
+  check(closing.ok === true && !!closed && closed.reason === 'closed' && afterClose === 0,
+    'sign-off: closing mid-download, nothing is sent after the sign-off — neither the rest of the download nor the next timed sync', JSON.stringify({ ok: closing.ok, reason: closed && closed.reason, pagesAfter: afterClose }));
+  so.more = false; so.delayMs = 0;
+  cloud.applyConfig({ mode: 'online' }); // back online: reporting again
+  await idle(); k = so.pulls.length; await sync();
+  check(so.pulls.length > k, 'sign-off: ...and switched back online, it syncs (and reports) again', `${so.pulls.length - k} pull(s)`);
+  cloud.stop(); await idle();
+  await new Promise((r) => srv.close(r));
+}
+
+// ===========================================================================
 // 15. The Finish / Delete guard, in the real ipc.js (Electron stood in for).
 // ===========================================================================
 if (!fs.existsSync(path.join(SRC, 'ipc.js'))) {
@@ -1052,7 +1131,8 @@ if (!fs.existsSync(path.join(SRC, 'ipc.js'))) {
   const evUidG = raw.prepare('SELECT uid FROM events WHERE id = ?').get(ev.id).uid;
   const peer = (device, who, min, extra = {}) => ({ device, who, clinical: 0, xrays: 0, stuck: 0, bytes: 0, atMs: Date.now() - min * 60000, ev: evUidG, ...extra });
   answer.peers = [peer('big-1', 'BIG-XRAY', 1, { stuck: 2 }), peer('quiet-1', 'QUIET-DESK', 40), peer('fresh-1', 'FRESH-DESK', 2),
-    peer('old-2', '', 3, { older: true, ev: '' }), peer('off-1', 'CLOSED-DESK', 40, { off: 'closed' }), peer('offl-1', 'OFFLINE-DESK', 40, { off: 'offline' }), peer('other-1', 'OTHER-CLINIC', 40, { ev: 'some-other-clinic' })];
+    peer('old-2', '', 3, { older: true, ev: '' }), peer('off-1', 'CLOSED-DESK', 40, { off: 'closed' }), peer('offl-1', 'OFFLINE-DESK', 40, { off: 'offline' }), peer('other-1', 'OTHER-CLINIC', 40, { ev: 'some-other-clinic' }),
+    peer('offl-2', 'JUST-OFFLINE', 2, { off: 'offline' }), peer('off-2', 'JUST-CLOSED', 2, { off: 'closed' })];
   await idle(); await cloud.syncOnce({ reports: true });
   const preP = (await call('event:preflight', { eventId: ev.id, sync: false })).data;
   const texts = (preP.sync.problems || []).map((p) => p.text).join(' | ');
@@ -1060,6 +1140,8 @@ if (!fs.existsSync(path.join(SRC, 'ipc.js'))) {
   check(/QUIET-DESK has not been heard from since/.test(texts) && !/FRESH-DESK/.test(texts), 'guard: a station not heard from for a while is named (it may be working offline), one that checked in just now is not', texts);
   check(/CLOSED-DESK was closed at .* with everything sent — if it was used again since/.test(texts) && /OFFLINE-DESK was switched to run offline at/.test(texts),
     'guard: a station that signed off is still listed, worded for how it went quiet (closed normally, or switched to run offline)', texts);
+  check(/JUST-OFFLINE was switched to run offline at/.test(texts) && /JUST-CLOSED was closed at/.test(texts),
+    'guard: a station that signed off two minutes ago is listed at once — it will not check in, so there is nothing to wait 15 minutes for', texts);
   check(!/OTHER-CLINIC/.test(texts), 'guard: ...but not one on another clinic', texts);
   check(/a laptop on an older version of the app \(id old-2\) cannot report what it has not sent/.test(texts), 'guard: a laptop on an older version is named as unable to report, with an id to tell it apart', texts);
   // A station about to cross the 15 minutes is judged as of the screen the person confirmed on.

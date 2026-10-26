@@ -142,14 +142,16 @@ first row of a response always goes, so one row bigger than the cap still moves 
 - `POST /v1/signoff {device_id, reason: 'closed'|'offline', backlog}`: a laptop closing, or
   switched to run offline, says so. A sign-off explains why a station went quiet; it never
   excuses it (a laptop closed with everything sent can be reopened without wifi, and one
-  switched to offline goes on working).
+  switched to offline goes on working). Once it has signed off, the app sends no further
+  page (each carries its report, which would overwrite the sign-off) until it is online again.
 - An older app is recorded from its uploads (it cannot say what it holds); a report it left
   from v1.14 is read before the upload is written and counted down by the x-rays the upload
   newly stores.
-- Kept: 60 days with something outstanding (7 for an older app's), 30 days otherwise.
+- Kept: 60 days with something outstanding (an older app's included), 30 days otherwise.
 - Finish clinic names: a station with something outstanding; one holding records the cloud
-  can never take; a station of this clinic not heard from for 15 minutes (closed, offline, or
-  simply quiet, worded accordingly); one on an older version; and, when the cloud gives no
+  can never take; a station of this clinic that signed off (closed, or switched to run
+  offline — at once, worded accordingly) or has simply not been heard from for 15 minutes;
+  one on an older version; and, when the cloud gives no
   reports at all, that it cannot see the other stations. Each is confirmed by the person; the
   go-ahead names what was shown, judged as of the screen they confirmed on.
 

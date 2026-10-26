@@ -98,12 +98,16 @@ app.whenReady().then(() => {
 // Quit); not a quit for an update, which must not be held up and is back in
 // seconds. See cloud.signOff.
 let signOff = null; // null: not started; a promise: running; 'done'
+let reopen = false;  // opened again while closing (see second-instance)
 app.on('before-quit', (e) => {
   if (signOff === 'done' || global.__chQuittingForUpdate) return;
   e.preventDefault();
   if (signOff) return;
+  // Off the screen at once: it is closing, and a window that stays up for
+  // those seconds looks as if Quit did nothing.
+  for (const w of BrowserWindow.getAllWindows()) { try { w.hide(); } catch (_e) { /* closing anyway */ } }
   signOff = require('./cloud').signOff({ reason: 'closed' }).catch(() => null)
-    .finally(() => { signOff = 'done'; app.quit(); });
+    .finally(() => { signOff = 'done'; if (reopen) app.relaunch(); app.quit(); });
 });
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
@@ -117,7 +121,14 @@ if (!gotLock) {
   app.quit();
 } else {
   app.on('second-instance', () => {
-    if (mainWindow) {
+    // Opened again while this copy is closing: the new copy found it still
+    // running and gave up, so start again once this one has closed.
+    if (signOff) {
+      if (!reopen && signOff === 'done') app.relaunch();
+      reopen = true;
+      return;
+    }
+    if (mainWindow && !mainWindow.isDestroyed()) {
       if (mainWindow.isMinimized()) mainWindow.restore();
       mainWindow.focus();
     }

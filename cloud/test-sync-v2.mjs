@@ -206,10 +206,13 @@ async function main() {
     putReport('backlog:stored-laptop', 4, 10);   // put away between clinics, holding 4 x-rays
     putReport('backlog:long-gone', 4, 61);
     putReport('backlog:all-clear', 0, 31);
+    // An older app's outstanding count (it can only be an over-count) is kept as long as anyone's.
+    e.DB._sqlite.prepare('INSERT INTO sync_meta (k, v) VALUES (?, ?)').run('backlog:older-stored', JSON.stringify({ clinical: 0, xrays: 2, bytes: 1, who: '', older: true, at: Date.now() - 10 * 86400000 }));
     const seenNow = (await pull2(e, lanes, { max_bytes: 65536 })).data;
     const has = (k) => !!e.DB._sqlite.prepare('SELECT 1 FROM sync_meta WHERE k = ?').get(k);
     check('reports: a laptop put away for 10 days still holding x-rays is still reported', has('backlog:stored-laptop') && seenNow.peers.some((p) => p.device === 'stored-laptop'));
     check('reports: ...one silent for over 60 days, and an all-clear over 30 days old, are deleted', !has('backlog:long-gone') && !has('backlog:all-clear'));
+    check('reports: ...and so is an older app put away 10 days ago with x-rays it may not have sent', has('backlog:older-stored') && seenNow.peers.some((p) => p.device === 'older-stored' && p.older === true));
     // An older app's catch-up plans only a few dozen images ahead too.
     const sentBinds = [];
     e.DB.setFaults({ beforeBatch: (sqls, _api, binds) => { sqls.forEach((q, i) => { if (/idx_lane_x/.test(q)) sentBinds.push(binds[i]); }); } });
@@ -520,6 +523,9 @@ async function main() {
     check('...and /health says protocol 1', h.sync_api === 1);
     const up = (await push(e, [R('patient', 'ks1', { n: 1 }, { event_uid: 'ev1' })], { proto: 2, origin: 'origin-kill-0001' })).data;
     check('...and uploads get old-style answers too', up && up.ok === true && !('proto' in up) && !('results' in up), JSON.stringify(up));
+    const up14 = (await push(e, [R('xray', 'ks-x1', { image_png: img(5) }, { patient_uid: 'ks1' })], { proto: 2, origin: 'origin-kill-0001', device_id: 'dev-v14' })).data;
+    const r14 = e.DB._sqlite.prepare("SELECT v FROM sync_meta WHERE k = 'backlog:dev-v14'").get();
+    check('...but a v1.14 app uploading with the switch on is not taken for an older app (it still reports for itself)', up14 && up14.ok === true && !(r14 && JSON.parse(r14.v).older), r14 ? r14.v : 'no report');
     e.DB._sqlite.close(); // the database fails every query
     const broken = await pull2(e, { e: 0, p: 0, k: 0, x: 0 });
     check('...and even its errors are old-style, so an app drops back at once', broken.status === 500 && broken.data && !('proto' in broken.data), broken.text.slice(0, 80));
@@ -590,6 +596,8 @@ async function main() {
     await new Promise((r) => setTimeout(r, 5));
     await pull2(e, { e: 0, p: 0, k: 0, x: 0 }, { device: 'laptop-C', backlog: { c: 0, x: 4, b: 900, w: 'C' } });
     check('backlog: an unchanged report is not written again on every pull', at1 != null && at() === at1);
+    await pull2(e, { e: 0, p: 0, k: 0, x: 0 }, { device: 'laptop-C', backlog: { c: 0, x: 4, b: 900, w: 'C' }, peers: '0' });
+    check('...nor on a pull that does not ask for the other stations\' reports', at() === at1);
     await pull2(e, { e: 0, p: 0, k: 0, x: 0 }, { device: 'laptop-C', backlog: { c: 0, x: 3, b: 600, w: 'C' } });
     check('...a changed one is', at() !== at1);
     // A laptop that went offline holding unsent x-rays is still reported hours later.

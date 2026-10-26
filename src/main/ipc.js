@@ -324,7 +324,11 @@ function register(getMainWindow) {
       if (p.xrays > 0 || p.clinical > 0 || p.stuck > 0) continue;
       if (p.older) {
         if (age < OLDER_NAMED_MS) add(`older:${p.device}`, `${who} cannot report what it has not sent (last uploaded ${when}) — update it, or check it has sent everything`);
-      } else if (evUid && p.ev === evUid && age > PEER_QUIET_MS) {
+      } else if (evUid && p.ev === evUid && (p.off || age > PEER_QUIET_MS)) {
+        // (A station that signed off — closed, or switched to run offline —
+        // has said it will not check in, so it is listed at once. The 15
+        // minutes are only for one that simply went quiet: online stations
+        // check in about every five.)
         // A station of THIS clinic, nothing outstanding when last heard from,
         // but quiet since: it may have been working without the cloud — the
         // commonest way x-rays pile up unsent, and the one no report can show.

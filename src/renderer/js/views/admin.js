@@ -11,12 +11,14 @@ const esc = (v) => String(v == null ? '' : v).replace(/[&<>"']/g, (c) => ({ '&':
 // A window that stays up while the main process checks with the clinic cloud
 // before a removal — it can take a while on a poor connection, and a button
 // that seems to do nothing gets pressed again. Returns a function that closes it.
-function busyWindow(text) {
-  // "Hide" only hides it: the check goes on, and its answer still appears.
+function busyWindow(text, { hideable = false } = {}) {
+  // "Hide" (only while checking) only hides it: the check goes on, and its
+  // answer still appears. Finishing and deleting cannot be hidden: the screen
+  // behind it is being emptied.
   const overlay = el('div', { class: 'modal-overlay' }, [el('div', { class: 'modal-card', role: 'status', 'aria-live': 'polite' }, [
     el('p', { style: 'margin:0 0 var(--space-3)' }, [text]),
-    el('div', { class: 'modal-actions' }, [el('button', { class: 'btn btn--ghost', onClick: () => overlay.remove() }, ['Hide'])]),
-  ])]);
+    hideable ? el('div', { class: 'modal-actions' }, [el('button', { class: 'btn btn--ghost', onClick: () => overlay.remove() }, ['Hide'])]) : null,
+  ].filter(Boolean))]);
   document.body.append(overlay);
   return () => overlay.remove();
 }
@@ -499,7 +501,7 @@ export function renderAdmin(ctx, params = {}) {
           // never noticed patients still sitting in the queue.
           let pre;
           // The preflight syncs first (see ipc.js), which can take a moment.
-          const closeBusy = busyWindow('Checking with the clinic cloud before finishing…');
+          const closeBusy = busyWindow('Checking with the clinic cloud before finishing…', { hideable: true });
           try { pre = await api.finishPreflight(e.id); }
           catch (err) { closeBusy(); toast(err.message, 'error'); return; }
           closeBusy();
@@ -710,7 +712,7 @@ export function renderAdmin(ctx, params = {}) {
       } catch (err) {
         // Has patients — offer a forced cascade delete. It removes them from
         // every station, so the same check as Finish (see ipc.js) first.
-        const closeBusy = busyWindow('Checking with the clinic cloud before deleting…');
+        const closeBusy = busyWindow('Checking with the clinic cloud before deleting…', { hideable: true });
         let pre = null;
         try { pre = await api.finishPreflight(e.id, { action: 'deleting' }); } catch (_e) { pre = null; }
         closeBusy();
@@ -832,9 +834,17 @@ export function renderAdmin(ctx, params = {}) {
       class: 'btn btn--danger', disabled: true,
       title: 'Export first — this cannot be undone',
       onClick: async () => {
+        // Pressed again while it checks, it would start a second check and a
+        // second deletion. Armed again afterwards only while the export that
+        // armed it still counts.
+        purgeBtn.disabled = true;
+        try { await purge(); } finally { if (purgeBtn.isConnected) purgeBtn.disabled = !exported; }
+      },
+    }, [icon('trash', { size: 16 }), 'Delete this clinic’s patient data']);
+    async function purge() {
         // v1.14.0: the same sync check as Finish (see ipc.js).
         let pre = null;
-        const closeBusy = busyWindow('Checking with the clinic cloud before deleting…');
+        const closeBusy = busyWindow('Checking with the clinic cloud before deleting…', { hideable: true });
         try { pre = await api.finishPreflight(undefined, { action: 'deleting' }); } catch (_e) { pre = null; }
         closeBusy();
         if (pre && pre.sync && pre.sync.blocked) {
@@ -851,7 +861,7 @@ export function renderAdmin(ctx, params = {}) {
         // reached this laptop since; the main process refuses then, so say it
         // here and disarm the button until a fresh export.
         if (pre && pre.needs_export) {
-          exported = null; purgeBtn.disabled = true;
+          exported = null;
           purgeBtn.title = 'Export first — this cannot be undone';
           await modal({
             title: pre.last_export ? 'Export this clinic again' : 'Export this clinic first',
@@ -883,7 +893,6 @@ export function renderAdmin(ctx, params = {}) {
           });
           if (!sure) return;
         }
-        purgeBtn.disabled = true;
         const closeWorking = busyWindow('Deleting this clinic’s patient data…');
         try {
           const r = await api.purgeEvent(undefined, goAheadFor(pre, incomplete));
@@ -892,11 +901,9 @@ export function renderAdmin(ctx, params = {}) {
           exported = null; paint();
         } catch (e) {
           closeWorking();
-          purgeBtn.disabled = false;
           await modal({ title: 'Nothing was deleted', body: esc(e.message), confirmText: 'OK' });
         }
-      },
-    }, [icon('trash', { size: 16 }), 'Delete this clinic’s patient data']);
+    }
     const exportHint = el('p', { class: 'muted small', style: 'margin:var(--space-2) 0 0' }, [
       'Export first — the delete button unlocks once you have saved a copy.',
     ]);

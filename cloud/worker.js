@@ -593,7 +593,8 @@ async function handlePush(request, env, db) {
   const origin = wantV2 && typeof body.origin === 'string' && ORIGIN_RE.test(body.origin) ? body.origin : null;
   // An older app's upload: its report is read now, while the request has
   // room, and one statement is kept back to write it after the rows (below).
-  const reportFor = !wantV2 && body && typeof body.device_id === 'string' && DEVICE_RE.test(body.device_id) ? body.device_id : null;
+  // (Not a v1.14 app's upload with the kill switch on: it still reports for itself.)
+  const reportFor = !wantV2 && body && body.proto !== 2 && typeof body.device_id === 'string' && DEVICE_RE.test(body.device_id) ? body.device_id : null;
   let reportRow = null, reportRead = false;
   if (reportFor) {
     try { reportRow = await db.prepare('SELECT v FROM sync_meta WHERE k = ?').bind('backlog:' + reportFor).first(); reportRead = true; } catch (_e) { /* skip the report this time */ }
@@ -1035,12 +1036,12 @@ function backlogChanged(rows, device, b) {
   // most often pile up unsent. (About 12 writes an hour per laptop.)
   return !(Date.now() - Number(old.at || 0) < BACKLOG_HEARTBEAT_MS);
 }
-// An older app's report of outstanding x-rays can only be counted down by its
-// uploads, imperfectly, so it is believed for a week rather than two months.
-const OLDER_FRESH_MS = 7 * 24 * 60 * 60 * 1000;
 function retentionOf(b) {
+  // Outstanding is kept the longest, an older app's included: its count can
+  // only be an over-count (it is counted down by its uploads), which costs a
+  // confirmable line on Finish; forgetting it could cost x-rays.
   const outstanding = b.clinical > 0 || b.xrays > 0 || b.stuck > 0;
-  return !outstanding ? BACKLOG_CLEAR_MS : b.older ? OLDER_FRESH_MS : BACKLOG_FRESH_MS;
+  return outstanding ? BACKLOG_FRESH_MS : BACKLOG_CLEAR_MS;
 }
 function readPeers(rows, self) {
   const now = Date.now();
