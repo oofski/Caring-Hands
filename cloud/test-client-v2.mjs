@@ -888,12 +888,14 @@ if (!fs.existsSync(path.join(SRC, 'ipc.js'))) {
   Module._load = function (req) { return req === 'electron' ? fakeElectron : origLoad.apply(this, arguments); };
   // A server whose answers the test chooses: how far behind this laptop is,
   // and what the other stations still have to send.
-  const answer = { more: false, xMore: false, xLeft: 0, peers: [], delayMs: 0, pulls: 0 };
+  const answer = { more: false, xMore: false, xLeft: 0, peers: [], delayMs: 0, pulls: 0, pushFail: false, pullFail: false };
   const srv = http.createServer((req, res) => {
     let body = ''; req.on('data', (c) => { body += c; });
     req.on('end', () => {
       const u = new URL(req.url, 'http://x');
       const send = (o) => { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify(o)); };
+      if (u.pathname === '/v1/push' && answer.pushFail) { res.writeHead(500, { 'content-type': 'application/json' }); res.end('{"ok":false,"error":"push refused"}'); return; }
+      if (u.pathname === '/v1/pull' && answer.pullFail) { res.writeHead(500, { 'content-type': 'application/json' }); res.end('{"ok":false,"proto":2,"error":"pull refused"}'); return; }
       if (u.pathname === '/v1/push') {
         const rows = (JSON.parse(body || '{}').rows || []);
         return send({ ok: true, proto: 2, applied: rows.length, skipped: 0, complete: true, max_rows: 400, results: rows.map(() => 'applied') });
@@ -984,6 +986,42 @@ if (!fs.existsSync(path.join(SRC, 'ipc.js'))) {
   answer.delayMs = 0;
   check(r.ok === false && /DESK-3/.test(r.error) && answer.pulls > pullsBefore, 'guard: with a sync already running, Finish/Delete waits for it and syncs again before deciding', r.ok ? 'it went ahead' : r.error);
   answer.peers = [];
+
+  // d2. A failed UPLOAD is not a reason to refuse: this laptop's own records
+  //     are in its own export. A failed DOWNLOAD is, and it can be confirmed.
+  const evU = localClinic('Upload Failing');
+  localPatient('UpFail1');
+  db.recordClinicExport(evU.id, { patients: 1, xlsxPath: '/tmp/u.xlsx', backupPath: '/tmp/u.chbak.json' });
+  answer.pushFail = true;
+  r = await call('event:finish', { eventId: evU.id });
+  answer.pushFail = false;
+  check(r.ok === true, 'guard: an upload that keeps failing (downloads fine) does not stop Finish — its records are in this laptop\'s export', r.error || '');
+  const evD = localClinic('Download Failing');
+  localPatient('DownFail1');
+  db.recordClinicExport(evD.id, { patients: 1, xlsxPath: '/tmp/d.xlsx', backupPath: '/tmp/d.chbak.json' });
+  answer.pullFail = true;
+  const preD = (await call('event:preflight', { eventId: evD.id })).data;
+  const keysD = (preD.sync.problems || []).map((p) => p.key);
+  check(keysD.includes('sync-failed'), 'guard: a download that fails just before finishing is listed on the Finish screen, so it can be confirmed', JSON.stringify(preD.sync.problems));
+  r = await call('event:finish', { eventId: evD.id, allowIncompleteSync: true, acceptedProblems: keysD });
+  answer.pullFail = false;
+  check(r.ok === true, '...and once confirmed, Finish goes ahead (it used to refuse for ever)', r.error || '');
+  // An older version cannot report: say so.
+  answer.peers = [{ device: 'old-1', who: 'OLD-DESK', clinical: 0, xrays: 2, bytes: 1, at: new Date().toISOString(), older: true }];
+  await idle(); await sync();
+  const preOld = (await call('event:preflight', { eventId: ev.id, sync: false })).data;
+  check((preOld.sync.problems || []).some((p) => /OLD-DESK.*older version/.test(p.text)), 'guard: a station put back on an older version is named, and the screen says why its count may be stale', JSON.stringify(preOld.sync.problems));
+  answer.peers = [];
+  await idle(); await sync();
+  // Deleting a clinic that still has patients waits while records arrive, too.
+  const evDel = localClinic('Delete Me');
+  localPatient('DeleteMe1');
+  answer.more = true; answer.xMore = true; answer.xLeft = 3;
+  r = await call('events:delete', { id: evDel.id, force: true });
+  check(r.ok === false && /still arriving/.test(r.error), 'guard: deleting a clinic with patients waits while records are still arriving', r.error);
+  answer.more = false; answer.xMore = false; answer.xLeft = 0;
+  r = await call('events:delete', { id: evDel.id, force: true });
+  check(r.ok === true, '...and goes ahead once they are here', r.error || '');
 
   // e. The cloud cannot be reached.
   await new Promise((r2) => srv.close(r2));

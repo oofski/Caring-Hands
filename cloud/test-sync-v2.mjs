@@ -202,9 +202,21 @@ async function main() {
     const metaSql = sent.find((q) => /FROM sync_meta/.test(q)) || '';
     const plan = metaSql ? e.DB._sqlite.prepare('EXPLAIN QUERY PLAN ' + metaSql).all().map((r) => r.detail).join(' ') : 'not found';
     check('reads: the laptops\' reports are read by key range, not by scanning the table', /SEARCH/.test(plan) && !/SCAN/.test(plan), plan);
-    e.DB._sqlite.prepare("INSERT INTO sync_meta (k, v) VALUES ('backlog:gone-laptop', ?)").run(JSON.stringify({ clinical: 0, xrays: 4, bytes: 1, who: 'Gone', at: Date.now() - 8 * 86400000 }));
-    await pull2(e, lanes, { max_bytes: 65536 });
-    check('reads: a report nobody has refreshed for over a week is deleted', !e.DB._sqlite.prepare("SELECT 1 FROM sync_meta WHERE k = 'backlog:gone-laptop'").get());
+    const putReport = (k, x, days) => e.DB._sqlite.prepare('INSERT INTO sync_meta (k, v) VALUES (?, ?)').run(k, JSON.stringify({ clinical: 0, xrays: x, bytes: 1, who: k, at: Date.now() - days * 86400000 }));
+    putReport('backlog:stored-laptop', 4, 10);   // put away between clinics, holding 4 x-rays
+    putReport('backlog:long-gone', 4, 61);
+    putReport('backlog:all-clear', 0, 2);
+    const seenNow = (await pull2(e, lanes, { max_bytes: 65536 })).data;
+    const has = (k) => !!e.DB._sqlite.prepare('SELECT 1 FROM sync_meta WHERE k = ?').get(k);
+    check('reports: a laptop put away for 10 days still holding x-rays is still reported', has('backlog:stored-laptop') && seenNow.peers.some((p) => p.device === 'stored-laptop'));
+    check('reports: ...one silent for over 60 days, and an all-clear over a day old, are deleted', !has('backlog:long-gone') && !has('backlog:all-clear'));
+    // An older app's catch-up plans only a few dozen images ahead too.
+    const sentBinds = [];
+    e.DB.setFaults({ beforeBatch: (sqls, _api, binds) => { sqls.forEach((q, i) => { if (/idx_lane_x/.test(q)) sentBinds.push(binds[i]); }); } });
+    await pull(e, '0', 400);
+    e.DB.setFaults({ beforeBatch: null });
+    const xLimit = sentBinds.length ? Number(sentBinds[0][sentBinds[0].length - 1]) : null;
+    check('reads: an older app asking for 400 rows does not have 400 images planned for every page', xLimit != null && xLimit <= 65, `x-lane plan limit ${xLimit}`);
   }
 
   // ------------------------------------------------------------------ 3
@@ -492,9 +504,13 @@ async function main() {
     check('...a laptop is never told about itself, and a cleared backlog disappears', a.peers.every((p) => p.device !== 'laptop-A') && b2.peers.length === 0);
     // A laptop that goes back to uploading the old way (downgraded) has its report dropped.
     await pull2(e, { e: 0, p: 0, k: 0, x: 0 }, { device: 'laptop-D', backlog: { c: 0, x: 3, b: 9, w: 'D' } });
-    await call(e, 'POST', '/v1/push', { device_id: 'laptop-D', rows: [] });
+    await call(e, 'POST', '/v1/push', { device_id: 'laptop-D', rows: [R('xray', 'xd1', { image_png: img(5) })] });
+    const midOld = (await pull2(e, { e: 0, p: 0, k: 0, x: 0 }, { device: 'laptop-B', backlog: { c: 0, x: 0, b: 0 } })).data;
+    const d = midOld.peers.find((p) => p.device === 'laptop-D');
+    check('backlog: a laptop downgraded while holding x-rays stays reported, counted down by what it sends', !!d && d.xrays === 2 && d.older === true, JSON.stringify(d));
+    await call(e, 'POST', '/v1/push', { device_id: 'laptop-D', rows: [R('xray', 'xd2', { image_png: img(5) }), R('xray', 'xd3', { image_png: img(5) })] });
     const afterOld = (await pull2(e, { e: 0, p: 0, k: 0, x: 0 }, { device: 'laptop-B', backlog: { c: 0, x: 0, b: 0 } })).data;
-    check('backlog: a laptop that uploads the old way (downgraded) is no longer reported as holding x-rays', !afterOld.peers.some((p) => p.device === 'laptop-D'));
+    check('backlog: ...and dropped once it has sent them', !afterOld.peers.some((p) => p.device === 'laptop-D'));
     // Written only when it changes: an unchanged report is not rewritten on every pull.
     const at = () => { const r = e.DB._sqlite.prepare("SELECT v FROM sync_meta WHERE k = 'backlog:laptop-C'").get(); return r ? JSON.parse(r.v).at : null; };
     await pull2(e, { e: 0, p: 0, k: 0, x: 0 }, { device: 'laptop-C', backlog: { c: 0, x: 4, b: 900, w: 'C' } });

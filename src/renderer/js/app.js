@@ -114,8 +114,11 @@ function refreshCloudBadge() {
     if (!st || badge !== cloudBadgeNode) return;
     clear(badge);
     if (st.online) {
+      // "Catching up" wins over "reconnecting": Finish clinic tells people to
+      // wait for it to go, and an upload error alone does not mean this laptop
+      // has stopped receiving.
       badge.append(el('span', { class: 'offline-dot', style: 'background:var(--success, #2f8f66)' }),
-        st.lastError ? 'Cloud · reconnecting' : (st.caughtUp === false ? 'Cloud · catching up' : (st.lastOk ? 'Cloud · synced' : 'Cloud · online')));
+        st.caughtUp === false ? 'Cloud · catching up' : (st.lastError ? 'Cloud · reconnecting' : (st.lastOk ? 'Cloud · synced' : 'Cloud · online')));
     } else {
       badge.append(el('span', { class: 'offline-dot', style: 'background:var(--text-subtle)' }), 'Offline mode');
     }

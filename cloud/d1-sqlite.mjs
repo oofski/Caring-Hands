@@ -120,7 +120,7 @@ export function makeD1(opts = {}) {
     prepare(sql) { return statement(sql, []); },
     // D1 runs a batch as one implicit transaction: all or nothing.
     async batch(stmts) {
-      if (faults.beforeBatch) await faults.beforeBatch(stmts.map((s) => s._sql), api);
+      if (faults.beforeBatch) await faults.beforeBatch(stmts.map((s) => s._sql), api, stmts.map((s) => s._binds));
       if (faults.failBatches > 0) { faults.failBatches--; throw new Error(faults.failBatchMessage); }
       const out = [];
       const tx = db.transaction(() => {

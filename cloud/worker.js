@@ -117,7 +117,11 @@ const SINCE_MAX = '9007199254740991';
 // unsent x-rays — it cannot refresh its report, and finishing the clinic
 // elsewhere would delete those images everywhere. (It was 30 minutes, so an
 // x-ray laptop that dropped off the wifi at 3 pm was forgotten by 3:30.)
-const BACKLOG_FRESH_MS = 7 * 24 * 60 * 60 * 1000;
+// Kept for 60 days while it says something is outstanding (a laptop put away
+// between monthly clinics still holding unsent x-rays is the case that
+// matters); an all-clear is dropped after a day.
+const BACKLOG_FRESH_MS = 60 * 24 * 60 * 60 * 1000;
+const BACKLOG_CLEAR_MS = 24 * 60 * 60 * 1000;
 
 // Per isolate. All of these only ever move one way once learned.
 let schemaReady = false;   // tables + migrations done
@@ -564,12 +568,26 @@ async function handlePush(request, env, db) {
   const origin = wantV2 && typeof body.origin === 'string' && ORIGIN_RE.test(body.origin) ? body.origin : null;
   const { results, applied, error, limited } = await writeRows(db, env, rows, origin);
   const count = (s) => results.reduce((n, r) => n + (r === s ? 1 : 0), 0);
-  // A laptop uploading the old way (an older app, or the kill switch on) cannot
-  // keep a "still to send" report current, so drop the one it left: otherwise a
-  // laptop downgraded after reporting unsent x-rays was named by every Finish
-  // clinic for a week after it had sent them. Best effort, after the writes.
+  // A laptop uploading the old way (put back on an older app, or the kill
+  // switch on) cannot keep a "still to send" report current. Its report is
+  // kept — that laptop may well still hold unsent x-rays — but counted down by
+  // the x-rays this upload settled, and dropped only once nothing is left.
+  // Best effort, after the writes; one read for a laptop with no report.
   if (!wantV2 && body && typeof body.device_id === 'string' && DEVICE_RE.test(body.device_id)) {
-    try { await db.prepare('DELETE FROM sync_meta WHERE k = ?').bind('backlog:' + body.device_id).run(); } catch (_e) { /* next time */ }
+    try {
+      const key = 'backlog:' + body.device_id;
+      const cur = await db.prepare('SELECT v FROM sync_meta WHERE k = ?').bind(key).first();
+      if (cur) {
+        const b = JSON.parse(cur.v) || {};
+        const settledX = rows.reduce((n, row, i) => n + (row && row.entity === 'xray' && (results[i] === 'applied' || results[i] === 'skipped') ? 1 : 0), 0);
+        const sentClinical = rows.some((row, i) => row && row.entity !== 'xray' && results[i] !== 'retry');
+        const next = { ...b, xrays: Math.max(0, (Number(b.xrays) || 0) - settledX), clinical: sentClinical && retry === 0 ? 0 : (Number(b.clinical) || 0), older: true };
+        if (!(next.xrays > 0 || next.clinical > 0)) await db.prepare('DELETE FROM sync_meta WHERE k = ?').bind(key).run();
+        else if (next.xrays !== b.xrays || next.clinical !== b.clinical || !b.older) {
+          await db.prepare('UPDATE sync_meta SET v = ? WHERE k = ?').bind(JSON.stringify(next), key).run();
+        }
+      }
+    } catch (_e) { /* next time */ }
   }
   const skipped = count('skipped') + count('invalid') + count('too_big');
   const retry = count('retry');
@@ -722,12 +740,20 @@ function jsonText(text, status) {
 // x-rays that no clinic connection can download in time.
 async function legacyPlannedPull(since, limit, db) {
   const sinceVal = Number(since || 0);
-  const res = await db.batch(LANES.map((L) => planStmt(db, L, sinceVal, limit + 1)));
+  // Images are planned only 64 ahead (a 2 MB page holds a handful), as in v2:
+  // planning limit+1 of them re-read up to 400 index entries to deliver one
+  // image (D1 bills each as a row read). When that plan is cut short, the
+  // page stops at the last image it planned, so the merged order stays exact.
+  const capX = Math.min(limit, 64);
+  const res = await db.batch(LANES.map((L) => planStmt(db, L, sinceVal, (L === 'x' ? capX : limit) + 1)));
+  const xPlan = res[LANES.indexOf('x')].results || [];
+  const frontier = xPlan.length > capX ? Number(xPlan[capX].seq) : Infinity;
   const merged = [];
   res.forEach((r) => { for (const e of (r.results || [])) merged.push({ seq: Number(e.seq), n: Number(e.n || 0) }); });
   merged.sort((a, b) => a.seq - b.seq);
   let taken = 0, bytes = 0, cut = null;
   for (const e of merged) {
+    if (e.seq > frontier) break;
     if (taken >= limit) break;
     if (taken > 0 && bytes + e.n + ROW_OVERHEAD > LEGACY_PAGE_BYTES) break;
     taken++; bytes += e.n + ROW_OVERHEAD; cut = e.seq;
@@ -735,7 +761,7 @@ async function legacyPlannedPull(since, limit, db) {
   if (cut == null) return json({ ok: true, rows: [], cursor: String(sinceVal), more: false, mode: 'seq' });
   const f = await db.prepare(`SELECT ${COLUMNS}, nbytes FROM sync_rows WHERE seq > ? AND seq <= ? ORDER BY seq ASC, uid ASC`).bind(sinceVal, cut).all();
   const rows = (f.results || []);
-  const more = merged.length > taken;
+  const more = merged.length > taken || frontier !== Infinity;
   return jsonText('{"ok":true,"rows":[' + rows.map((r) => rowJson(r)).join(',') + '],"cursor":' + JSON.stringify(String(cut)) + ',"more":' + more + ',"mode":"seq"}');
 }
 
@@ -807,7 +833,13 @@ async function handlePullV2(url, env, db) {
   const peers = readPeers(metaRows, device);
   // Reports nobody has refreshed for longer than they are believed: gone, so a
   // season of replaced laptops does not add a row to every pull's read.
-  const stale = metaRows.filter((r) => { try { return !(Date.now() - Number(JSON.parse(r.v).at || 0) < BACKLOG_FRESH_MS); } catch (_e) { return true; } }).slice(0, 20);
+  const stale = metaRows.filter((r) => {
+    try {
+      const b = JSON.parse(r.v);
+      const age = Date.now() - Number(b.at || 0);
+      return (b.clinical > 0 || b.xrays > 0) ? !(age < BACKLOG_FRESH_MS) : !(age < BACKLOG_CLEAR_MS);
+    } catch (_e) { return true; }
+  }).slice(0, 20);
   if (stale.length) {
     try { await db.prepare(`DELETE FROM sync_meta WHERE k IN (${stale.map(() => '?').join(',')})`).bind(...stale.map((r) => r.k)).run(); } catch (_e) { /* next time */ }
   }
@@ -960,7 +992,7 @@ function readPeers(rows, self) {
     try { b = JSON.parse(r.v); } catch (_e) { continue; }
     if (!b || !(now - Number(b.at || 0) < BACKLOG_FRESH_MS)) continue;
     if (!(b.clinical > 0 || b.xrays > 0)) continue;
-    out.push({ device, who: b.who || '', clinical: b.clinical || 0, xrays: b.xrays || 0, bytes: b.bytes || 0, at: new Date(Number(b.at)).toISOString() });
+    out.push({ device, who: b.who || '', clinical: b.clinical || 0, xrays: b.xrays || 0, bytes: b.bytes || 0, at: new Date(Number(b.at)).toISOString(), ...(b.older ? { older: true } : {}) });
   }
   return out;
 }

@@ -281,16 +281,18 @@ function register(getMainWindow) {
     }
     if (c.orphans > 0) add(`orphans:${c.orphans}:${c.orphanXrays}`, `${c.orphans} record(s) from other stations${c.orphanXrays ? ` (${c.orphanXrays} x-ray image(s))` : ''} are waiting here for a patient this laptop has not received yet`);
     if (!c.reachable) add('unreachable', c.lastContactAt ? `this laptop has not reached the clinic cloud since ${new Date(c.lastContactAt).toLocaleString()}${c.behind ? ', and it was still receiving records then' : ''}` : 'this laptop has not reached the clinic cloud');
-    else if (lastSync && lastSync.ok === false && !lastSync.skipped) {
+    // Only a failed DOWNLOAD means records may be missing here. An upload that
+    // failed leaves this laptop's own records here, in its own export.
+    else if (lastSync && !lastSync.skipped && (lastSync.busy || lastSync.pullFailed)) {
       add('sync-failed', lastSync.busy
         ? 'the sync just before finishing could not run — another one was still going after a minute'
-        : `the sync just before finishing did not complete (${lastSync.error || 'unknown error'})`);
+        : `the sync just before finishing could not download from the clinic cloud (${lastSync.error || 'unknown error'})`);
     }
     for (const p of c.peers || []) {
       // A report can be old: the station that matters most is one that went
       // offline holding unsent x-rays, and it cannot update its report.
       const when = p.at ? new Date(p.at).toLocaleString() : '';
-      add(`peer:${p.device}:${p.xrays || 0}:${p.clinical || 0}`, `${p.who || 'another station'} still has ${p.xrays ? `${p.xrays} x-ray image(s)` : 'records'} it has not sent${when ? ` (as of ${when})` : ''}`);
+      add(`peer:${p.device}:${p.xrays || 0}:${p.clinical || 0}`, `${p.who || 'another station'} still has ${p.xrays ? `${p.xrays} x-ray image(s)` : 'records'} it has not sent${when ? ` (as of ${when}${p.older ? '; it has since been put back on an older version of the app, which cannot report' : ''})` : ''}`);
     }
     return out;
   };
@@ -326,7 +328,12 @@ function register(getMainWindow) {
   // What is still outstanding before a clinic is closed for good. The image
   // count from the DEXIS import folder is added by the caller, which is the only
   // side that can read the disk.
-  handle('event:preflight', ({ eventId } = {}) => {
+  // It runs the same sync Finish runs first, so a problem only that sync can
+  // find (a download failing, a sync that cannot start) is on the screen, and
+  // can be confirmed, rather than appearing only as a refusal. (opts.sync:
+  // false skips it, for a screen that only wants the counts.)
+  handle('event:preflight', async ({ eventId, sync = true } = {}) => {
+    const last = sync ? await syncBeforeRemoving() : null;
     const pre = db.finishPreflight(eventId);
     const pending = db.pendingCounts(pre.event_uid);
     const c = { ...cloud.syncCompleteness(), orphans: pending.rows, orphanXrays: pending.xrays };
@@ -335,7 +342,7 @@ function register(getMainWindow) {
       sync: {
         ...c,
         blocked: !!(c.online && c.reachable && c.behind),
-        problems: syncProblems(c, { evId: pre.event_id }),
+        problems: syncProblems(c, { evId: pre.event_id, lastSync: last }),
       },
     };
   });
@@ -393,7 +400,20 @@ function register(getMainWindow) {
   handle('events:setActive', (id) => db.setActiveEvent(currentUser, id));
   handle('events:setState', ({ id, active }) => db.setEventActive(currentUser, id, active));
   handle('events:setPrereg', ({ id, open }) => db.setEventPreregOpen(currentUser, id, open));
-  handle('events:delete', ({ id, force }) => db.deleteEvent(currentUser, id, { force }));
+  // Deleting a clinic that still has patients removes them from every station,
+  // like Finish — so the same check that this laptop holds the whole clinic.
+  // (No go-ahead here: Finish clinic is the way to confirm and go ahead.)
+  handle('events:delete', async ({ id, force }) => {
+    if (force && db.finishPreflight(id).patients > 0) {
+      const last = await syncBeforeRemoving();
+      try { syncGuard(id, {}, last); } catch (e) {
+        // A wait is just a wait; anything else can be confirmed — on Finish.
+        if (/still arriving/.test(e.message)) throw e;
+        throw new Error(`${e.message} To go ahead anyway, use Finish clinic, which keeps the clinic's totals and lets you confirm.`);
+      }
+    }
+    return db.deleteEvent(currentUser, id, { force });
+  });
 
   /* ---- Patient delete (admin) ---- */
   handle('patients:delete', (id) => db.deletePatient(currentUser, id));

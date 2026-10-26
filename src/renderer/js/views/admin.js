@@ -475,6 +475,8 @@ export function renderAdmin(ctx, params = {}) {
           // which are the one thing finishing a clinic destroys outright, and it
           // never noticed patients still sitting in the queue.
           let pre;
+          // The preflight syncs first (see ipc.js), which can take a moment.
+          toast('Checking with the clinic cloud…', 'info');
           try { pre = await api.finishPreflight(e.id); }
           catch (err) { toast(err.message, 'error'); return; }
           // Films the import folder is still holding belong to nobody yet. Only
@@ -786,6 +788,7 @@ export function renderAdmin(ctx, params = {}) {
       onClick: async () => {
         // v1.14.0: the same sync check as Finish (see ipc.js).
         let pre = null;
+        toast('Checking with the clinic cloud…', 'info');
         try { pre = await api.finishPreflight(); } catch (_e) { pre = null; }
         if (pre && pre.sync && pre.sync.blocked) {
           await modal({

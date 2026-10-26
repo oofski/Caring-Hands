@@ -662,7 +662,9 @@ async function syncOnce() {
     if (applied > 0) notifyRenderer();
     if (pushError) {
       db.setSyncMeta({ lastError: pushError.message || String(pushError) });
-      return { ok: false, error: pushError.message || String(pushError), pushed, pulled, applied, deleted };
+      // The download worked: this laptop has what the cloud has. Only its own
+      // upload failed (pushFailed), and what it holds is in its own export.
+      return { ok: false, pushFailed: true, error: pushError.message || String(pushError), pushed, pulled, applied, deleted };
     }
     // Still catching up, or more of our own to send: go again straight away
     // rather than four seconds from now.
@@ -675,7 +677,7 @@ async function syncOnce() {
   } catch (e) {
     const msg = (pushError ? (pushError.message || String(pushError)) + ' · ' : '') + (e.message || String(e));
     db.setSyncMeta({ lastError: msg });
-    return { ok: false, error: msg };
+    return { ok: false, pullFailed: true, error: msg };
   } finally {
     running = false;
     if (again && timer && !againTimer) {
