@@ -562,7 +562,24 @@ console.log(`client under test: ${path.relative(REPO, SRC) || SRC}`);
     db.setSyncPending([]);
     db.setSetting('cloud_pending', JSON.stringify([triageRow(uuid()), triageRow(uuid())]));
     db.close(); db.init(dataDir);
-    check(db.getSyncPending().length === 2 && db.getSetting('cloud_pending') === '[]', 'waiting rows: an upgrade from v1.13 carries over what was waiting');
+    check(db.getSyncPending().length === 2, 'waiting rows: an upgrade from v1.13 carries over what was waiting');
+    // A laptop put back on v1.13 and then upgraded again loses nothing.
+    const OLD_DB = path.join(REPO, 'scripts/syncrig/.versions/1f8c3c2/db.js');
+    if (fs.existsSync(OLD_DB) && SRC === path.join(REPO, 'src/main')) {
+      const vitals = triageRow(uuid(), 180), film = xrayRow(uuid(), 300 * 1024);
+      db.setSyncPending([vitals, film]);
+      db.close();
+      const old = require(OLD_DB);
+      old.init(dataDir);
+      const seen = old.getSyncPending().map((r) => r.uid);
+      check(seen.includes(vitals.uid), 'downgrade: v1.13 still sees the vitals that were waiting for their patient', JSON.stringify(seen));
+      const later = triageRow(uuid(), 150);
+      old.setSyncPending(old.getSyncPending().concat([later])); // v1.13 parks a row of its own
+      old.close();
+      db.init(dataDir);
+      const back = new Set(db.getSyncPending().map((r) => r.uid));
+      check(back.has(vitals.uid) && back.has(film.uid) && back.has(later.uid), 'downgrade: ...and upgraded again, nothing that was waiting is lost (the image v1.13 could not see included)', JSON.stringify([...back].length));
+    }
   }
   await server.close();
 }

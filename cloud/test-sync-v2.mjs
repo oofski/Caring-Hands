@@ -288,7 +288,8 @@ async function main() {
     const r = (await push(e, rows, { proto: 2, origin: 'origin-cccc-3333' })).data;
     check('v2 push: one result per row, in order', r.proto === 2 && JSON.stringify(r.results) === JSON.stringify(['invalid', 'too_big', 'skipped', 'applied']), JSON.stringify(r.results));
     const legacy = await push(e, [R('patient', 'fresh2', { v: 1 }), R('xray', 'big2', { image_png: img(2000) })]);
-    check('legacy push with an oversized row is NOT reported as ok (an older app would mark it synced and lose it)', legacy.status === 200 && legacy.data.ok === false && legacy.data.partial === true && /too large/.test(legacy.data.error));
+    check('legacy push with an oversized row is NOT reported as ok (an older app would mark it synced and lose it)', legacy.data.ok === false && legacy.data.partial === true && /too large/.test(legacy.data.error));
+    check('...and it is an HTTP error, as the old server\'s was, so an older app does not show "synced"', legacy.status >= 500, `HTTP ${legacy.status}`);
     check('...while the rest of that push is stored', table(e).has('fresh2') && !table(e).has('big2'));
   }
 
@@ -314,7 +315,7 @@ async function main() {
     let tries = 0, ok = false, first = null;
     while (tries < 15 && !ok) { const r = await push(e, rows); if (!first) first = r; ok = r.data && r.data.ok === true; tries++; }
     check('free plan (50 statements a request): an older app\'s 120-row push gets through, a part each time', ok && [...table(e).keys()].filter((u) => u.startsWith('f')).length === 120, `${tries} request(s)`);
-    check('...each partial step is reported as partial, not as success', first.status === 200 && first.data.ok === false && first.data.partial === true);
+    check('...each partial step is reported as partial, not as success (an HTTP error to an older app)', first.status === 503 && first.data.ok === false && first.data.partial === true);
     const e2 = await mkEnv({ maxQueries: 50 });
     const v2 = (await push(e2, Array.from({ length: 120 }, (_, i) => R('patient', 'g' + i, { i })), { proto: 2, origin: 'origin-dddd-4444' })).data;
     check('...and a v2 push says exactly which rows to send again', v2.complete === false && v2.results.includes('retry') && v2.results.indexOf('retry') === v2.results.filter((x) => x !== 'retry').length);
@@ -405,6 +406,9 @@ async function main() {
     check('kill switch: SYNC_V2=off gives an old-style empty page, never a v2 one', r && !('proto' in r) && r.rows.length === 0);
     const h = (await call(e, 'GET', '/health')).data;
     check('...and /health says protocol 1', h.sync_api === 1);
+    e.DB._sqlite.close(); // the database fails every query
+    const broken = await pull2(e, { e: 0, p: 0, k: 0, x: 0 });
+    check('...and even its errors are old-style, so an app drops back at once', broken.status === 500 && broken.data && !('proto' in broken.data), broken.text.slice(0, 80));
   }
 
   // ------------------------------------------------------------------ 14
@@ -417,6 +421,11 @@ async function main() {
     const a = (await pull2(e, { e: 0, p: 0, k: 0, x: 0 }, { device: 'laptop-A', backlog: { c: 0, x: 0, b: 0 } })).data;
     const b2 = (await pull2(e, { e: 0, p: 0, k: 0, x: 0 }, { device: 'laptop-B' })).data;
     check('...a laptop is never told about itself, and a cleared backlog disappears', a.peers.every((p) => p.device !== 'laptop-A') && b2.peers.length === 0);
+    // A laptop that goes back to uploading the old way (downgraded) has its report dropped.
+    await pull2(e, { e: 0, p: 0, k: 0, x: 0 }, { device: 'laptop-D', backlog: { c: 0, x: 3, b: 9, w: 'D' } });
+    await call(e, 'POST', '/v1/push', { device_id: 'laptop-D', rows: [] });
+    const afterOld = (await pull2(e, { e: 0, p: 0, k: 0, x: 0 }, { device: 'laptop-B', backlog: { c: 0, x: 0, b: 0 } })).data;
+    check('backlog: a laptop that uploads the old way (downgraded) is no longer reported as holding x-rays', !afterOld.peers.some((p) => p.device === 'laptop-D'));
     // Written only when it changes: an unchanged report is not rewritten on every pull.
     const at = () => { const r = e.DB._sqlite.prepare("SELECT v FROM sync_meta WHERE k = 'backlog:laptop-C'").get(); return r ? JSON.parse(r.v).at : null; };
     await pull2(e, { e: 0, p: 0, k: 0, x: 0 }, { device: 'laptop-C', backlog: { c: 0, x: 4, b: 900, w: 'C' } });

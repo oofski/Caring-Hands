@@ -304,10 +304,14 @@ function migrate() {
   db.exec(`CREATE TABLE IF NOT EXISTS sync_pending (
     uid TEXT PRIMARY KEY, updated_at TEXT NOT NULL, entity TEXT, patient_uid TEXT, event_uid TEXT,
     deleted INTEGER NOT NULL DEFAULT 0, env TEXT NOT NULL)`);
+  // The old setting is kept as a small mirror (see writePendingMirror), so a
+  // laptop put back on an older version still sees what was waiting. Whatever
+  // is in it now — v1.13's list, if a laptop was downgraded and upgraded again
+  // — is MERGED in: replacing the table with it deleted every row this version
+  // had waiting and the older one never saw.
+  lastMirror = null; // a different database file may have been opened
   const oldPending = safeJson(getSetting('cloud_pending'), []);
-  if (Array.isArray(oldPending) && oldPending.length) {
-    db.transaction(() => { savePending(oldPending); setSetting('cloud_pending', '[]'); })();
-  }
+  if (Array.isArray(oldPending) && oldPending.length) db.transaction(() => mergePending(oldPending))();
   // v1.5.21 ONE-TIME HEAL. Until now the pull cursor was a timestamp high-water
   // mark, so any row that reached the cloud with an older stamp — a check-in made
   // while this station was offline, or anything written by a laptop whose clock
@@ -319,6 +323,7 @@ function migrate() {
     setSetting('cloud_cursor', '');
     setSetting('cloud_pending', '[]');
     db.exec('DELETE FROM sync_pending');
+    lastMirror = '[]';
     setSetting('cloud_cursor_heal', 'v1');
   }
   rebaselineTriageSig();
@@ -3133,6 +3138,7 @@ function purgeEventPatients(actor, eventId) {
     const purged = patients.map((p) => p.uid).filter(Boolean);
     const drop = db.prepare('DELETE FROM sync_pending WHERE uid = ? OR patient_uid = ?');
     for (const u of purged) drop.run(u, u);
+    writePendingMirror();
   });
   tx();
   persistStamp();
@@ -3696,6 +3702,7 @@ function resetSyncCursor() {
     setSetting('cloud_cursor', '');
     setSetting('cloud_pending', '[]');
     db.exec('DELETE FROM sync_pending');
+    lastMirror = '[]';
     setSetting('cloud_lanes', '');
     setSetting('cloud_server_instance', '');
     setSetting('cloud_refused', '');
@@ -3905,6 +3912,43 @@ function savePending(rows) {
     if (have.get(uid) === stamp) continue; // already saved, exactly this version
     put.run(uid, stamp, r.entity || null, r.patient_uid || null, r.event_uid || null, r.deleted ? 1 : 0, JSON.stringify(r));
   }
+  writePendingMirror();
+}
+// Add rows to the table without removing any (a newer version of a row wins).
+function mergePending(rows) {
+  const have = new Map(db.prepare('SELECT uid, updated_at FROM sync_pending').all().map((x) => [x.uid, x.updated_at]));
+  const put = db.prepare(`INSERT INTO sync_pending (uid, updated_at, entity, patient_uid, event_uid, deleted, env) VALUES (?, ?, ?, ?, ?, ?, ?)
+                          ON CONFLICT(uid) DO UPDATE SET updated_at = excluded.updated_at, entity = excluded.entity,
+                            patient_uid = excluded.patient_uid, event_uid = excluded.event_uid, deleted = excluded.deleted, env = excluded.env`);
+  for (const r of rows) {
+    if (!r || !r.uid) continue;
+    const stamp = String(r.updated_at || '');
+    if (have.has(r.uid) && String(have.get(r.uid)) >= stamp) continue;
+    put.run(r.uid, stamp, r.entity || null, r.patient_uid || null, r.event_uid || null, r.deleted ? 1 : 0, JSON.stringify(r));
+    have.set(r.uid, stamp);
+  }
+  writePendingMirror();
+}
+// v1.12 and v1.13 keep their waiting rows in the cloud_pending setting. A laptop
+// put back on one of them reads that, and its cursor is already past the rows
+// (the cursor it gets is the lowest lane), so without this it would never
+// apply them. Mirrored: the waiting rows of up to 256 KB each — vitals,
+// consents, small images — up to 2 MB in all, oldest first. A large image
+// left out is still in the table, and is applied once this version is back.
+const MIRROR_ROW_MAX = 256 * 1024;
+const MIRROR_MAX = 2 * 1024 * 1024;
+let lastMirror = null;
+function writePendingMirror() {
+  const out = [];
+  let total = 2;
+  for (const r of db.prepare('SELECT env FROM sync_pending WHERE octet_length(env) <= ? ORDER BY rowid').all(MIRROR_ROW_MAX)) {
+    if (total + r.env.length + 1 > MIRROR_MAX) break;
+    out.push(r.env); total += r.env.length + 1;
+  }
+  const text = '[' + out.join(',') + ']';
+  if (text === lastMirror) return;
+  setSetting('cloud_pending', text);
+  lastMirror = text;
 }
 // How many records wait for a parent, and how many of them are x-rays, without
 // loading them. Deletions waiting for their children's deletions to arrive are

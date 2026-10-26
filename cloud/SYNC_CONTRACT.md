@@ -88,7 +88,9 @@ edited), `retry` was not stored this time (the request ran out of D1 statements 
 Workers free plan allows 50 — and the app re-sends it at once, at most `max_rows` per
 request). Rows are written in request order, and nothing after the first `retry` is stored.
 An older app (no `proto`) gets `ok:true` only when every row is final, and
-`{ ok:false, partial:true }` (HTTP 200) when some were stored — never a false "synced".
+`{ ok:false, partial:true }` with HTTP 503 when only some were stored — an HTTP error, as
+the old worker's 500 was, because v1.12/v1.13 treat any 2xx as a good cycle and would show
+"Cloud · synced". The stored rows are skipped cheaply when the app sends the batch again.
 
 **Pull, v2.**
 ```
@@ -143,7 +145,8 @@ instance are saved in ONE SQLite transaction after each page is applied. The row
 for a parent are never truncated.
 
 **Worker settings (optional, Settings → Variables):**
-- `SYNC_V2 = off` — the kill switch: the Worker answers every app in the old protocol.
+- `SYNC_V2 = off` — the kill switch: the Worker answers every app in the old protocol (its
+  errors included), and every v1.14 app falls back to it within one sync.
 - `SYNC_STATEMENT_BUDGET` — D1 statements one request may use (10–950, default 950). The
   Worker also learns a lower figure on its own when a request is refused for using too many.
 

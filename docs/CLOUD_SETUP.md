@@ -138,8 +138,9 @@ file over the old one: Cloudflare dashboard → **Workers & Pages** → your Wor
   stores what fits and tells the app to send the rest straight away, so a backlog still gets
   through — just in more, smaller requests.
 - **If something goes wrong:** add a Variable `SYNC_V2` = `off` (Settings → Variables) and
-  Deploy. The server then answers every laptop exactly the way the old one did. Pasting the
-  previous worker.js back is also safe.
+  Deploy. The server then talks to every laptop in the old protocol, the way v1.11 did
+  (keeping the v1.14 fixes that make each save atomic). Pasting the previous worker.js back
+  is also safe — tested.
 
 ---
 

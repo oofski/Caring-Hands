@@ -506,7 +506,7 @@ export default {
       return json({ ok: false, error: 'not found' }, 404);
     } catch (err) {
       // A v2 app tells a failing NEW server apart from an old one by this field.
-      const v2 = path === '/v1/pull' && url.searchParams.get('proto') === '2';
+      const v2 = path === '/v1/pull' && url.searchParams.get('proto') === '2' && !v2Off(env);
       return json({ ok: false, ...(v2 ? { proto: 2 } : {}), error: errMessage(err) }, 500);
     }
   },
@@ -559,6 +559,13 @@ async function handlePush(request, env, db) {
   const origin = wantV2 && typeof body.origin === 'string' && ORIGIN_RE.test(body.origin) ? body.origin : null;
   const { results, applied, error } = await writeRows(db, env, rows, origin);
   const count = (s) => results.reduce((n, r) => n + (r === s ? 1 : 0), 0);
+  // A laptop uploading the old way (an older app, or the kill switch on) cannot
+  // keep a "still to send" report current, so drop the one it left: otherwise a
+  // laptop downgraded after reporting unsent x-rays was named by every Finish
+  // clinic for a week after it had sent them. Best effort, after the writes.
+  if (!wantV2 && body && typeof body.device_id === 'string' && DEVICE_RE.test(body.device_id)) {
+    try { await db.prepare('DELETE FROM sync_meta WHERE k = ?').bind('backlog:' + body.device_id).run(); } catch (_e) { /* next time */ }
+  }
   const skipped = count('skipped') + count('invalid') + count('too_big');
   const retry = count('retry');
   const tooBig = count('too_big');
@@ -580,9 +587,12 @@ async function handlePush(request, env, db) {
     ? 'One item is too large for the clinic cloud to store — usually an x-ray saved by an older version of the app. Update this laptop.'
     : 'The clinic cloud stored part of this upload; the rest follows on the next sync.';
   // Something was settled: the app re-sends, the stored rows are skipped
-  // cheaply, and every attempt makes progress.
+  // cheaply, and every attempt makes progress. Still an HTTP error, as the old
+  // server's 500 was: v1.12 and v1.13 treat ANY 2xx answer as a good cycle and
+  // show "Cloud · synced", so a 200 here let a laptop say synced while a row
+  // it holds was never stored (and, past 400 such rows, rows were never sent).
   if (applied + count('skipped') + count('invalid') > 0) {
-    return json({ ok: false, partial: true, applied, skipped, time: nowIso(), error: error ? `${why} (${error})` : why }, 200);
+    return json({ ok: false, partial: true, applied, skipped, time: nowIso(), error: error ? `${why} (${error})` : why }, 503);
   }
   // Nothing was stored at all. Say so as loudly as the old server's 500 did, so
   // no version of the app can show "synced" over it.
