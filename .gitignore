@@ -8,3 +8,6 @@ Thumbs.db
 .env
 .cache/
 cloud/node_modules/
+
+# sync rig: old app/worker versions extracted from git on demand
+scripts/syncrig/.versions/
