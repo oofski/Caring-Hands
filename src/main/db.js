@@ -358,6 +358,12 @@ function migrateXraySigCache() {
            BEGIN DELETE FROM xray_sig WHERE id = NEW.id; END`);
   db.exec(`CREATE TRIGGER IF NOT EXISTS trg_xray_sig_del AFTER DELETE ON xrays
            BEGIN DELETE FROM xray_sig WHERE id = OLD.id; END`);
+  // X-rays to send again although they are marked sent (a new database). A
+  // side table, because clearing synced_rev on the image row rewrote every
+  // image in the clinic in one go: seconds of frozen screen and 200 MB written.
+  db.exec('CREATE TABLE IF NOT EXISTS xray_unsent (id INTEGER PRIMARY KEY)');
+  db.exec(`CREATE TRIGGER IF NOT EXISTS trg_xray_unsent_del AFTER DELETE ON xrays
+           BEGIN DELETE FROM xray_unsent WHERE id = OLD.id; END`);
 }
 // The cache holds sig(buildData('xray', row)). That is a function of the row's
 // own columns only while none of them is a name resolved from the users table.
@@ -3373,8 +3379,10 @@ function collectSyncRows(max = 400, opts = {}) {
       : cacheOn
         ? db.prepare(`SELECT x.id AS id, x.uid AS uid, s.sig AS sig FROM xrays AS x INDEXED BY idx_xrays_synced
                         LEFT JOIN xray_sig AS s ON s.id = x.id
-                       WHERE s.sig IS NULL OR x.synced_rev IS NULL OR s.sig <> x.synced_rev ORDER BY x.id`).all()
+                       WHERE s.sig IS NULL OR x.synced_rev IS NULL OR s.sig <> x.synced_rev
+                          OR x.id IN (SELECT id FROM xray_unsent) ORDER BY x.id`).all()
         : db.prepare('SELECT id FROM xrays ORDER BY id').all();
+    const resend = isXray ? new Set(db.prepare('SELECT id FROM xray_unsent').all().map((r) => r.id)) : null;
     const oneXray = isXray ? db.prepare(`SELECT * FROM ${table} WHERE id = ?`) : null;
     // octet_length reads the stored size without reading the image (2 ms for
     // 200 films; LENGTH counts characters, which means reading every one).
@@ -3397,7 +3405,7 @@ function collectSyncRows(max = 400, opts = {}) {
       const data = buildData(entity, row);
       let s = cacheOn ? item.sig : null;
       if (!s) { s = sig(data); if (cacheOn) keepSig.run(row.id, s); }
-      if (s === row.synced_rev) continue; // clean
+      if (s === row.synced_rev && !(resend && resend.has(row.id))) continue; // clean
       // The clinic cloud refused this exact content (too large to store). It is
       // tried again as soon as it changes, and not before: sending it again
       // unchanged can only be refused again, and used to hold up the rows
@@ -3459,7 +3467,10 @@ function markSynced(mark) {
         db.prepare("UPDATE tombstones SET synced_rev = 'sent' WHERE uid = ?").run(m.tombstone);
         continue;
       }
-      db.prepare(`UPDATE ${m.table} SET synced_rev = ? WHERE id = ? AND content_rev = ?`).run(m.sig, m.id, m.sig);
+      // Not when it already says so: an UPDATE rewrites the whole row, and for
+      // an x-ray that is the image.
+      db.prepare(`UPDATE ${m.table} SET synced_rev = ? WHERE id = ? AND content_rev = ? AND synced_rev IS NOT ?`).run(m.sig, m.id, m.sig, m.sig);
+      if (m.table === 'xrays') db.prepare('DELETE FROM xray_unsent WHERE id = ?').run(m.id);
       if (m.undelete) db.prepare('DELETE FROM undeletes WHERE uid = ?').run(m.undelete);
     }
   });
@@ -3840,7 +3851,10 @@ function markRefused(marks) {
 // that go up carry their original times and last-write-wins is unaffected.
 function markAllDirty() {
   db.transaction(() => {
-    for (const table of Object.values(ENTITY_TABLE)) db.prepare(`UPDATE ${table} SET synced_rev = NULL`).run();
+    for (const table of Object.values(ENTITY_TABLE)) {
+      if (table === 'xrays') db.prepare('INSERT OR IGNORE INTO xray_unsent (id) SELECT id FROM xrays').run();
+      else db.prepare(`UPDATE ${table} SET synced_rev = NULL`).run();
+    }
     db.prepare('UPDATE tombstones SET synced_rev = NULL').run();
     setSetting('cloud_refused', '');
   })();
@@ -3853,7 +3867,8 @@ function xrayBacklog() {
   if (!xraySigCacheOn()) return { count: null, bytes: null };
   const ids = db.prepare(`SELECT x.id AS id, x.uid AS uid, s.sig AS sig FROM xrays AS x INDEXED BY idx_xrays_synced
                             LEFT JOIN xray_sig AS s ON s.id = x.id
-                           WHERE s.sig IS NULL OR x.synced_rev IS NULL OR s.sig <> x.synced_rev`).all();
+                           WHERE s.sig IS NULL OR x.synced_rev IS NULL OR s.sig <> x.synced_rev
+                              OR x.id IN (SELECT id FROM xray_unsent)`).all();
   const size = db.prepare('SELECT octet_length(image_png) AS size FROM xrays WHERE id = ?');
   const refused = getRefused();
   let count = 0, bytes = 0;
@@ -3903,7 +3918,8 @@ function savePending(rows) {
   }
   const have = new Map(db.prepare('SELECT uid, updated_at FROM sync_pending').all().map((x) => [x.uid, x.updated_at]));
   const del = db.prepare('DELETE FROM sync_pending WHERE uid = ?');
-  for (const uid of have.keys()) if (!want.has(uid)) del.run(uid);
+  let changed = false;
+  for (const uid of have.keys()) if (!want.has(uid)) { del.run(uid); changed = true; }
   const put = db.prepare(`INSERT INTO sync_pending (uid, updated_at, entity, patient_uid, event_uid, deleted, env) VALUES (?, ?, ?, ?, ?, ?, ?)
                           ON CONFLICT(uid) DO UPDATE SET updated_at = excluded.updated_at, entity = excluded.entity,
                             patient_uid = excluded.patient_uid, event_uid = excluded.event_uid, deleted = excluded.deleted, env = excluded.env`);
@@ -3911,8 +3927,9 @@ function savePending(rows) {
     const stamp = String(r.updated_at || '');
     if (have.get(uid) === stamp) continue; // already saved, exactly this version
     put.run(uid, stamp, r.entity || null, r.patient_uid || null, r.event_uid || null, r.deleted ? 1 : 0, JSON.stringify(r));
+    changed = true;
   }
-  writePendingMirror();
+  if (changed || lastMirror == null) writePendingMirror();
 }
 // Add rows to the table without removing any (a newer version of a row wins).
 function mergePending(rows) {
@@ -3941,8 +3958,8 @@ let lastMirror = null;
 function writePendingMirror() {
   const out = [];
   let total = 2;
-  for (const r of db.prepare('SELECT env FROM sync_pending WHERE octet_length(env) <= ? ORDER BY rowid').all(MIRROR_ROW_MAX)) {
-    if (total + r.env.length + 1 > MIRROR_MAX) break;
+  for (const r of db.prepare('SELECT env FROM sync_pending WHERE octet_length(env) <= ? ORDER BY rowid').iterate(MIRROR_ROW_MAX)) {
+    if (total + r.env.length + 1 > MIRROR_MAX) break; // ends the iteration: nothing past 2 MB is read
     out.push(r.env); total += r.env.length + 1;
   }
   const text = '[' + out.join(',') + ']';

@@ -100,6 +100,7 @@ let v2Fails = 0;
 let pullBytes = PULL_BYTES_INIT;
 let rateBps = 0;
 let serverMaxRows = PULL_LIMIT;
+let serverRowsUntil = 0;    // the server's "this many rows per request" holds until then
 let clinicalCeiling = null; // { max, until }: no growing back past a size that failed
 let xrayCeiling = null;
 let lastPull = null;        // what the last good page said about how complete this laptop is
@@ -132,16 +133,32 @@ function trimUrl(u) {
   try { return new URL(s).origin; } catch { return s.replace(/\/+$/, ''); }
 }
 
+// v1.14.0: a request is given up when nothing moves, not when it is merely
+// slow. A fixed 20 s for the whole request meant that below about 0.8 Mbit a
+// 2 MB x-ray could never arrive (or leave): it was tried again every cycle, 20 s
+// at a time, and every image behind it waited.
+//   - until the answer starts: 20 s, plus what the upload needs at a slow
+//     256 kbit/s, so a large x-ray on a poor uplink still gets there;
+//   - after that: 20 s with not a single byte arriving;
+//   - and never more than five minutes in all.
+const UPLOAD_FLOOR_BPS = 32 * 1024;
+const HTTP_MAX_MS = 5 * 60 * 1000;
+
 async function httpJson(method, url, key, body, info) {
   const controller = new AbortController();
-  const to = setTimeout(() => controller.abort(), HTTP_TIMEOUT_MS);
+  const payload = body ? JSON.stringify(body) : undefined;
+  let stall = null;
+  const arm = (ms) => { clearTimeout(stall); stall = setTimeout(() => controller.abort(), ms); };
+  const cap = setTimeout(() => controller.abort(), HTTP_MAX_MS);
+  arm(HTTP_TIMEOUT_MS + (payload ? Math.round((Buffer.byteLength(payload) / UPLOAD_FLOOR_BPS) * 1000) : 0));
   const t0 = Date.now();
   try {
     const headers = { 'content-type': 'application/json' };
     if (key) headers.authorization = 'Bearer ' + key;
-    const res = await fetch(url, { method, headers, body: body ? JSON.stringify(body) : undefined, signal: controller.signal });
+    const res = await fetch(url, { method, headers, body: payload, signal: controller.signal });
+    arm(HTTP_TIMEOUT_MS);
     let text = '';
-    try { text = await res.text(); } catch (e) {
+    try { text = await readBody(res, () => arm(HTTP_TIMEOUT_MS)); } catch (e) {
       // The body timed out half-way. This used to be swallowed and returned as
       // an empty success: no rows, cursor unmoved, error cleared, badge green.
       if (controller.signal.aborted) {
@@ -164,7 +181,21 @@ async function httpJson(method, url, key, body, info) {
       err.timeout = true; throw err;
     }
     throw e;
-  } finally { clearTimeout(to); }
+  } finally { clearTimeout(stall); clearTimeout(cap); }
+}
+
+// The answer's body, calling onChunk as each piece arrives (the stall timer).
+async function readBody(res, onChunk) {
+  if (!res.body || typeof res.body.getReader !== 'function') return res.text();
+  const reader = res.body.getReader();
+  const parts = [];
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    parts.push(Buffer.from(value.buffer, value.byteOffset, value.byteLength));
+    onChunk();
+  }
+  return Buffer.concat(parts).toString('utf8');
 }
 
 // Verify a URL + key: /health must be reachable, and the key must authorize a pull.
@@ -194,10 +225,12 @@ async function pushOnce(base, key, deviceId, ctx) {
   // on the free Cloudflare plan the server can store only so many rows per
   // request, and says how many it got through, so the rest go straight after
   // rather than four seconds later.
+  let sentClinical = false;
   for (let round = 0; ; round++) {
     const max = Math.max(1, Math.min(clinicalMax, serverMaxRows));
     const clinical = db.collectSyncRows(max, { skip: ['xray'] });
     if (!clinical.rows.length) break;
+    sentClinical = true;
     let res;
     try {
       res = await pushBatch(base, key, deviceId, clinical, ctx);
@@ -232,8 +265,11 @@ async function pushOnce(base, key, deviceId, ctx) {
   }
   // More clinical rows still waiting? They go first, next cycle. (Asking for
   // one row is a peek: collecting only stamps a row whose content changed,
-  // exactly as the real collect next cycle would.)
-  if (db.collectSyncRows(1, { skip: ['xray'] }).rows.length) {
+  // exactly as the real collect next cycle would.) Only after something was
+  // sent: when the first collect found nothing, nothing can have changed, and
+  // the peek — which hashes every chart row, signatures included — doubled the
+  // idle cycle's freeze.
+  if (sentClinical && db.collectSyncRows(1, { skip: ['xray'] }).rows.length) {
     backlog = { c: 1, ...xrayBacklogNow() };
     return { pushed, more: true, note };
   }
@@ -296,7 +332,18 @@ async function pushBatch(base, key, deviceId, batch, ctx) {
     });
     if (done.length) { db.markSynced(done); db.setSyncMeta({ lastPush: new Date().toISOString() }); }
     if (refused.length) db.markRefused(refused);
-    if (Number(r.max_rows) >= 1) serverMaxRows = Math.min(PULL_LIMIT, Math.floor(Number(r.max_rows)));
+    // The server says how many rows a request could store only when one could
+    // not store them all (a complete answer always says 400). So a limit it
+    // gives is kept for a while, and only grown back after a request of that
+    // size came back complete: taking every answer at its word sent a
+    // 200-row request after every 26-row one on the free plan, each storing 26.
+    const mr = Number(r.max_rows);
+    if (!r.complete && mr >= 1) {
+      serverMaxRows = Math.min(serverMaxRows, PULL_LIMIT, Math.floor(mr));
+      serverRowsUntil = Date.now() + CEILING_MS;
+    } else if (r.complete && batch.rows.length >= serverMaxRows && Date.now() >= serverRowsUntil) {
+      serverMaxRows = Math.min(PULL_LIMIT, serverMaxRows * 2);
+    }
     return { v2: true, settled: done.length + refused.length, complete: !!r.complete, error: r.error || (refused.length ? 'Some items are too large for the clinic cloud to store; they stay on this laptop.' : null) };
   }
   // A v2 answer whose results do not line up with what was sent: its ok:true
@@ -468,6 +515,7 @@ async function pullV2(base, key, ctx) {
   if (!lanes) return 'legacy'; // still on the old timestamp cursor
   const knownInstance = db.getSetting('cloud_server_instance') || '';
   let carry = db.getSyncPending();
+  let carryTried = false;
   let pulled = 0, applied = 0, removed = 0, guard = 0, pages = 0, again = false;
   const started = Date.now();
   const who = String(os.hostname() || '').slice(0, 60);
@@ -519,13 +567,19 @@ async function pullV2(base, key, ctx) {
       continue;
     }
     const rows = stubs.length ? r.rows.filter((row) => row.own !== 1) : r.rows;
-    const batch = carry.length ? carry.concat(rows) : rows;
+    // A waiting row is freed only by its parent, and parents travel in lanes
+    // e (clinics) and p (patients). So waiting rows are retried once a cycle and
+    // then only on pages that brought some of those — not re-applied and
+    // re-hashed on every page of an image download.
+    const retryCarry = carry.length > 0 && (!carryTried || rows.some((row) => row.lane === 'e' || row.lane === 'p'));
+    if (retryCarry) carryTried = true;
+    const batch = retryCarry ? carry.concat(rows) : rows;
     let pageApplied = 0;
     if (batch.length) {
       const res = db.applyRemoteRows(batch);
       pageApplied = res.applied;
       applied += res.applied; removed += (res.deleted || 0);
-      carry = res.deferredRows || [];
+      carry = retryCarry ? (res.deferredRows || []) : carry.concat(res.deferredRows || []);
     }
     pulled += rows.length;
     const next = {};
@@ -549,9 +603,12 @@ async function pullV2(base, key, ctx) {
     const elapsed = Date.now() - started;
     // Give the push its turn, as v1.13 did — and when only images are left,
     // much sooner, so a laptop downloading a backlog of x-rays still sends its
-    // own check-outs every few seconds. Not while rows wait for a parent.
+    // own check-outs every few seconds. (v1.13 would not stop while rows waited
+    // for a parent, because the parent was usually a page or two away. With
+    // parents first it is not on its way at all, and one row that can never be
+    // applied held this laptop's check-outs behind the whole image download.)
     const onlyImages = !r.lanes.e.more && !r.lanes.p.more && !r.lanes.k.more && r.lanes.x.more;
-    if (!carry.length && (elapsed > PULL_TIME_BUDGET_MS || (onlyImages && elapsed >= IMAGE_SLICE_MS))) { again = true; break; }
+    if (elapsed > PULL_TIME_BUDGET_MS || (onlyImages && elapsed >= IMAGE_SLICE_MS)) { again = true; break; }
   }
   return { pulled, applied, deleted: removed, again };
 }
@@ -723,7 +780,7 @@ function _tuning() {
 function _resetTuning() {
   xrayBatchBytes = XRAY_BATCH_MAX; pullLimit = PULL_FIRST_LIMIT; clinicalMax = PULL_LIMIT;
   pullBytes = PULL_BYTES_INIT; rateBps = 0; serverProto = 0; protoRetryAt = 0; v2Fails = 0;
-  serverMaxRows = PULL_LIMIT; clinicalCeiling = null; xrayCeiling = null; lastPull = null; lastPullOkAt = 0;
+  serverMaxRows = PULL_LIMIT; serverRowsUntil = 0; clinicalCeiling = null; xrayCeiling = null; lastPull = null; lastPullOkAt = 0;
 }
 
 module.exports = {

@@ -557,6 +557,7 @@ console.log(`client under test: ${path.relative(REPO, SRC) || SRC}`);
     check(w1 === 60 && writes() === 61, 'waiting rows: a page that adds one waiting x-ray writes one row, not all 61 images again', `${w1} then ${writes()}`);
     db.commitPull({ gen: db.syncGen(), cursor: '12', pending: list.slice(30) });
     check(db.pendingCounts().rows === 31 && writes() === 61, '...and rows that stop waiting are simply removed');
+
     raw.exec('DROP TRIGGER pend_w_i; DROP TRIGGER pend_w_u; DROP TABLE pend_writes;');
     // An upgrade from v1.13, which kept them in one settings value.
     db.setSyncPending([]);
@@ -638,6 +639,104 @@ console.log(`client under test: ${path.relative(REPO, SRC) || SRC}`);
   await sync();
   check(dirtyBefore > 1 && db.collectSyncRows(100000).rows.length === dirtyBefore, 'push: an answer whose per-row results do not match the upload marks nothing as sent', `${dirtyBefore} before, ${db.collectSyncRows(100000).rows.length} after`);
   await new Promise((r) => srv.close(r));
+}
+
+// ===========================================================================
+// 21. A row that can never be applied does not hold this laptop's uploads
+//     behind an image download.
+// ===========================================================================
+{
+  const server = await startServer({ workerPath: CUR_WORKER });
+  const c = clinic(4);
+  await peer(server, c.rows);
+  await freshLaptop(server.url);
+  await sync(); await sync();
+  db.setSyncPending([triageRow(uuid())]); // its patient will never come
+  await peer(server, Array.from({ length: 40 }, (_, j) => xrayRow(c.pts[j % 4].uid, 150 * 1024)));
+  server.setOpts({ downBps: 250000 }); // 2 Mbit: about 24 s of images
+  const t0 = Date.now();
+  const r = await sync();
+  const ms = Date.now() - t0;
+  server.clearLinks();
+  check(r.again === true && ms < 15000 && n('SELECT COUNT(*) AS n FROM xrays') < 40, 'images: one row that can never be applied does not stop the laptop from giving its own uploads a turn', `${ms}ms, again ${r.again}`);
+  await server.close();
+}
+
+// ===========================================================================
+// 22. An idle cycle hashes the chart rows once, not twice.
+// ===========================================================================
+{
+  const server = await startServer({ workerPath: CUR_WORKER });
+  await freshLaptop(server.url);
+  localClinic('Idle');
+  for (let i = 0; i < 5; i++) localPatient('Idle' + i);
+  await sync(); await sync();
+  const real = db.collectSyncRows;
+  let chartCollects = 0;
+  db.collectSyncRows = (max, opts = {}) => { if (!(opts.only && opts.only.includes('xray'))) chartCollects++; return real(max, opts); };
+  try { await sync(); } finally { db.collectSyncRows = real; }
+  check(chartCollects === 1, 'idle: a cycle with nothing to send reads the chart rows once', `${chartCollects} chart collects`);
+  await server.close();
+}
+
+// ===========================================================================
+// 23. On the free plan, uploads stay at the size the server can store.
+// ===========================================================================
+{
+  const server = await startServer({ workerPath: CUR_WORKER });
+  await freshLaptop(server.url);
+  localClinic('Free Sizes');
+  await sync(); await sync();
+  for (let i = 0; i < 100; i++) localPatient('Size' + i);
+  server.DB.setLimits({ maxQueries: 50 });
+  const before = server.log.length;
+  await syncUntil(() => db.collectSyncRows(100000).rows.length === 0, 40);
+  const pushes = server.log.slice(before).filter((e) => e.path === '/v1/push');
+  const sent = pushes.reduce((a, e) => a + (e.rows || 0), 0);
+  const distinct = 100 * 3; // patient, triage, consent each
+  check(db.collectSyncRows(100000).rows.length === 0 && sent <= distinct * 2, 'free plan: uploads stay near what the server can store (not 8x it on every other request)', `sent ${sent} rows to store ${distinct}`);
+  await server.close();
+}
+
+// ===========================================================================
+// 24. Starting over against a new database does not rewrite the images, and
+//     still sends them.
+// ===========================================================================
+{
+  const A = await startServer({ workerPath: CUR_WORKER });
+  const B = await startServer({ workerPath: CUR_WORKER });
+  await freshLaptop(A.url);
+  localClinic('Images Move');
+  const p = localPatient('Imaged');
+  for (let i = 0; i < 3; i++) db.addXray(admin, p.id, { image_png: 'data:image/jpeg;base64,' + crypto.randomBytes(200 * 1024).toString('base64'), tooth: String(i + 1) });
+  await syncUntil(() => db.collectSyncRows(100000).rows.length === 0, 8);
+  raw.exec('CREATE TABLE IF NOT EXISTS xw (n INTEGER); DELETE FROM xw; INSERT INTO xw VALUES (0);');
+  raw.exec('CREATE TRIGGER IF NOT EXISTS xw_u AFTER UPDATE ON xrays BEGIN UPDATE xw SET n = n + 1; END;');
+  cloud.applyConfig({ url: B.url });
+  cloud.stop(); await idle();
+  await syncUntil(() => [...B.DB._store.values()].filter((r) => r.entity === 'xray').length === 3, 8);
+  const rewrites = raw.prepare('SELECT n FROM xw').get().n;
+  raw.exec('DROP TRIGGER xw_u; DROP TABLE xw;');
+  check([...B.DB._store.values()].filter((r) => r.entity === 'xray').length === 3, 'new database: the images are sent to it too');
+  check(rewrites === 0, '...without rewriting a single image row on this laptop to mark them', `${rewrites} image row(s) rewritten`);
+  await A.close(); await B.close();
+}
+
+// ===========================================================================
+// 25. A slow link: an image that takes longer than 20 s still arrives.
+// ===========================================================================
+{
+  const server = await startServer({ workerPath: CUR_WORKER });
+  const c = clinic(1);
+  await peer(server, c.rows);
+  await freshLaptop(server.url);
+  await sync();
+  await peer(server, [xrayRow(c.pts[0].uid, 1400 * 1024)]); // ~1.9 MB as sent
+  server.setOpts({ downBps: 80000 }); // ~0.6 Mbit: about 24 s for that one image
+  await sync();
+  server.clearLinks();
+  check(n('SELECT COUNT(*) AS n FROM xrays') === 1, 'slow link: an image that takes longer than 20 s to arrive is not given up on while it is still arriving', db.getSyncMeta().lastError || '');
+  await server.close();
 }
 
 // ===========================================================================
