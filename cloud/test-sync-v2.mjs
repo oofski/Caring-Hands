@@ -152,8 +152,26 @@ async function main() {
     const want = (row) => (row.deleted ? 'e' : ['event', 'staffdir'].includes(row.entity) ? 'e' : ['user', 'report', 'patient'].includes(row.entity) ? 'p' : row.entity === 'xray' ? 'x' : 'k');
     check('v2: every row is in exactly the lane its kind belongs to', [...all.values()].every((r) => lanesOf.get(r.uid) === want(r)));
     const biggest = 60 * 1024 + 4096;
-    check('v2: pages respect the byte budget (plus at most the first row of each lane)', pages.every((p) => p.bytes <= 131072 + 4 * biggest), pages.map((p) => p.bytes).join(','));
+    check('v2: pages respect the byte budget (plus at most one row, so a big one still moves)', pages.every((p) => p.bytes <= 131072 + biggest), pages.map((p) => p.bytes).join(','));
     check('v2: images come after every clinical row in a catch-up', (() => { const firstX = pages.findIndex((p) => p.rows.some((r) => r.lane === 'x')); const lastClin = pages.map((p, i) => (p.rows.some((r) => r.lane !== 'x') ? i : -1)).reduce((a, b) => Math.max(a, b), -1); return firstX >= lastClin; })());
+  }
+
+  // A check-out must never share a response with an image the link cannot
+  // fetch in time: the client applies nothing from a page that fails, so the
+  // check-out would wait behind the image for as long as images are pending.
+  {
+    const e = await mkEnv();
+    const ev = 'ev-slow', pt = 'pt-slow';
+    await push(e, [R('event', ev, { name: 'Slow link' })]);
+    await push(e, [R('xray', 'xr-big', { image_png: img(1500) }, { patient_uid: pt })]);
+    await push(e, [R('patient', pt, { first_name: 'Out', status: 'dismissed' }, { event_uid: ev }), R('triage', 'tr-slow', { bp_systolic: 120 }, { patient_uid: pt })]);
+    const lanes = { e: 0, p: 0, k: 0, x: 0 };
+    const first = (await pull2(e, lanes, { max_bytes: 65536 })).data;
+    check('byte cap: on a 64 KB page the check-out comes without the 1.5 MB image', first && first.rows.some((r) => r.uid === pt) && !first.rows.some((r) => r.lane === 'x') && first.bytes < 65536,
+      first ? `${first.bytes} bytes: ${first.rows.map((r) => r.lane + ':' + r.uid).join(' ')}` : 'no page');
+    for (const L of ['e', 'p', 'k', 'x']) lanes[L] = Number(first.lanes[L].cursor);
+    const second = (await pull2(e, lanes, { max_bytes: 65536 })).data;
+    check('...and the image still moves on its own, the next page', second && second.rows.length === 1 && second.rows[0].uid === 'xr-big', second ? second.rows.map((r) => r.uid).join(' ') : 'no page');
   }
 
   // ------------------------------------------------------------------ 3
@@ -302,6 +320,30 @@ async function main() {
     check('...and a v2 push says exactly which rows to send again', v2.complete === false && v2.results.includes('retry') && v2.results.indexOf('retry') === v2.results.filter((x) => x !== 'retry').length);
   }
 
+  // A transient D1 error is not the per-request limit, and a learned limit
+  // does not last for ever.
+  {
+    const e = await mkEnv();
+    await push(e, [R('event', 'ev1', { name: 'C' })]);
+    e.DB.setFaults({ failBatches: 1, failBatchMessage: 'D1_ERROR: D1 DB is overloaded. Too many requests queued.' });
+    await push(e, Array.from({ length: 30 }, (_, i) => R('patient', 'o' + i, { i })), { proto: 2, origin: 'origin-ffff-6666' });
+    const after = (await push(e, Array.from({ length: 100 }, (_, i) => R('patient', 'q' + i, { i })), { proto: 2, origin: 'origin-ffff-6666' })).data;
+    check('budget: one "D1 DB is overloaded" error does not throttle later uploads', after.complete === true && after.applied === 100, `applied ${after.applied}, max_rows ${after.max_rows}`);
+
+    const f = await mkEnv({ maxQueries: 50 });
+    await push(f, [R('event', 'ev1', { name: 'C' })]);
+    await push(f, Array.from({ length: 120 }, (_, i) => R('patient', 'h' + i, { i })), { proto: 2, origin: 'origin-ffff-7777' }); // learns ~50
+    f.DB.setLimits({ maxQueries: 0 }); // the clinic moves to the paid plan
+    const capped = (await push(f, Array.from({ length: 120 }, (_, i) => R('patient', 'j' + i, { i })), { proto: 2, origin: 'origin-ffff-7777' })).data;
+    const realNow = Date.now;
+    Date.now = () => realNow() + 11 * 60 * 1000;
+    let freed;
+    try { freed = (await push(f, Array.from({ length: 120 }, (_, i) => R('patient', 'k' + i, { i })), { proto: 2, origin: 'origin-ffff-7777' })).data; }
+    finally { Date.now = realNow; }
+    check('budget: a learned limit is forgotten after ten minutes (and learned again only if it still holds)', capped.complete === false && freed.complete === true && freed.applied === 120,
+      `before: ${capped.applied}/120, after: ${freed.applied}/120`);
+  }
+
   // ------------------------------------------------------------------ 10
   {
     const e = await mkEnv();
@@ -375,6 +417,32 @@ async function main() {
     const a = (await pull2(e, { e: 0, p: 0, k: 0, x: 0 }, { device: 'laptop-A', backlog: { c: 0, x: 0, b: 0 } })).data;
     const b2 = (await pull2(e, { e: 0, p: 0, k: 0, x: 0 }, { device: 'laptop-B' })).data;
     check('...a laptop is never told about itself, and a cleared backlog disappears', a.peers.every((p) => p.device !== 'laptop-A') && b2.peers.length === 0);
+    // Written only when it changes: an unchanged report is not rewritten on every pull.
+    const at = () => { const r = e.DB._sqlite.prepare("SELECT v FROM sync_meta WHERE k = 'backlog:laptop-C'").get(); return r ? JSON.parse(r.v).at : null; };
+    await pull2(e, { e: 0, p: 0, k: 0, x: 0 }, { device: 'laptop-C', backlog: { c: 0, x: 4, b: 900, w: 'C' } });
+    const at1 = at();
+    await new Promise((r) => setTimeout(r, 5));
+    await pull2(e, { e: 0, p: 0, k: 0, x: 0 }, { device: 'laptop-C', backlog: { c: 0, x: 4, b: 900, w: 'C' } });
+    check('backlog: an unchanged report is not written again on every pull', at1 != null && at() === at1);
+    await pull2(e, { e: 0, p: 0, k: 0, x: 0 }, { device: 'laptop-C', backlog: { c: 0, x: 3, b: 600, w: 'C' } });
+    check('...a changed one is', at() !== at1);
+    // A laptop that went offline holding unsent x-rays is still reported hours later.
+    const realNow = Date.now;
+    Date.now = () => realNow() + 3 * 3600 * 1000;
+    let late;
+    try { late = (await pull2(e, { e: 0, p: 0, k: 0, x: 0 }, { device: 'laptop-B', backlog: { c: 0, x: 0, b: 0 } })).data; }
+    finally { Date.now = realNow; }
+    check('backlog: a laptop that went offline holding x-rays is still reported three hours later', late.peers.some((p) => p.device === 'laptop-C' && p.xrays === 3));
+    // A refused write (the daily write quota, say) does not cost the pull.
+    e.DB.setFaults({ failWritesWith: 'D1_ERROR: Exceeded maximum rows written per day' });
+    const refused = await pull2(e, { e: 0, p: 0, k: 0, x: 0 }, { device: 'laptop-C', backlog: { c: 0, x: 9, b: 1, w: 'C' } });
+    e.DB.setFaults({ failWritesWith: null });
+    check('...and a report the database refuses to store does not fail the pull', refused.status === 200 && refused.data.ok === true && refused.data.proto === 2);
+    // A passing D1 error on a pull is not taken for a broken index.
+    e.DB.setFaults({ failBatches: 1, failBatchMessage: 'D1_ERROR: D1 DB is overloaded. Too many requests queued.' });
+    const hiccup = await pull2(e, { e: 0, p: 0, k: 0, x: 0 });
+    const next = await pull2(e, { e: 0, p: 0, k: 0, x: 0 });
+    check('a passing D1 error on a pull does not switch the server back to the old protocol', hiccup.status === 500 && next.data && next.data.proto === 2, `then: ${next.text.slice(0, 80)}`);
   }
 
   // ------------------------------------------------------------------ 15

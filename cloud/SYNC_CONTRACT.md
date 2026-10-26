@@ -111,7 +111,7 @@ minutes). The four lanes partition every row:
 A lane is served only if every earlier lane drained in the same response, so parents
 always arrive before their children, and a laptop that has fallen behind gets every
 check-out before the image backlog. Pages are capped at `max_bytes` (64 KiB–8 MiB; the
-first row of a lane always goes). The answer:
+first row of a response always goes, so one row bigger than the cap still moves — alone). The answer:
 ```json
 { "ok": true, "proto": 2, "mode": "seq", "head": "5120", "instance": "<db id>", "more": true,
   "lanes": { "e": { "cursor": "5120", "more": false, "left": 0, "left_exact": true },
@@ -128,9 +128,11 @@ first row of a lane always goes). The answer:
   the response, keeping every lane close to the frontier.
 - `reset: "cursor_ahead"` (a cursor past `head`) or a changed `instance` means a different
   database behind the same address: the app starts from nothing and re-sends everything.
-- `backlog` (`{c, x, b, w}`: unsent clinical rows, x-rays, bytes, station name) is kept
-  for 30 minutes and reported to the other laptops as `peers`, so Finish clinic can say
-  which station still holds unsent x-rays.
+- `backlog` (`{c, x, b, w}`: unsent clinical rows, x-rays, bytes, station name) is stored
+  only when it changes (or every 5 minutes while something is outstanding), outside the
+  read batch so a refused write never fails the pull, and is reported to the other laptops
+  as `peers` for 7 days — long on purpose, because the station that matters is one that
+  went offline holding unsent x-rays and cannot update its report. Finish clinic names it.
 
 **App side (v1.14).** Settings: `cloud_lanes` (`{v:1, e, p, k, x, base}`), `cloud_cursor` =
 the lowest lane (so an older version, if a laptop is downgraded, re-reads rather than

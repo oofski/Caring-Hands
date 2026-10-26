@@ -112,7 +112,12 @@ const STUB_BYTES = 256;
 const ORIGIN_RE = /^[A-Za-z0-9-]{8,64}$/;
 const DEVICE_RE = /^[A-Za-z0-9._:-]{1,80}$/;
 const SINCE_MAX = '9007199254740991';
-const BACKLOG_FRESH_MS = 30 * 60 * 1000;
+// How long a laptop's report of what it still has to send is believed. Long on
+// purpose: the laptop that matters most is the one that went OFFLINE holding
+// unsent x-rays — it cannot refresh its report, and finishing the clinic
+// elsewhere would delete those images everywhere. (It was 30 minutes, so an
+// x-ray laptop that dropped off the wifi at 3 pm was forgotten by 3:30.)
+const BACKLOG_FRESH_MS = 7 * 24 * 60 * 60 * 1000;
 
 // Per isolate. All of these only ever move one way once learned.
 let schemaReady = false;   // tables + migrations done
@@ -123,6 +128,12 @@ let instanceId = null;     // this database's identity
 let lastLaneCheck = 0;
 let preReadJson = true;    // json_each available for the pre-read
 let learnedBudget = Infinity;
+let learnedAt = 0;
+// A learned limit is forgotten after this long and learned again if it still
+// holds: a cap learned from one bad moment must not slow an isolate for the
+// hours a clinic keeps it warm.
+const LEARNED_TTL_MS = 10 * 60 * 1000;
+function learnBudget(n) { learnedBudget = Math.max(10, n); learnedAt = Date.now(); }
 
 const v2Off = (env) => !!(env && String(env.SYNC_V2 || '').toLowerCase() === 'off');
 function statementBudget(env) {
@@ -132,9 +143,17 @@ function statementBudget(env) {
   // "too many" error — so a paid clinic is never slowed down, and a free one
   // loses at most one batch the first time it meets the limit.
   const configured = Number.isFinite(raw) ? Math.min(950, Math.max(10, raw)) : 950;
+  if (learnedBudget !== Infinity && Date.now() - learnedAt > LEARNED_TTL_MS) learnedBudget = Infinity;
   return Math.min(configured, learnedBudget);
 }
-const isLimitError = (e) => /too many|subrequest|limit|exceeded/i.test(errMessage(e)) && !isTooBig(e);
+// ONLY the Workers per-invocation limit ("Too many API requests by single
+// worker invocation", "Too many subrequests"). D1's own transient errors also
+// say "too many", "limit" or "exceeded" — "D1 DB is overloaded. Too many
+// requests queued.", "...exceeded its CPU time limit..." — and treating one of
+// those as the limit used to cap the isolate at a handful of rows per request.
+const isLimitError = (e) => /too many api requests|too many subrequests|subrequest limit/i.test(errMessage(e)) && !isTooBig(e);
+// The lane indexes, or INDEXED BY, not usable on this database.
+const isIndexError = (e) => /no such index|no query solution|indexed by/i.test(errMessage(e));
 const isTooBig = (e) => /SQLITE_TOOBIG|too big|string or blob/i.test(errMessage(e));
 const utf8Len = (s) => (/[^\x00-\x7f]/.test(s) ? new TextEncoder().encode(s).length : s.length);
 
@@ -292,7 +311,7 @@ async function writeRows(db, env, rows, origin, { budget } = {}) {
       s += part.length;
     }
   } catch (e) {
-    if (isLimitError(e)) learnedBudget = Math.max(10, db.used - 1);
+    if (isLimitError(e)) learnBudget(db.used - 1);
     for (const t of todo) results[t.i] = 'retry';
     return { results, applied: 0, error: errMessage(e) };
   }
@@ -333,7 +352,7 @@ async function writeRows(db, env, rows, origin, { budget } = {}) {
       }
     } catch (e) {
       if (isLimitError(e)) {
-        learnedBudget = Math.max(10, db.used - batch.length - 1);
+        learnBudget(db.used - batch.length - 1);
         queue.unshift(batch);
         error = errMessage(e);
         stopped = true;
@@ -731,25 +750,33 @@ async function handlePullV2(url, env, db) {
   try {
     const stmts = [db.prepare('SELECT (SELECT v FROM sync_seq WHERE id = 1) AS head')];
     for (const L of LANES) stmts.push(planStmt(db, L, since[L], rowsMax + 1));
-    // Each laptop reports what it still has to send; every laptop is told what
-    // the others have outstanding, so nobody finishes a clinic while another
-    // station is still holding unsent x-rays.
-    if (device && backlog) {
-      stmts.push(db.prepare("INSERT INTO sync_meta (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v")
-        .bind('backlog:' + device, JSON.stringify({ ...backlog, at: Date.now() })));
-    }
     stmts.push(db.prepare("SELECT k, v FROM sync_meta WHERE k LIKE 'backlog:%'"));
     snap = await db.batch(stmts);
   } catch (e) {
     // An index or INDEXED BY the database will not honour: stop offering v2
-    // from this isolate until the next schema check, and say so in v2 terms.
-    lanesReady = false;
+    // from this isolate until the next schema check. Not for any other error —
+    // a passing D1 hiccup used to switch every laptop that met this isolate in
+    // the next minute back to the old protocol for ten minutes.
+    if (isIndexError(e)) lanesReady = false;
     return json({ ok: false, proto: 2, error: errMessage(e) }, 500);
   }
   const head = Number((snap[0].results && snap[0].results[0] && snap[0].results[0].head) || 0);
   const plans = {};
   LANES.forEach((L, i) => { plans[L] = (snap[1 + i].results || []).map((e) => ({ seq: Number(e.seq), origin: e.origin, n: Number(e.n || 0) })); });
-  const peers = readPeers(snap[snap.length - 1].results || [], device);
+  const metaRows = snap[snap.length - 1].results || [];
+  const peers = readPeers(metaRows, device);
+  // Each laptop reports what it still has to send; every laptop is told what
+  // the others have outstanding, so nobody finishes a clinic while another
+  // station is still holding unsent x-rays. Written only when it changes (or
+  // every few minutes, as a sign of life): writing it on every pull cost ~900
+  // D1 row writes an hour per laptop against the free plan's 100,000 a day. On
+  // its own and allowed to fail: a refused write must not cost the pull.
+  if (device && backlog && backlogChanged(metaRows, device, backlog)) {
+    try {
+      await db.prepare('INSERT INTO sync_meta (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v')
+        .bind('backlog:' + device, JSON.stringify({ ...backlog, at: Date.now() })).run();
+    } catch (_e) { /* next time */ }
+  }
 
   // A cursor from another database (the clinic moved to a new one behind the
   // same address): start again rather than wait for numbers that will never come.
@@ -773,9 +800,14 @@ async function handlePullV2(url, env, db) {
         const own = origin !== '' && e.origin === origin && e.seq > echoMin;
         const size = own ? STUB_BYTES : e.n + ROW_OVERHEAD;
         if (taken >= rowsMax) break;
-        // The first row of every lane reached is always taken, so a single row
-        // bigger than the budget still moves.
-        if (w.take.length > 0 && bytes + size > maxBytes) break;
+        // The first row of the PAGE is always taken, so a single row bigger
+        // than the budget still moves. Not the first row of every lane: that
+        // put an image in the same response as the check-outs ahead of it, and
+        // a link too slow to fetch the image inside the timeout then never got
+        // the check-outs either (the client applies nothing from a page that
+        // fails). A lane that takes nothing here is not drained, so the lanes
+        // after it wait, and the next request starts with it.
+        if (taken > 0 && bytes + size > maxBytes) break;
         taken++; bytes += size; w.take.push(e.seq);
       }
       w.drained = i === plan.length && plan.length < rowsMax + 1;
@@ -801,7 +833,7 @@ async function handlePullV2(url, env, db) {
       const res = await db.batch(stmts);
       fetchLanes.forEach((L, i) => { fetched[L] = (res[i].results || []); });
     } catch (e) {
-      lanesReady = false;
+      if (isIndexError(e)) lanesReady = false;
       return json({ ok: false, proto: 2, error: errMessage(e) }, 500);
     }
   }
@@ -860,6 +892,17 @@ function parseBacklog(raw) {
     const num = (v) => (Number.isFinite(Number(v)) ? Math.max(0, Math.min(1e9, Math.floor(Number(v)))) : 0);
     return { clinical: num(b.c), xrays: num(b.x), bytes: num(b.b), who: typeof b.w === 'string' ? b.w.slice(0, 60) : '' };
   } catch (_e) { return null; }
+}
+const BACKLOG_HEARTBEAT_MS = 5 * 60 * 1000;
+function backlogChanged(rows, device, b) {
+  const r = rows.find((x) => x.k === 'backlog:' + device);
+  if (!r) return b.clinical > 0 || b.xrays > 0; // nothing outstanding and nothing stored: nothing to say
+  let old;
+  try { old = JSON.parse(r.v); } catch (_e) { return true; }
+  if (!old || old.clinical !== b.clinical || old.xrays !== b.xrays || old.bytes !== b.bytes || old.who !== b.who) return true;
+  // Unchanged. A sign of life now and then, but only while there is something
+  // outstanding — an all-clear does not need refreshing.
+  return (b.clinical > 0 || b.xrays > 0) && !(Date.now() - Number(old.at || 0) < BACKLOG_HEARTBEAT_MS);
 }
 function readPeers(rows, self) {
   const now = Date.now();

@@ -264,7 +264,10 @@ function register(getMainWindow) {
     if (c.orphans > 0) out.push(`${c.orphans} record(s) from other stations${c.orphanXrays ? ` (${c.orphanXrays} x-ray image(s))` : ''} are still waiting for the patient they belong to`);
     if (!c.reachable) out.push(c.lastContactAt ? `this laptop has not reached the clinic cloud since ${new Date(c.lastContactAt).toLocaleString()}${c.behind ? ', and it was still receiving records then' : ''}` : 'this laptop has not reached the clinic cloud');
     for (const p of c.peers || []) {
-      out.push(`${p.who || 'another station'} still has ${p.xrays ? `${p.xrays} x-ray image(s)` : 'records'} it has not sent`);
+      // A report can be old: the station that matters most is one that went
+      // offline holding unsent x-rays, and it cannot update its report.
+      const when = p.at ? new Date(p.at).toLocaleString() : '';
+      out.push(`${p.who || 'another station'} still has ${p.xrays ? `${p.xrays} x-ray image(s)` : 'records'} it has not sent${when ? ` (as of ${when})` : ''}`);
     }
     return out;
   };
