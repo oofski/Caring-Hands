@@ -311,7 +311,7 @@ async function pushOnce(base, key, deviceId, ctx) {
 }
 
 function xrayBacklogNow() {
-  try { const b = db.xrayBacklog(); return { x: b.count || 0, b: b.bytes || 0 }; } catch (_e) { return { x: 0, b: 0 }; }
+  try { const b = db.xrayBacklog(); return { x: b.count || 0, b: b.bytes || 0, t: b.stuck || 0 }; } catch (_e) { return { x: 0, b: 0, t: 0 }; }
 }
 
 // One upload, and what it settled. A v1.14 server answers row by row:
@@ -548,7 +548,7 @@ async function pullV2(base, key, ctx) {
       since_e: String(lanes.e), since_p: String(lanes.p), since_k: String(lanes.k), since_x: String(lanes.x),
       rows: '1000', max_bytes: String(Math.round(pullBytes)),
       origin: echoToken, echo_min: String(echoMin),
-      device: ctx.deviceId, backlog: JSON.stringify({ c: backlog.c, x: backlog.x, b: backlog.b, w: who }),
+      device: ctx.deviceId, backlog: JSON.stringify({ c: backlog.c, x: backlog.x, b: backlog.b, t: backlog.t || 0, w: who }),
     });
     const info = {};
     let r;
@@ -713,7 +713,9 @@ function status() {
     orphansWarn: !!(st && st.orphans >= db.PENDING_WARN),
     rowsRefused: Object.keys(db.getRefused()).length,
     toSend: { clinical: backlog.c, xrays: backlog.x, bytes: backlog.b },
-    peers: (st && st.peers) || [],
+    // Only the stations that still hold something: the full list (with when
+    // each was last heard from) is for the Finish guard.
+    peers: ((st && st.peers) || []).filter((p) => p.clinical > 0 || p.xrays > 0 || p.stuck > 0),
   };
 }
 

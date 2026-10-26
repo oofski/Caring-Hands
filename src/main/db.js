@@ -3874,14 +3874,17 @@ function xrayBacklog() {
                               OR x.id IN (SELECT id FROM xray_unsent)`).all();
   const size = db.prepare('SELECT octet_length(image_png) AS size FROM xrays WHERE id = ?');
   const refused = getRefused();
-  let count = 0, bytes = 0;
+  // stuck: held here and never going to the cloud — too big for it, or refused
+  // by it (chart rows too). They exist on this laptop and nowhere else, so the
+  // other laptops are told, and their Finish says so.
+  let count = 0, bytes = 0, stuck = Object.keys(refused).filter((k) => !k.startsWith('xrays:')).length;
   for (const { id, uid, sig: kept } of ids) {
-    if (kept && refused[`xrays:${uid}`] === kept) continue; // refused by the cloud; will not be sent
+    if (kept && refused[`xrays:${uid}`] === kept) { stuck++; continue; } // refused by the cloud; will not be sent
     const n = (size.get(id) || {}).size || 0;
-    if (n > XRAY_SYNC_MAX_CHARS) continue; // can never be sent; counted as too big instead
+    if (n > XRAY_SYNC_MAX_CHARS) { stuck++; continue; } // can never be sent
     count++; bytes += n;
   }
-  return { count, bytes };
+  return { count, bytes, stuck };
 }
 
 function ensureDeviceId() {

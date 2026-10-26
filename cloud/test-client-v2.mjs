@@ -654,6 +654,14 @@ console.log(`client under test: ${path.relative(REPO, SRC) || SRC}`);
   const row = server.DB._sqlite.prepare("SELECT v FROM sync_meta WHERE k = ?").get('backlog:' + db.getSyncMeta().deviceId);
   const b = row ? JSON.parse(row.v) : null;
   check(!!b && b.clinical > 0, 'backlog: a laptop whose uploads keep failing still reports that it has unsent records', JSON.stringify(b));
+  // An image too big for the cloud (an older version's, or a USB import) is reported as held here only.
+  px.failPush = false;
+  const pBig = raw.prepare('SELECT id FROM patients ORDER BY id DESC').get().id;
+  raw.prepare("INSERT INTO xrays (patient_id, station, image_png, note, created_at, updated_at) VALUES (?, 's', ?, 'big', datetime('now'), datetime('now'))").run(pBig, 'data:image/jpeg;base64,' + 'A'.repeat(2000000));
+  await sync(); await sync();
+  const row2 = server.DB._sqlite.prepare("SELECT v FROM sync_meta WHERE k = ?").get('backlog:' + db.getSyncMeta().deviceId);
+  const b2 = row2 ? JSON.parse(row2.v) : null;
+  check(!!b2 && b2.stuck === 1, 'backlog: an image too big for the cloud is reported as held on this laptop only', JSON.stringify(b2));
   await px.close(); await server.close();
 }
 
@@ -1011,8 +1019,32 @@ if (!fs.existsSync(path.join(SRC, 'ipc.js'))) {
   await idle(); await sync();
   const preOld = (await call('event:preflight', { eventId: ev.id, sync: false })).data;
   check((preOld.sync.problems || []).some((p) => /OLD-DESK.*older version/.test(p.text)), 'guard: a station put back on an older version is named, and the screen says why its count may be stale', JSON.stringify(preOld.sync.problems));
+  // A station holding images the cloud can never take: they are on no other laptop.
+  const ago = (min) => new Date(Date.now() - min * 60000).toISOString();
+  answer.peers = [{ device: 'big-1', who: 'BIG-XRAY', clinical: 0, xrays: 0, stuck: 2, bytes: 0, at: ago(1) },
+    { device: 'quiet-1', who: 'QUIET-DESK', clinical: 0, xrays: 0, stuck: 0, bytes: 0, at: ago(40) },
+    { device: 'fresh-1', who: 'FRESH-DESK', clinical: 0, xrays: 0, stuck: 0, bytes: 0, at: ago(2) },
+    { device: 'old-2', who: '', clinical: 0, xrays: 0, stuck: 0, bytes: 0, at: ago(3), older: true }];
+  await idle(); await sync();
+  const preP = (await call('event:preflight', { eventId: ev.id, sync: false })).data;
+  const texts = (preP.sync.problems || []).map((p) => p.text).join(' | ');
+  check(/BIG-XRAY holds 2 record\(s\) too large/.test(texts), 'guard: a station holding images the cloud can never take is named — they are on no other laptop', texts);
+  check(/QUIET-DESK has not been heard from since/.test(texts) && !/FRESH-DESK/.test(texts), 'guard: a station not heard from for a while is named (it may be working offline), one that checked in just now is not', texts);
+  check(/A laptop on an older version of the app cannot report what it has not sent/.test(texts), 'guard: a laptop on an older version is named as unable to report', texts);
   answer.peers = [];
   await idle(); await sync();
+  // A single patient's delete waits while images are arriving, too.
+  const evPD = localClinic('Patient Delete');
+  const pPD = localPatient('DeleteOne');
+  answer.more = true; answer.xMore = true; answer.xLeft = 4;
+  await idle(); await sync();
+  r = await call('patients:delete', pPD.id);
+  check(r.ok === false && /still arriving/.test(r.error), 'guard: deleting a patient waits while x-ray images are still arriving', r.error);
+  answer.more = false; answer.xMore = false; answer.xLeft = 0;
+  await idle(); await sync();
+  r = await call('patients:delete', pPD.id);
+  check(r.ok === true, '...and goes ahead once they are here', r.error || '');
+  void evPD;
   // Deleting a clinic that still has patients waits while records arrive, too.
   const evDel = localClinic('Delete Me');
   localPatient('DeleteMe1');

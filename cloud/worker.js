@@ -119,9 +119,9 @@ const SINCE_MAX = '9007199254740991';
 // x-ray laptop that dropped off the wifi at 3 pm was forgotten by 3:30.)
 // Kept for 60 days while it says something is outstanding (a laptop put away
 // between monthly clinics still holding unsent x-rays is the case that
-// matters); an all-clear is dropped after a day.
+// matters); an all-clear, or an older app's sign of life, after two days.
 const BACKLOG_FRESH_MS = 60 * 24 * 60 * 60 * 1000;
-const BACKLOG_CLEAR_MS = 24 * 60 * 60 * 1000;
+const BACKLOG_CLEAR_MS = 2 * 24 * 60 * 60 * 1000;
 
 // Per isolate. All of these only ever move one way once learned.
 let schemaReady = false;   // tables + migrations done
@@ -269,7 +269,10 @@ async function ensureSchema(db, { heavy = false } = {}) {
 //   committed, so parents stay ahead of children (apps send rows parents first).
 // - A batch that fails commits nothing (a D1 batch is one transaction).
 // ---------------------------------------------------------------------------
-async function writeRows(db, env, rows, origin, { budget } = {}) {
+// opts.atomic: every row in ONE batch, never split — all stored, or none (the
+// public sign-up form: a half-stored sign-up answered as an error made the
+// patient's retry a duplicate patient).
+async function writeRows(db, env, rows, origin, { budget, atomic = false } = {}) {
   const results = new Array(rows.length).fill(null);
   let error = null;
   const todo = [];
@@ -342,6 +345,7 @@ async function writeRows(db, env, rows, origin, { budget } = {}) {
     }
     queue.push(b);
   }
+  if (atomic) queue = pending.length ? [pending] : [];
   let applied = 0;
   let stopped = false;
   let limited = false; // stopped by the request's statement budget, not by an error
@@ -350,7 +354,7 @@ async function writeRows(db, env, rows, origin, { budget } = {}) {
     // Stay inside the request's statement budget: shrink the batch to fit, or
     // stop and leave the rest for the next request.
     const room = cap() - db.used - 1;
-    if (room < 1) { stopped = true; limited = true; queue.unshift(batch); break; }
+    if (room < 1 || (atomic && batch.length > room)) { stopped = true; limited = true; queue.unshift(batch); break; }
     if (batch.length > room) { queue.unshift(batch.slice(room)); batch = batch.slice(0, room); }
     try {
       const outcome = await writeBatch(db, batch, origin);
@@ -365,7 +369,7 @@ async function writeRows(db, env, rows, origin, { budget } = {}) {
         error = errMessage(e);
         stopped = true;
         limited = true;
-      } else if (batch.length > 1) {
+      } else if (batch.length > 1 && !atomic) {
         const mid = Math.ceil(batch.length / 2);
         queue.unshift(batch.slice(mid));
         queue.unshift(batch.slice(0, mid));
@@ -568,6 +572,9 @@ async function handlePush(request, env, db) {
   const origin = wantV2 && typeof body.origin === 'string' && ORIGIN_RE.test(body.origin) ? body.origin : null;
   const { results, applied, error, limited } = await writeRows(db, env, rows, origin);
   const count = (s) => results.reduce((n, r) => n + (r === s ? 1 : 0), 0);
+  const skipped = count('skipped') + count('invalid') + count('too_big');
+  const retry = count('retry');
+  const tooBig = count('too_big');
   // A laptop uploading the old way (put back on an older app, or the kill
   // switch on) cannot keep a "still to send" report current. Its report is
   // kept — that laptop may well still hold unsent x-rays — but counted down by
@@ -577,21 +584,19 @@ async function handlePush(request, env, db) {
     try {
       const key = 'backlog:' + body.device_id;
       const cur = await db.prepare('SELECT v FROM sync_meta WHERE k = ?').bind(key).first();
-      if (cur) {
-        const b = JSON.parse(cur.v) || {};
-        const settledX = rows.reduce((n, row, i) => n + (row && row.entity === 'xray' && (results[i] === 'applied' || results[i] === 'skipped') ? 1 : 0), 0);
-        const sentClinical = rows.some((row, i) => row && row.entity !== 'xray' && results[i] !== 'retry');
-        const next = { ...b, xrays: Math.max(0, (Number(b.xrays) || 0) - settledX), clinical: sentClinical && retry === 0 ? 0 : (Number(b.clinical) || 0), older: true };
-        if (!(next.xrays > 0 || next.clinical > 0)) await db.prepare('DELETE FROM sync_meta WHERE k = ?').bind(key).run();
-        else if (next.xrays !== b.xrays || next.clinical !== b.clinical || !b.older) {
-          await db.prepare('UPDATE sync_meta SET v = ? WHERE k = ?').bind(JSON.stringify(next), key).run();
-        }
+      const b = cur ? (JSON.parse(cur.v) || {}) : { clinical: 0, xrays: 0, bytes: 0, who: '' };
+      const settledX = rows.reduce((n, row, i) => n + (row && row.entity === 'xray' && (results[i] === 'applied' || results[i] === 'skipped') ? 1 : 0), 0);
+      const sentClinical = rows.some((row, i) => row && row.entity !== 'xray' && results[i] !== 'retry');
+      // Kept as an older app's sign of life (it cannot say what it holds), so
+      // Finish can name it; refreshed every few minutes at most.
+      const next = { ...b, xrays: Math.max(0, (Number(b.xrays) || 0) - settledX), clinical: sentClinical && retry === 0 ? 0 : (Number(b.clinical) || 0), older: true };
+      const stale = !(Date.now() - Number(b.at || 0) < BACKLOG_HEARTBEAT_MS);
+      if (!cur || stale || next.xrays !== b.xrays || next.clinical !== b.clinical || !b.older) {
+        if (!cur || stale) next.at = Date.now();
+        await db.prepare('INSERT INTO sync_meta (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v').bind(key, JSON.stringify(next)).run();
       }
     } catch (_e) { /* next time */ }
   }
-  const skipped = count('skipped') + count('invalid') + count('too_big');
-  const retry = count('retry');
-  const tooBig = count('too_big');
 
   if (wantV2) {
     const complete = retry === 0;
@@ -837,7 +842,7 @@ async function handlePullV2(url, env, db) {
     try {
       const b = JSON.parse(r.v);
       const age = Date.now() - Number(b.at || 0);
-      return (b.clinical > 0 || b.xrays > 0) ? !(age < BACKLOG_FRESH_MS) : !(age < BACKLOG_CLEAR_MS);
+      return (b.clinical > 0 || b.xrays > 0 || b.stuck > 0) ? !(age < BACKLOG_FRESH_MS) : !(age < BACKLOG_CLEAR_MS);
     } catch (_e) { return true; }
   }).slice(0, 20);
   if (stale.length) {
@@ -968,19 +973,23 @@ function parseBacklog(raw) {
   try {
     const b = JSON.parse(raw);
     const num = (v) => (Number.isFinite(Number(v)) ? Math.max(0, Math.min(1e9, Math.floor(Number(v)))) : 0);
-    return { clinical: num(b.c), xrays: num(b.x), bytes: num(b.b), who: typeof b.w === 'string' ? b.w.slice(0, 60) : '' };
+    // t: records this laptop holds that the cloud can never take (too big, or
+    // refused) — they exist on that laptop and nowhere else.
+    return { clinical: num(b.c), xrays: num(b.x), bytes: num(b.b), stuck: num(b.t), who: typeof b.w === 'string' ? b.w.slice(0, 60) : '' };
   } catch (_e) { return null; }
 }
 const BACKLOG_HEARTBEAT_MS = 5 * 60 * 1000;
 function backlogChanged(rows, device, b) {
   const r = rows.find((x) => x.k === 'backlog:' + device);
-  if (!r) return b.clinical > 0 || b.xrays > 0; // nothing outstanding and nothing stored: nothing to say
+  if (!r) return true;
   let old;
   try { old = JSON.parse(r.v); } catch (_e) { return true; }
-  if (!old || old.clinical !== b.clinical || old.xrays !== b.xrays || old.bytes !== b.bytes || old.who !== b.who) return true;
-  // Unchanged. A sign of life now and then, but only while there is something
-  // outstanding — an all-clear does not need refreshing.
-  return (b.clinical > 0 || b.xrays > 0) && !(Date.now() - Number(old.at || 0) < BACKLOG_HEARTBEAT_MS);
+  if (!old || old.older || old.clinical !== b.clinical || old.xrays !== b.xrays || old.bytes !== b.bytes || (old.stuck || 0) !== b.stuck || old.who !== b.who) return true;
+  // Unchanged: a sign of life every few minutes, all-clears included. That is
+  // what lets another laptop tell "idle with nothing to send" from "dropped
+  // off the wifi an hour ago and has been taking x-rays since" — the way x-rays
+  // most often pile up unsent. (About 12 writes an hour per laptop.)
+  return !(Date.now() - Number(old.at || 0) < BACKLOG_HEARTBEAT_MS);
 }
 function readPeers(rows, self) {
   const now = Date.now();
@@ -990,9 +999,13 @@ function readPeers(rows, self) {
     if (!device || device === self) continue;
     let b;
     try { b = JSON.parse(r.v); } catch (_e) { continue; }
-    if (!b || !(now - Number(b.at || 0) < BACKLOG_FRESH_MS)) continue;
-    if (!(b.clinical > 0 || b.xrays > 0)) continue;
-    out.push({ device, who: b.who || '', clinical: b.clinical || 0, xrays: b.xrays || 0, bytes: b.bytes || 0, at: new Date(Number(b.at)).toISOString(), ...(b.older ? { older: true } : {}) });
+    if (!b) continue;
+    const outstanding = b.clinical > 0 || b.xrays > 0 || b.stuck > 0;
+    // Outstanding: believed for 60 days. An all-clear (or an older app that
+    // cannot report) is still returned for two days, with when it was last
+    // heard from, so a laptop that has gone quiet can be named.
+    if (!(now - Number(b.at || 0) < (outstanding ? BACKLOG_FRESH_MS : BACKLOG_CLEAR_MS))) continue;
+    out.push({ device, who: b.who || '', clinical: b.clinical || 0, xrays: b.xrays || 0, stuck: b.stuck || 0, bytes: b.bytes || 0, at: new Date(Number(b.at)).toISOString(), ...(b.older ? { older: true } : {}) });
   }
   return out;
 }
@@ -1203,7 +1216,7 @@ async function handleCheckinPost(eventUid, request, env, db) {
   const out = await writeRows(db || meter(env.DB), env, rows.map((r) => ({
     uid: r.uid, entity: r.entity, event_uid: eventUid, patient_uid: r.patient_uid,
     deleted: 0, updated_at: r.stamp, data: r.data,
-  })), null);
+  })), null, { atomic: true });
   if (out.results.some((x) => x !== 'applied' && x !== 'skipped')) {
     throw new Error(out.error || 'The sign-up could not be saved. Please try again.');
   }

@@ -268,6 +268,10 @@ function register(getMainWindow) {
   //     there. The go-ahead names those problems; one that appears or grows
   //     after the confirmation is refused, and shown, before anything goes.
   const eventOf = (eventId) => Number(eventId || db.getSetting('active_event_id')) || null;
+  // A station that reported nothing outstanding but has not been heard from
+  // for this long may be working offline (every online station checks in about
+  // every five minutes).
+  const PEER_QUIET_MS = 15 * 60 * 1000;
   const syncProblems = (c, { evId, lastSync } = {}) => {
     const out = [];
     const add = (key, text) => out.push({ key, text });
@@ -292,7 +296,20 @@ function register(getMainWindow) {
       // A report can be old: the station that matters most is one that went
       // offline holding unsent x-rays, and it cannot update its report.
       const when = p.at ? new Date(p.at).toLocaleString() : '';
-      add(`peer:${p.device}:${p.xrays || 0}:${p.clinical || 0}`, `${p.who || 'another station'} still has ${p.xrays ? `${p.xrays} x-ray image(s)` : 'records'} it has not sent${when ? ` (as of ${when}${p.older ? '; it has since been put back on an older version of the app, which cannot report' : ''})` : ''}`);
+      const who = p.who || (p.older ? 'A laptop on an older version of the app' : 'another station');
+      if (p.xrays > 0 || p.clinical > 0) {
+        add(`peer:${p.device}:${p.xrays || 0}:${p.clinical || 0}:${p.stuck || 0}`, `${who} still has ${p.xrays ? `${p.xrays} x-ray image(s)` : 'records'} it has not sent${when ? ` (as of ${when}${p.older ? '; it has since been put back on an older version of the app, which cannot report' : ''})` : ''}`);
+      }
+      if (p.stuck > 0) {
+        add(`stuck:${p.device}:${p.stuck}`, `${who} holds ${p.stuck} record(s) too large for the clinic cloud (as of ${when}) — they are on no other laptop, so export on that laptop first`);
+      } else if (!(p.xrays > 0 || p.clinical > 0)) {
+        // Nothing outstanding when last heard from — but if that was a while
+        // ago, it may have been working offline since: the commonest way x-rays
+        // pile up unsent, and the one no report can show.
+        const quiet = p.at && Date.now() - Date.parse(p.at) > PEER_QUIET_MS;
+        if (p.older) add(`older:${p.device}`, `${p.who ? `${p.who} runs an older version of the app, which` : 'A laptop on an older version of the app'} cannot report what it has not sent (last heard from ${when})`);
+        else if (quiet) add(`quiet:${p.device}`, `${who} has not been heard from since ${when} — anything it recorded after that is not here`);
+      }
     }
     return out;
   };
@@ -304,7 +321,9 @@ function register(getMainWindow) {
       const [k, ...w] = String(a).split(':');
       if (k !== kind) return false;
       if (kind === 'orphans') return Number(v[0]) <= Number(w[0]) && Number(v[1]) <= Number(w[1]);
-      if (kind === 'peer') return v[0] === w[0] && Number(v[1]) <= Number(w[1]) && Number(v[2]) <= Number(w[2]);
+      if (kind === 'peer') return v[0] === w[0] && Number(v[1]) <= Number(w[1]) && Number(v[2]) <= Number(w[2]) && Number(v[3] || 0) <= Number(w[3] || 0);
+      if (kind === 'stuck') return v[0] === w[0] && Number(v[1]) <= Number(w[1]);
+      if (kind === 'quiet' || kind === 'older') return v[0] === w[0];
       return true;
     });
   };
@@ -416,7 +435,16 @@ function register(getMainWindow) {
   });
 
   /* ---- Patient delete (admin) ---- */
-  handle('patients:delete', (id) => db.deletePatient(currentUser, id));
+  // A patient deleted while their x-rays are still downloading here leaves the
+  // ones not yet here alive in the cloud for good (only what is here gets a
+  // deletion), and deletes them on the laptop that took them. So wait.
+  handle('patients:delete', (id) => {
+    const c = cloud.syncCompleteness();
+    if (c.online && c.reachable && c.behind && c.imagesBehind > 0) {
+      throw new Error('X-ray images are still arriving on this laptop, and some may be this patient\'s. Wait until the cloud badge stops saying “catching up”, then delete.');
+    }
+    return db.deletePatient(currentUser, id);
+  });
 
   /* ---- Patients ---- */
   // Check-in is the patient-facing intake: a dedicated kiosk (no signed-in

@@ -205,11 +205,11 @@ async function main() {
     const putReport = (k, x, days) => e.DB._sqlite.prepare('INSERT INTO sync_meta (k, v) VALUES (?, ?)').run(k, JSON.stringify({ clinical: 0, xrays: x, bytes: 1, who: k, at: Date.now() - days * 86400000 }));
     putReport('backlog:stored-laptop', 4, 10);   // put away between clinics, holding 4 x-rays
     putReport('backlog:long-gone', 4, 61);
-    putReport('backlog:all-clear', 0, 2);
+    putReport('backlog:all-clear', 0, 3);
     const seenNow = (await pull2(e, lanes, { max_bytes: 65536 })).data;
     const has = (k) => !!e.DB._sqlite.prepare('SELECT 1 FROM sync_meta WHERE k = ?').get(k);
     check('reports: a laptop put away for 10 days still holding x-rays is still reported', has('backlog:stored-laptop') && seenNow.peers.some((p) => p.device === 'stored-laptop'));
-    check('reports: ...one silent for over 60 days, and an all-clear over a day old, are deleted', !has('backlog:long-gone') && !has('backlog:all-clear'));
+    check('reports: ...one silent for over 60 days, and an all-clear over two days old, are deleted', !has('backlog:long-gone') && !has('backlog:all-clear'));
     // An older app's catch-up plans only a few dozen images ahead too.
     const sentBinds = [];
     e.DB.setFaults({ beforeBatch: (sqls, _api, binds) => { sqls.forEach((q, i) => { if (/idx_lane_x/.test(q)) sentBinds.push(binds[i]); }); } });
@@ -424,6 +424,31 @@ async function main() {
       `before: ${capped.applied}/120, after: ${freed.applied}/120`);
   }
 
+  // A sign-up is stored whole or not at all, even when D1 fails part-way.
+  {
+    const e = await mkEnv();
+    await push(e, [R('event', 'evc', { name: 'Signups', prereg_open: 1, active: 1 })]);
+    // A real signature, and the fields the form requires (from the worker suite).
+    const SIG = /const SIG = '([^']+)'/.exec(fs.readFileSync(path.join(HERE, 'test-worker.mjs'), 'utf8'))[1];
+    const form = {
+      phone: '5035550142', emergency_name: 'Kin Contact', emergency_phone: '5550001111', visit_type: 'filling',
+      allergies: ['none'], conditions: ['none'], medications_none: true, under_treatment: 'no', hospitalized: 'no', tobacco: 'no', pregnancy: 'no',
+      gum_bleeding: 'no', sores: 'no', jaw_injury: 'no', grinding: 'no', post_extraction_bleeding: 'no', ortho: 'no',
+      first_name: 'Ana', last_name: 'Ruiz', dob: '1990-02-03', gender: 'female', language: 'en', address: '1 Main St', city: 'Sandy', state: 'OR',
+      reason: 'tooth hurts', consent_agree: true, signer_name: 'Ana Ruiz', relationship: 'Self', signature_png: SIG,
+    };
+    const patients = () => [...table(e).values()].filter((r) => r.entity === 'patient').length;
+    const ok = await call(e, 'POST', '/checkin/evc', form);
+    check('(setup) the sign-up form is accepted when nothing fails', ok.status === 200, `HTTP ${ok.status} ${ok.text.slice(0, 80)}`);
+    const before = patients();
+    // The first batch fails, its first half then succeeds, the second half fails.
+    let batches = 0;
+    e.DB.setFaults({ beforeBatch: () => { batches++; if (batches === 1 || batches === 3) throw new Error('D1_ERROR: D1 DB is overloaded. Too many requests queued.'); } });
+    const res = await call(e, 'POST', '/checkin/evc', { ...form, first_name: 'Bea' });
+    e.DB.setFaults({ beforeBatch: null });
+    check('sign-up: when D1 fails part-way, nothing of the sign-up is stored (so a retry cannot make a duplicate)', res.status >= 400 && patients() === before, `HTTP ${res.status}, patients ${before} -> ${patients()}`);
+  }
+
   // ------------------------------------------------------------------ 10
   {
     const e = await mkEnv();
@@ -498,10 +523,17 @@ async function main() {
     await push(e, [R('event', 'ev1', { name: 'C' })]);
     await pull2(e, { e: 0, p: 0, k: 0, x: 0 }, { device: 'laptop-A', backlog: { c: 2, x: 37, b: 15000000, w: 'Dr Rivera' } });
     const b = (await pull2(e, { e: 0, p: 0, k: 0, x: 0 }, { device: 'laptop-B', backlog: { c: 0, x: 0, b: 0 } })).data;
-    check('backlog: every laptop is told what another still has to send', b.peers.length === 1 && b.peers[0].device === 'laptop-A' && b.peers[0].xrays === 37 && b.peers[0].who === 'Dr Rivera');
+    const pa = b.peers.find((p) => p.device === 'laptop-A');
+    check('backlog: every laptop is told what another still has to send', !!pa && pa.xrays === 37 && pa.who === 'Dr Rivera', JSON.stringify(b.peers));
     const a = (await pull2(e, { e: 0, p: 0, k: 0, x: 0 }, { device: 'laptop-A', backlog: { c: 0, x: 0, b: 0 } })).data;
     const b2 = (await pull2(e, { e: 0, p: 0, k: 0, x: 0 }, { device: 'laptop-B' })).data;
-    check('...a laptop is never told about itself, and a cleared backlog disappears', a.peers.every((p) => p.device !== 'laptop-A') && b2.peers.length === 0);
+    const outstanding = (ps) => ps.filter((p) => p.clinical > 0 || p.xrays > 0 || p.stuck > 0);
+    check('...a laptop is never told about itself, and a cleared backlog no longer counts as outstanding', a.peers.every((p) => p.device !== 'laptop-A') && outstanding(b2.peers).length === 0);
+    check('...though the laptop is still listed, with when it was last heard from (so one that goes quiet can be named)', b2.peers.some((p) => p.device === 'laptop-A' && p.xrays === 0 && typeof p.at === 'string'));
+    // Records a laptop can never send (too big for the cloud) are reported too: they exist nowhere else.
+    await pull2(e, { e: 0, p: 0, k: 0, x: 0 }, { device: 'laptop-S', backlog: { c: 0, x: 0, b: 0, t: 2, w: 'S' } });
+    const st = (await pull2(e, { e: 0, p: 0, k: 0, x: 0 }, { device: 'laptop-B', backlog: { c: 0, x: 0, b: 0 } })).data.peers.find((p) => p.device === 'laptop-S');
+    check('backlog: a laptop holding records the cloud can never take reports them, as outstanding', !!st && st.stuck === 2, JSON.stringify(st));
     // A laptop that goes back to uploading the old way (downgraded) has its report dropped.
     await pull2(e, { e: 0, p: 0, k: 0, x: 0 }, { device: 'laptop-D', backlog: { c: 0, x: 3, b: 9, w: 'D' } });
     await call(e, 'POST', '/v1/push', { device_id: 'laptop-D', rows: [R('xray', 'xd1', { image_png: img(5) })] });
@@ -510,7 +542,15 @@ async function main() {
     check('backlog: a laptop downgraded while holding x-rays stays reported, counted down by what it sends', !!d && d.xrays === 2 && d.older === true, JSON.stringify(d));
     await call(e, 'POST', '/v1/push', { device_id: 'laptop-D', rows: [R('xray', 'xd2', { image_png: img(5) }), R('xray', 'xd3', { image_png: img(5) })] });
     const afterOld = (await pull2(e, { e: 0, p: 0, k: 0, x: 0 }, { device: 'laptop-B', backlog: { c: 0, x: 0, b: 0 } })).data;
-    check('backlog: ...and dropped once it has sent them', !afterOld.peers.some((p) => p.device === 'laptop-D'));
+    const dGone = afterOld.peers.find((p) => p.device === 'laptop-D');
+    check('backlog: ...and counted down to nothing once it has sent them (still listed as an older app that cannot report)', !!dGone && dGone.xrays === 0 && dGone.older === true, JSON.stringify(dGone));
+    await call(e, 'POST', '/v1/push', { device_id: 'laptop-E', rows: [R('patient', 'pe1', { n: 1 }, { event_uid: 'ev1' })] });
+    const withE = (await pull2(e, { e: 0, p: 0, k: 0, x: 0 }, { device: 'laptop-B', backlog: { c: 0, x: 0, b: 0 } })).data;
+    check('backlog: a laptop on an older app is known to the others from its uploads', withE.peers.some((p) => p.device === 'laptop-E' && p.older === true));
+    await pull2(e, { e: 0, p: 0, k: 0, x: 0 }, { device: 'laptop-F', backlog: { c: 1, x: 2, b: 9, w: 'F' } });
+    await call(e, 'POST', '/v1/push', { device_id: 'laptop-F', rows: [R('patient', 'pf1', { n: 1 }, { event_uid: 'ev1' }), R('xray', 'xf1', { image_png: img(5) })] });
+    const f = (await pull2(e, { e: 0, p: 0, k: 0, x: 0 }, { device: 'laptop-B', backlog: { c: 0, x: 0, b: 0 } })).data.peers.find((p) => p.device === 'laptop-F');
+    check('backlog: ...and an older app\'s upload of chart rows and an x-ray counts its report down too', !!f && f.xrays === 1 && f.clinical === 0, JSON.stringify(f));
     // Written only when it changes: an unchanged report is not rewritten on every pull.
     const at = () => { const r = e.DB._sqlite.prepare("SELECT v FROM sync_meta WHERE k = 'backlog:laptop-C'").get(); return r ? JSON.parse(r.v).at : null; };
     await pull2(e, { e: 0, p: 0, k: 0, x: 0 }, { device: 'laptop-C', backlog: { c: 0, x: 4, b: 900, w: 'C' } });
