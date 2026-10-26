@@ -5,6 +5,7 @@
 // Run: node test-worker.mjs   (exits non-zero on any failed check)
 
 import worker from './worker.js';
+import { makeD1 } from './d1-sqlite.mjs';
 
 const CLINIC_KEY = 'super-secret-clinic-key';
 
@@ -25,116 +26,19 @@ function check(name, cond) {
 }
 
 // ---------------------------------------------------------------------------
-// Tiny fake D1 — recognizes exactly the SQL that worker.js issues.
+// The database: REAL SQLite behind a D1-shaped API (cloud/d1-sqlite.mjs).
+// This used to be a fake that pattern-matched the exact SQL strings the worker
+// sent, so it could agree with SQL the real engine would reject, and every new
+// query meant teaching the fake. Now the worker's actual SQL runs.
+//
+// The worker remembers "schema created" for its lifetime (correct in
+// production: one database per deployment), so each fresh database here gets a
+// fresh copy of the worker module to go with it.
 // ---------------------------------------------------------------------------
-function makeFakeD1() {
-  const store = new Map(); // uid -> row object
-  let seq = 0; // the server's delivery counter (sync_seq table)
-
-  function prepare(sql) {
-    return {
-      _sql: sql,
-      _binds: [],
-      bind(...args) {
-        this._binds = args;
-        return this;
-      },
-      async first() {
-        const s = this._sql;
-        if (/SELECT updated_at(, deleted)? FROM sync_rows WHERE uid = \?/.test(s)) {
-          const uid = this._binds[0];
-          const row = store.get(uid);
-          return row ? { updated_at: row.updated_at, deleted: row.deleted ? 1 : 0 } : null;
-        }
-        // Pre-registration: look up an event row by uid. Matched loosely on the
-        // shape of the query rather than its exact text, so a change to the
-        // SELECT list does not silently turn every checkin test into a 404.
-        if (/FROM sync_rows WHERE uid = \? AND entity = 'event'/.test(s)) {
-          const uid = this._binds[0];
-          const row = store.get(uid);
-          if (!row || row.entity !== 'event') return null;
-          return { data: row.data, deleted: row.deleted ? 1 : 0 };
-        }
-        // v1.5.0 delivery counter: reserve the next sequence number.
-        if (/INSERT INTO sync_seq .*ON CONFLICT\(id\) DO UPDATE SET v = v \+ 1 RETURNING v/.test(s)) {
-          seq += 1;
-          return { v: seq };
-        }
-        throw new Error('fake D1: unsupported first() SQL: ' + s);
-      },
-      async run() {
-        const s = this._sql;
-        // Self-initializing schema DDL (CREATE TABLE/INDEX IF NOT EXISTS) — the
-        // in-memory store needs no schema, so these are no-ops. The v1.5.0
-        // migrations (ADD COLUMN / backfill / counter seed) are likewise a no-op
-        // here: the in-memory rows carry seq directly.
-        if (/^\s*CREATE\s+(TABLE|INDEX)/i.test(s)) {
-          return { success: true, meta: { changes: 0 } };
-        }
-        if (/^\s*ALTER TABLE sync_rows ADD COLUMN seq/.test(s)) {
-          return { success: true, meta: { changes: 0 } };
-        }
-        if (/^\s*UPDATE sync_rows SET seq = rowid/.test(s)) {
-          return { success: true, meta: { changes: 0 } };
-        }
-        if (/^\s*INSERT INTO sync_seq \(id, v\) SELECT 1/.test(s)) {
-          return { success: true, meta: { changes: 0 } };
-        }
-        if (/INSERT OR REPLACE INTO sync_rows/.test(s)) {
-          const [uid, entity, event_uid, patient_uid, deleted, updated_at, data, rowSeq] =
-            this._binds;
-          store.set(uid, {
-            uid,
-            entity,
-            event_uid,
-            patient_uid,
-            deleted,
-            updated_at,
-            data,
-            seq: rowSeq != null ? rowSeq : null,
-          });
-          return { success: true, meta: { changes: 1 } };
-        }
-        throw new Error('fake D1: unsupported run() SQL: ' + s);
-      },
-      async all() {
-        const s = this._sql;
-        const bySeq = /IFNULL\(seq, 0\) > \?/.test(s);
-        if (bySeq || /SELECT .* FROM sync_rows WHERE updated_at > \?/.test(s)) {
-          const hasEvent = /event_uid = \?/.test(s);
-          let since, eventUid, limit;
-          if (hasEvent) {
-            [since, eventUid, limit] = this._binds;
-          } else {
-            [since, limit] = this._binds;
-          }
-          let rows = Array.from(store.values()).filter((r) =>
-            bySeq
-              ? Number(r.seq || 0) > Number(since)
-              : String(r.updated_at) > String(since)
-          );
-          if (hasEvent) rows = rows.filter((r) => r.event_uid === eventUid);
-          const key = (r) => (bySeq ? Number(r.seq || 0) : r.updated_at);
-          rows.sort((a, b) => {
-            const ka = key(a), kb = key(b);
-            if (ka < kb) return -1;
-            if (ka > kb) return 1;
-            return a.uid < b.uid ? -1 : a.uid > b.uid ? 1 : 0;
-          });
-          rows = rows.slice(0, limit);
-          return { results: rows.map((r) => ({ ...r })) };
-        }
-        if (/FROM sync_rows WHERE entity = 'event'/.test(s)) {
-          const rows = Array.from(store.values()).filter((r) => r.entity === 'event')
-            .map((r) => ({ uid: r.uid, deleted: r.deleted ? 1 : 0, updated_at: r.updated_at, data: r.data }));
-          return { results: rows };
-        }
-        throw new Error('fake D1: unsupported all() SQL: ' + s);
-      },
-    };
-  }
-
-  return { prepare, _store: store };
+let workerInstances = 0;
+async function freshEnv(extra = {}) {
+  const mod = await import('./worker.js?instance=' + (++workerInstances));
+  return { CLINIC_KEY, DB: makeD1(), __worker: mod.default, ...extra };
 }
 
 // ---------------------------------------------------------------------------
@@ -149,7 +53,8 @@ async function call(env, method, path, { auth, body } = {}) {
     init.body = JSON.stringify(body);
   }
   const req = new Request('https://sync.example.com' + path, init);
-  const res = await worker.fetch(req, env, {});
+  if (env.DB && env.DB.newRequest) env.DB.newRequest();
+  const res = await (env.__worker || worker).fetch(req, env, {});
   let data = null;
   try {
     data = await res.json();
@@ -163,7 +68,7 @@ async function call(env, method, path, { auth, body } = {}) {
 // Tests
 // ---------------------------------------------------------------------------
 async function main() {
-  const env = { CLINIC_KEY, DB: makeFakeD1() };
+  const env = await freshEnv();
 
   // --- /health (no auth) ---
   const h = await call(env, 'GET', '/health');
@@ -615,7 +520,7 @@ async function main() {
   // offline check-in, or anything written by a laptop whose clock ran slow — fell
   // below another laptop's cursor and was skipped forever.
   {
-    const env2 = { CLINIC_KEY, DB: makeFakeD1() };
+    const env2 = await freshEnv();
     const T = (min, dev) => new Date(Date.parse('2026-07-30T17:00:00.000Z') + min * 60000).toISOString() + '@' + dev;
     const pushRows = (device, rows) => call(env2, 'POST', '/v1/push', { auth: CLINIC_KEY, body: { device_id: device, rows } });
     const pullFrom = (since) => call(env2, 'GET', '/v1/pull?since=' + encodeURIComponent(since) + '&limit=400', { auth: CLINIC_KEY });
@@ -711,7 +616,7 @@ async function main() {
   // back over the tombstone, clearing `deleted` and resurrecting the patient on
   // every station — as a shell, because the chart rows stayed deleted.
   {
-    const envD = { CLINIC_KEY, DB: makeFakeD1() };
+    const envD = await freshEnv();
     const push = (rows) => call(envD, 'POST', '/v1/push', { auth: CLINIC_KEY, body: { device_id: 'd', rows } });
     const pull = () => call(envD, 'GET', '/v1/pull?since=0&limit=100', { auth: CLINIC_KEY });
     const live = (stamp, extra = {}) => ({
