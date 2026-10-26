@@ -396,9 +396,13 @@ SCENARIOS.swap = async () => {
 };
 
 // ---------------------------------------------------------------------------
-const ORDER = ['baseline', 'compat', 'xraylaptop', 'catchup', 'catchup5', 'poison', 'orphans', 'echo', 'freeplan', 'swap'];
+const ORDER = ['baseline', 'compat', 'xraylaptop', 'catchup', 'catchup5', 'poison', 'orphans', 'orphansOld', 'echo', 'freeplan', 'swap'];
 SCENARIOS.catchup5 = (o = {}) => SCENARIOS.catchup({ ...o, down: 5, up: 2, targetCycles: 3 });
-const chosen = WANT.length ? WANT : (QUICK ? ['baseline', 'compat', 'xraylaptop', 'catchup', 'poison', 'orphans', 'echo', 'swap'] : ORDER);
+// With parents first, the v1.14 worker hands this catch-up out with no orphans
+// at all; the old one, which clinics run until they paste the new one, still
+// does — so the failed-page case is exercised there too.
+SCENARIOS.orphansOld = (o = {}) => SCENARIOS.orphans({ ...o, worker: 'worker-1.11.0' });
+const chosen = WANT.length ? WANT : (QUICK ? ['baseline', 'compat', 'xraylaptop', 'catchup', 'poison', 'orphans', 'orphansOld', 'echo', 'swap'] : ORDER);
 const started = Date.now();
 for (const s of chosen) {
   if (!SCENARIOS[s]) { console.error('unknown scenario ' + s); process.exit(2); }

@@ -3704,10 +3704,14 @@ function setSyncMeta(patch) {
 // everything" when a station is missing patients the others can see. Applying
 // rows is idempotent (last-write-wins), so nothing local is lost or duplicated.
 //
-// v1.14.0: it also clears the lane cursors, the server identity and the list of
-// refused rows, and bumps the sync generation — all in one transaction — so a
-// cycle already in flight against the old cursor cannot save its place back
-// over the reset when it finishes (see commitPull).
+// v1.14.0: it also clears the lane cursors and the list of refused rows, and
+// bumps the sync generation — all in one transaction — so a cycle already in
+// flight against the old cursor cannot save its place back over the reset when
+// it finishes (see commitPull). It does NOT forget which database this laptop
+// syncs with: that names the database its "already sent" marks refer to, and
+// forgetting it meant a database replaced behind the address after a Re-sync
+// was never noticed — this laptop's records already sent to the old one were
+// never sent to the new one. Only startOver forgets it.
 function resetSyncCursor() {
   db.transaction(() => {
     setSetting('cloud_cursor', '');
@@ -3715,7 +3719,6 @@ function resetSyncCursor() {
     db.exec('DELETE FROM sync_pending');
     lastMirror = '[]';
     setSetting('cloud_lanes', '');
-    setSetting('cloud_server_instance', '');
     setSetting('cloud_refused', '');
     setSetting('cloud_sync_state', '');
     setSetting('cloud_sync_gen', String(syncGen() + 1));
@@ -3982,7 +3985,15 @@ function eventUid(eventId) { return eventId ? uidOf('events', eventId) : null; }
 // one transaction. As two, a laptop killed between them (marking every row to
 // send is the slow part) came back reset but with nothing marked, and never
 // sent its records to the new database.
-function startOver() { db.transaction(() => { resetSyncCursor(); markAllDirty(); })(); }
+function startOver() {
+  db.transaction(() => {
+    resetSyncCursor();
+    markAllDirty();
+    // Everything is marked to send again, so the database it was sent to no
+    // longer matters; the next page records the new one.
+    setSetting('cloud_server_instance', '');
+  })();
+}
 
 function close() {
   if (db) db.close();

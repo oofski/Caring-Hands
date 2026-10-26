@@ -181,12 +181,32 @@ console.log(`client under test: ${path.relative(REPO, SRC) || SRC}`);
   const pts = Array.from({ length: 5200 }, (_, i) => ({ uid: uuid(), first: 'Late' + i }));
   await peer(server, pts.map((p) => triageRow(p.uid)));
   await freshLaptop(server.url);
-  await syncUntil(() => false, 3);
+  server.failNextPulls(1, null, 1); // the SECOND page fails, with the first page's rows already waiting
+  await syncUntil(() => false, 4);
   const parked = (db.getSyncPending() || []).length;
   check(parked === 5200, 'orphans: 5200 rows waiting for their patient are all kept (v1.13 kept 5000 and dropped the rest)', `${parked} kept`);
   await peer(server, pts.map((p) => patientRow(ev, p.uid, p.first)));
   await syncUntil(() => n('SELECT COUNT(*) AS n FROM triage') === 5200, 10);
   check(n('SELECT COUNT(*) AS n FROM triage') === 5200, '...and when the patients arrive, every one of them gets their vitals', `${n('SELECT COUNT(*) AS n FROM triage')}/5200`);
+  await server.close();
+}
+
+// ===========================================================================
+// 2b. The same against the worker clinics run today (the old protocol).
+// ===========================================================================
+{
+  const server = await startServer({ workerPath: OLD_WORKER });
+  const ev = uuid();
+  await peer(server, [eventRow(ev)]);
+  const pts = Array.from({ length: 1500 }, (_, i) => ({ uid: uuid(), first: 'Old' + i }));
+  await peer(server, pts.map((p) => triageRow(p.uid)));
+  await freshLaptop(server.url);
+  server.failNextPulls(1, null, 2); // the third request (probe, page, then this) fails
+  await syncUntil(() => false, 6);
+  check((db.getSyncPending() || []).length === 1500, 'orphans (old protocol): a failed page does not lose the rows already waiting', `${(db.getSyncPending() || []).length} kept`);
+  await peer(server, pts.map((p) => patientRow(ev, p.uid, p.first)));
+  await syncUntil(() => n('SELECT COUNT(*) AS n FROM triage') === 1500, 10);
+  check(n('SELECT COUNT(*) AS n FROM triage') === 1500, '...and every one of them is applied when its patient arrives', `${n('SELECT COUNT(*) AS n FROM triage')}/1500`);
   await server.close();
 }
 
@@ -289,6 +309,26 @@ console.log(`client under test: ${path.relative(REPO, SRC) || SRC}`);
   await syncUntil(() => !!E.serverPatient('Mover3'), 10);
   check(!!E.serverPatient('Mover3'), '...and the same for an empty one (this laptop’s place is past its end)');
   await px.close(); await A.close(); await B.close(); await E.close();
+}
+
+// ===========================================================================
+// 6b. "Re-sync everything", and THEN the database behind the address is replaced.
+// ===========================================================================
+{
+  const A = await startServer({ workerPath: CUR_WORKER });
+  const B = await startServer({ workerPath: CUR_WORKER });
+  const px = await proxy(A.url);
+  await freshLaptop(px.url);
+  localClinic('Resync Then Swap');
+  for (let i = 0; i < 5; i++) localPatient('Solo' + i);
+  await syncUntil(() => db.collectSyncRows(100000).rows.length === 0, 6);
+  check(!!A.serverPatient('Solo4'), '(setup) on the first database');
+  px.target = 'http://127.0.0.1:9'; // the laptop is offline...
+  await cloud.resyncAll(); // ...when someone presses Re-sync everything
+  px.target = B.url; // and the database behind the address is a new one
+  await syncUntil(() => !!B.serverPatient('Solo4'), 8);
+  check(!!B.serverPatient('Solo4'), 'Re-sync then a new database: this laptop\'s records still reach it (Re-sync used to forget which database they had been sent to)');
+  await px.close(); await A.close(); await B.close();
 }
 
 // ===========================================================================
@@ -402,19 +442,21 @@ console.log(`client under test: ${path.relative(REPO, SRC) || SRC}`);
   const server = await startServer({ workerPath: CUR_WORKER });
   const c = clinic(10);
   await peer(server, c.rows);
+  await peer(server, Array.from({ length: 6 }, (_, j) => xrayRow(c.pts[j % 3].uid, 60 * 1024)));
   await freshLaptop(server.url);
-  await syncUntil(() => false, 2);
+  await syncUntil(() => false, 3);
   // The state of a laptop that synced the old way, upgraded, and had once been
   // stepped past one patient's vitals by the old server's race.
   const head = Number(db.getSyncMeta().cursor || 0) || 50;
   raw.prepare('DELETE FROM triage WHERE patient_id = (SELECT id FROM patients WHERE first_name = ?)').run('Peer07');
   db.setSetting('cloud_lanes', ''); db.setSetting('cloud_lanes_heal', '');
   db.setSyncMeta({ cursor: String(head) });
+  const healFrom = server.log.length;
   await sync();
+  const imagesAgain = server.log.slice(healFrom).filter((e) => e.path === '/v1/pull' && /xray/.test(e.entities || '')).length;
   check(n('SELECT COUNT(*) AS n FROM triage t JOIN patients p ON p.id = t.patient_id WHERE p.first_name = ?', 'Peer07') === 1,
     'heal: on the first sync in lanes, clinical rows a laptop had been stepped past are read again', JSON.stringify({ head, lanes: db.getSetting('cloud_lanes'), err: db.getSyncMeta().lastError }));
-  const lanesAfter = JSON.parse(db.getSetting('cloud_lanes') || '{}');
-  check(Number(lanesAfter.x) >= head, '...without re-downloading the images', JSON.stringify(lanesAfter));
+  check(imagesAgain === 0, '...without re-downloading the images', `${imagesAgain} page(s) carried x-rays again`);
   await server.close();
 }
 
@@ -508,6 +550,12 @@ console.log(`client under test: ${path.relative(REPO, SRC) || SRC}`);
   check(/again/.test(msg), '...and finishing is refused until then', msg.slice(0, 80));
   db.recordClinicExport(ev.id, { patients: 1, xlsxPath: '/tmp/y.xlsx', backupPath: '/tmp/y.chbak.json' });
   check(db.finishPreflight(ev.id).needs_export === false, '...which a fresh export clears');
+  // A check-out made on another laptop re-sends only the patient row.
+  const evUid = raw.prepare('SELECT uid FROM events WHERE id = ?').get(ev.id).uid;
+  await peer(server, [patientRow(evUid, pu, 'Exported', 'dismissed', '2099-01-01T00:00:00.000Z@desk')]);
+  await sync();
+  const pre2 = db.finishPreflight(ev.id);
+  check(pre2.needs_export === true && pre2.arrivals_since_export === 1, 'export: so does a check-out made on another laptop (the patient row alone)', JSON.stringify({ needs: pre2.needs_export, since: pre2.arrivals_since_export }));
   await server.close();
 }
 
@@ -520,6 +568,8 @@ console.log(`client under test: ${path.relative(REPO, SRC) || SRC}`);
   const c = clinic(300);
   await peer(A, c.rows);
   await freshLaptop(A.url);
+  localClinic('Own Records');
+  for (let i = 0; i < 20; i++) localPatient('Own' + i); // this laptop's own, still to send
   A.DB.setLimits({ latencyMs: 120 });
   const flying = cloud.syncOnce();
   await sleep(40);
@@ -528,10 +578,14 @@ console.log(`client under test: ${path.relative(REPO, SRC) || SRC}`);
   await flying; await idle();
   A.DB.setLimits({ latencyMs: 0 });
   await syncUntil(() => false, 4);
+  await syncUntil(() => db.collectSyncRows(100000).rows.length === 0, 6);
   const here = raw.prepare("SELECT uid FROM patients WHERE last_name = 'Peer'").all().map((r) => r.uid);
   const onB = new Set(B.DB._store.keys());
   const stranded = here.filter((u) => !onB.has(u));
   check(stranded.length === 0, 'address change mid-sync: every patient this laptop holds reaches the new server (none marked sent from the old one)', `${here.length} here, ${stranded.length} not on the new server`);
+  const own = raw.prepare("SELECT uid FROM patients WHERE last_name = 'Local'").all().map((r) => r.uid);
+  const ownMissing = own.filter((u) => !onB.has(u));
+  check(own.length === 20 && ownMissing.length === 0, '...including this laptop\'s own records, whose upload to the old server was in flight', `${own.length - ownMissing.length}/${own.length} on the new server`);
   await A.close(); await B.close();
 }
 
@@ -742,13 +796,16 @@ console.log(`client under test: ${path.relative(REPO, SRC) || SRC}`);
 // ===========================================================================
 // 15. The Finish / Delete guard, in the real ipc.js (Electron stood in for).
 // ===========================================================================
-if (SRC !== path.join(REPO, 'src/main')) {
-  console.log('SKIP the Finish guard lives in ipc.js, which is only tested on this checkout (see the mutation run in the release notes)');
+if (!fs.existsSync(path.join(SRC, 'ipc.js'))) {
+  console.log('SKIP the Finish guard lives in ipc.js, which this CLIENT_SRC does not have (copy all of src/main to test a copy of it)');
 } else {
   const Module = require('module');
   const handlers = {};
+  let dialogHook = null;
+  const exportDir = fs.mkdtempSync(path.join(os.tmpdir(), 'chv2-export-'));
   const fakeElectron = {
-    ipcMain: { handle: (ch, fn) => { handlers[ch] = fn; } }, dialog: {}, shell: {},
+    ipcMain: { handle: (ch, fn) => { handlers[ch] = fn; } }, shell: {},
+    dialog: { showSaveDialog: async () => { if (dialogHook) await dialogHook(); return { canceled: false, filePath: path.join(exportDir, 'clinic.xlsx') }; } },
     BrowserWindow: { getAllWindows: () => [] },
     app: { getVersion: () => '1.14.0', getPath: () => os.tmpdir(), isPackaged: false, on() {}, whenReady: () => Promise.resolve() },
   };
@@ -800,6 +857,11 @@ if (SRC !== path.join(REPO, 'src/main')) {
   check(r.ok === false && /still arriving/.test(r.error), '...even when asked to go ahead anyway — it only has to wait');
   r = await call('event:purge', { eventId: ev.id });
   check(r.ok === false && /still arriving/.test(r.error), '...and so does Delete this clinic’s patient data');
+  // Behind on chart records only, no images queued: still a wait.
+  answer.xMore = false; answer.xLeft = 0;
+  await idle(); await sync();
+  r = await call('event:finish', { eventId: ev.id });
+  check(r.ok === false && /Records from other stations are still arriving/.test(r.error), 'guard: behind on chart records alone (no images) is a wait too', r.error);
 
   // b. Rows waiting for their patient: refused unless confirmed. Waiting
   //    deletions, and rows known to belong to another clinic, do not count.
@@ -808,6 +870,10 @@ if (SRC !== path.join(REPO, 'src/main')) {
   db.setSyncPending([{ entity: 'xray', uid: uuid(), patient_uid: uuid(), deleted: 0, updated_at: stamp(), data: {} }]);
   r = await call('event:finish', { eventId: ev.id });
   check(r.ok === false && /waiting here for a patient/.test(r.error), 'guard: records waiting for their patient stop Finish', r.error);
+  const preOne = (await call('event:preflight', { eventId: ev.id })).data;
+  db.setSyncPending([0, 1, 2].map(() => ({ entity: 'xray', uid: uuid(), patient_uid: uuid(), deleted: 0, updated_at: stamp(), data: {} })));
+  r = await call('event:finish', { eventId: ev.id, allowIncompleteSync: true, acceptedProblems: (preOne.sync.problems || []).map((p) => (p && p.key) || p) });
+  check(r.ok === false && /3 record\(s\)/.test(r.error), 'guard: a go-ahead given for 1 waiting record does not cover 3', r.error);
   db.setSyncPending([
     { entity: 'patient', uid: uuid(), event_uid: 'some-other-clinic', deleted: 0, updated_at: stamp(), data: {} },
     { entity: 'patient', uid: uuid(), event_uid: null, deleted: 1, updated_at: stamp(), data: {} },
@@ -875,6 +941,19 @@ if (SRC !== path.join(REPO, 'src/main')) {
   check(r.ok === false && /set to run offline, but other stations have been adding/.test(r.error), 'guard: switched offline mid-clinic, a laptop that shared the clinic must still confirm', r.error);
   r = await call('event:finish', { eventId: ev3.id, allowIncompleteSync: true, acceptedProblems: ['offline-shared'] });
   check(r.ok === true, '...and can, once confirmed', r.error || '');
+
+  // h. The export counts what had arrived when its file was built: a row that
+  //    syncs in while the save dialog is open is not in that file.
+  const ev4 = localClinic('Export Dialog');
+  const p4 = localPatient('Dialog1');
+  db.collectSyncRows(1); // gives every row its uid, as the first sync would
+  const pu4 = raw.prepare('SELECT uid FROM patients WHERE id = ?').get(p4.id).uid;
+  let hookResult = null;
+  dialogHook = async () => { hookResult = db.applyRemoteRows([xrayRow(pu4, 10 * 1024)]); };
+  const exp = await call('export:clinic', { eventId: ev4.id });
+  dialogHook = null;
+  const pre4 = db.finishPreflight(ev4.id);
+  check(exp.ok === true && pre4.arrivals_since_export === 1 && pre4.needs_export === true, 'export: an x-ray that synced in while the save dialog was open is known to be missing from that file', exp.ok ? JSON.stringify({ since: pre4.arrivals_since_export, arrivals: db.syncArrivals(ev4.id), xrays: db.listXrays(p4.id).length, hook: hookResult && { applied: hookResult.applied, skipped: hookResult.skipped, deferred: hookResult.deferred } }) : exp.error);
 }
 
 if (cloud) cloud.stop();

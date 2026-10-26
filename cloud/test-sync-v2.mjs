@@ -91,9 +91,17 @@ async function drainLegacy(e, since = '', limit = 400) {
 // A small clinic, written so that many children have LOWER seqs than their
 // (re-written) patient — the shape of a real day, where checking a patient out
 // re-sends only the patient row.
-async function clinic(e, { patients = 30, xrays = 2, kb = 40, pad = 0 } = {}) {
+async function clinic(e, { patients = 30, xrays = 2, kb = 40, pad = 0, extras = false } = {}) {
   const note = 'n'.repeat(pad);
   await push(e, [R('event', 'ev1', { name: 'Clinic' })]);
+  // Every other kind of row too, so each lane's rule is exercised: staff
+  // accounts, the volunteer list, a kept report, and deletions (a patient's and
+  // an x-ray's — x-ray deletions must travel with the deletions, not the images).
+  if (extras) {
+    await push(e, [R('staffdir', 'sd1', { username: 'vol', full_name: 'Volunteer' }), R('user', 'u1', { username: 'desk', role: 'registration' }, { event_uid: 'ev1' }),
+      R('report', 'rep1', { summary: '{}', patients_seen: 3 }, { event_uid: 'ev1' }),
+      R('patient', 'pgone', {}, { event_uid: 'ev1', deleted: true }), R('xray', 'xgone', {}, { patient_uid: 'p0', deleted: true })]);
+  }
   const rows = [];
   for (let i = 0; i < patients; i++) rows.push(R('patient', 'p' + i, { first_name: 'P' + i, status: 'checked_in', note }, { event_uid: 'ev1' }));
   await push(e, rows);
@@ -132,7 +140,7 @@ async function main() {
     const e = await mkEnv();
     // Enough patients, with enough on each record, that the patients alone span
     // several pages — otherwise "parents first" is never actually exercised.
-    await clinic(e, { patients: 120, xrays: 1, kb: 60, pad: 1500 });
+    await clinic(e, { patients: 120, xrays: 1, kb: 60, pad: 1500, extras: true });
     const { pages, view, error } = await drain2(e, { max_bytes: 131072 });
     check('v2 drains without error', !error, error);
     const all = table(e);
@@ -143,6 +151,7 @@ async function main() {
     let orphans = 0;
     for (const [uid, i] of seenAt) {
       const row = all.get(uid);
+      if (row.deleted) continue; // a deletion needs no parent, and travels first by design
       if (row.patient_uid && !(seenAt.get(row.patient_uid) <= i)) orphans++;
       if (row.entity === 'patient' && row.event_uid && !(seenAt.get(row.event_uid) <= i)) orphans++;
     }
@@ -202,7 +211,7 @@ async function main() {
   // A row is re-written BETWEEN a page's plan and its fetch. Its lane must stop
   // at the gap, later lanes must wait, and nothing may be lost.
   {
-    let lost = 0, trials = 0, breaks = 0;
+    let lost = 0, trials = 0, breaks = 0, early = 0;
     for (let t = 0; t < 25; t++) {
       const e = await mkEnv();
       await clinic(e, { patients: 12, xrays: 1, kb: 30 });
@@ -221,11 +230,19 @@ async function main() {
       });
       const d = await drain2(e, { max_bytes: 65536 + (t % 5) * 20000 });
       trials++;
-      if (d.pages.some((p) => Object.values(p.lanes).some((l) => l.more) && p.more)) breaks++;
+      if (fired) breaks++;
       const all = table(e);
       for (const [uid, row] of all) { const v = d.view.get(uid); if (!v || v.updated_at !== row.updated_at) lost++; }
+      // And the lane stops at the gap: no child delivered before its patient.
+      const firstAt = new Map();
+      d.pages.forEach((pg, i) => pg.rows.forEach((r) => { if (!firstAt.has(r.uid)) firstAt.set(r.uid, i); }));
+      for (const [uid, i] of firstAt) {
+        const row = all.get(uid);
+        if (row && row.patient_uid && !(firstAt.get(row.patient_uid) <= i)) early++;
+      }
     }
     check(`v2: a row re-written mid-page is never lost (${trials} trials)`, lost === 0, `${lost} row(s) missing or stale`);
+    check(`v2: ...and its lane stops at the gap, so no child arrives before its patient (${breaks} rewrites mid-page)`, early === 0 && breaks > 0, `${early} child row(s) delivered early`);
   }
 
   // ------------------------------------------------------------------ 4
@@ -430,6 +447,8 @@ async function main() {
     check('kill switch: SYNC_V2=off gives an old-style empty page, never a v2 one', r && !('proto' in r) && r.rows.length === 0);
     const h = (await call(e, 'GET', '/health')).data;
     check('...and /health says protocol 1', h.sync_api === 1);
+    const up = (await push(e, [R('patient', 'ks1', { n: 1 }, { event_uid: 'ev1' })], { proto: 2, origin: 'origin-kill-0001' })).data;
+    check('...and uploads get old-style answers too', up && up.ok === true && !('proto' in up) && !('results' in up), JSON.stringify(up));
     e.DB._sqlite.close(); // the database fails every query
     const broken = await pull2(e, { e: 0, p: 0, k: 0, x: 0 });
     check('...and even its errors are old-style, so an app drops back at once', broken.status === 500 && broken.data && !('proto' in broken.data), broken.text.slice(0, 80));
