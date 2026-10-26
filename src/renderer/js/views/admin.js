@@ -12,14 +12,18 @@ const esc = (v) => String(v == null ? '' : v).replace(/[&<>"']/g, (c) => ({ '&':
 // before a removal — it can take a while on a poor connection, and a button
 // that seems to do nothing gets pressed again. Returns a function that closes it.
 function busyWindow(text) {
+  // "Hide" only hides it: the check goes on, and its answer still appears.
   const overlay = el('div', { class: 'modal-overlay' }, [el('div', { class: 'modal-card', role: 'status', 'aria-live': 'polite' }, [
-    el('p', { style: 'margin:0' }, [text]),
+    el('p', { style: 'margin:0 0 var(--space-3)' }, [text]),
+    el('div', { class: 'modal-actions' }, [el('button', { class: 'btn btn--ghost', onClick: () => overlay.remove() }, ['Hide'])]),
   ])]);
   document.body.append(overlay);
   return () => overlay.remove();
 }
 const problemList = (list) => `<ul style="margin:var(--space-2) 0 0; padding-left:1.2em">${list.map((p) => `<li>${esc(p.text)}</li>`).join('')}</ul>`;
-const goAheadFor = (pre, list) => (list.length ? { allowIncompleteSync: true, acceptedProblems: list.map((p) => p.key), checkedAt: pre.sync.checkedAt } : undefined);
+// Always says when the screen was checked; names what was confirmed, if anything.
+const goAheadFor = (pre, list) => ({ checkedAt: pre && pre.sync ? pre.sync.checkedAt : undefined,
+  ...(list.length ? { allowIncompleteSync: true, acceptedProblems: list.map((p) => p.key) } : {}) });
 
 // Cloud-sync live-update subscription. Kept at module scope so repaints of the
 // Cloud tab can drop the previous listener before adding a new one (no stacking).
@@ -596,7 +600,11 @@ export function renderAdmin(ctx, params = {}) {
       }
       if (e.active) actions.append(el('button', { class: 'btn btn--ghost btn--sm', onClick: () => setState(e, false) }, ['Turn off']));
       else actions.append(el('button', { class: 'btn btn--ghost btn--sm', onClick: () => setState(e, true) }, ['Reactivate']));
-      actions.append(el('button', { class: 'btn btn--danger btn--sm', onClick: () => delEvent(e) }, [icon('trash', { size: 14 })]));
+      actions.append(el('button', { class: 'btn btn--danger btn--sm', onClick: (ev) => {
+        const b = ev && ev.currentTarget;
+        if (b) b.disabled = true;
+        delEvent(e).finally(() => { if (b) b.disabled = false; });
+      } }, [icon('trash', { size: 14 })]));
       // Online sign-ups are their own decision, so they get their own column
       // rather than another button in the row. "Active" is which clinic is
       // RUNNING (one at a time, where a walk-in is filed); this is whether the
@@ -714,8 +722,9 @@ export function renderAdmin(ctx, params = {}) {
         const force = await modal({ title: 'Permanently delete with patients?', body: `${esc(err.message)}<br><br>This will permanently delete the event <b>and all ${e.patient_count} patient record(s)</b> from every station. This cannot be undone.`
           + (incomplete.length ? `<br><br><b>This laptop may not hold every record of it:</b>${problemList(incomplete)}` : ''), confirmText: 'Delete everything', cancelText: 'Cancel', danger: true });
         if (!force) return;
-        try { await api.deleteEvent(e.id, true, pre ? goAheadFor(pre, incomplete) : undefined); toast('Event and patients deleted', 'success'); store.setEvent(await api.activeEvent()); paint(); }
-        catch (e2) { await modal({ title: 'The event was not deleted', body: esc(e2.message), confirmText: 'OK' }); }
+        const closeWorking = busyWindow(`Deleting “${e.name}”…`);
+        try { await api.deleteEvent(e.id, true, pre ? goAheadFor(pre, incomplete) : undefined); closeWorking(); toast('Event and patients deleted', 'success'); store.setEvent(await api.activeEvent()); paint(); }
+        catch (e2) { closeWorking(); await modal({ title: 'The event was not deleted', body: esc(e2.message), confirmText: 'OK' }); }
       }
     }
   }
@@ -875,11 +884,17 @@ export function renderAdmin(ctx, params = {}) {
           if (!sure) return;
         }
         purgeBtn.disabled = true;
+        const closeWorking = busyWindow('Deleting this clinic’s patient data…');
         try {
           const r = await api.purgeEvent(undefined, goAheadFor(pre, incomplete));
+          closeWorking();
           toast(`${r.removed} patient record(s) removed from this computer and the cloud.`, 'success');
           exported = null; paint();
-        } catch (e) { toast(e.message, 'error'); purgeBtn.disabled = false; }
+        } catch (e) {
+          closeWorking();
+          purgeBtn.disabled = false;
+          await modal({ title: 'Nothing was deleted', body: esc(e.message), confirmText: 'OK' });
+        }
       },
     }, [icon('trash', { size: 16 }), 'Delete this clinic’s patient data']);
     const exportHint = el('p', { class: 'muted small', style: 'margin:var(--space-2) 0 0' }, [

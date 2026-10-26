@@ -246,19 +246,15 @@ function register(getMainWindow) {
   // what is on THIS computer, so finishing a clinic while another station still
   // held unsynced check-ins used to record a number lower than the clinic
   // actually saw — and the patients were gone, so it could never be corrected.
-  // { quick: true }: when a sync finished well a moment ago (the Finish screen's
-  // own check, or the timer), use it rather than make the person wait through
-  // a second one.
-  const syncBeforeRemoving = async ({ quick = false } = {}) => {
+  const syncBeforeRemoving = async () => {
     try {
       const st = cloud.status();
       if (!st.enabled) return { ok: true, skipped: true };
-      if (quick && !st.running && !st.lastError && st.lastOk && Date.now() - Date.parse(st.lastOk) < 30000) return { ok: true, recent: true };
       // A cycle already running would make syncOnce return at once, having
       // pulled nothing — and the checks below would read the state from
       // before it. Wait for it, then run one of our own.
       for (let i = 0; cloud.status().running && i < 120; i++) await new Promise((r) => setTimeout(r, 500));
-      return await cloud.syncOnce();
+      return await cloud.syncOnce({ reports: true });
     } catch (e) { return { ok: false, error: e.message || String(e) }; }
   };
   // v1.14.0: and refuse while this laptop does not hold the whole clinic.
@@ -283,7 +279,9 @@ function register(getMainWindow) {
   // laptop's clock against the server's. `at` is when the reports were looked
   // at: the Finish screen's moment, so a station cannot turn quiet between the
   // screen and the go-ahead.
-  const ageOf = (p, c, at) => (Number.isFinite(p.age) && c.peersAt ? p.age + Math.max(0, at - c.peersAt) : at - Date.parse(p.at || 0));
+  // (Rewound, not clamped, when the reports are newer than the screen: the
+  // four-second timer refreshes them while the person reads the dialogs.)
+  const ageOf = (p, c, at) => Math.max(0, Number.isFinite(p.age) && c.peersAt ? p.age + (at - c.peersAt) : at - Date.parse(p.at || 0));
   const nameOf = (p) => p.who || (p.older ? `a laptop on an older version of the app (id ${String(p.device).slice(0, 6)})` : `another station (id ${String(p.device).slice(0, 6)})`);
   const syncProblems = (c, { evId, lastSync, at = Date.now(), action = 'finishing' } = {}) => {
     const out = [];
@@ -323,14 +321,19 @@ function register(getMainWindow) {
       if (p.stuck > 0) {
         add(`stuck:${p.device}:${p.stuck}`, `${who} holds ${p.stuck} record(s) too large for the clinic cloud (as of ${when}) — they are on no other laptop, so export on that laptop first`);
       }
-      if (p.xrays > 0 || p.clinical > 0 || p.stuck > 0 || p.off) continue;
+      if (p.xrays > 0 || p.clinical > 0 || p.stuck > 0) continue;
       if (p.older) {
         if (age < OLDER_NAMED_MS) add(`older:${p.device}`, `${who} cannot report what it has not sent (last uploaded ${when}) — update it, or check it has sent everything`);
       } else if (evUid && p.ev === evUid && age > PEER_QUIET_MS) {
         // A station of THIS clinic, nothing outstanding when last heard from,
-        // not signed off — but quiet since: it may have been working offline,
-        // the commonest way x-rays pile up unsent, and the one no report shows.
-        add(`quiet:${p.device}:${p.at}`, `${who} has not been heard from since ${when} and did not sign off — anything it recorded after that is not here; switch it on and let it sync`);
+        // but quiet since: it may have been working without the cloud — the
+        // commonest way x-rays pile up unsent, and the one no report can show.
+        // Listed whether or not it signed off; the sign-off only says why it
+        // went quiet (a laptop closed with everything sent can be reopened
+        // without wifi, and one switched to offline goes on working).
+        if (p.off === 'offline') add(`offline:${p.device}:${p.at}`, `${who} was switched to run offline at ${when} — anything it recorded since is not here; switch it back online and let it sync`);
+        else if (p.off) add(`closed:${p.device}:${p.at}`, `${who} was closed at ${when} with everything sent — if it was used again since without the cloud, switch it on and let it sync`);
+        else add(`quiet:${p.device}:${p.at}`, `${who} has not been heard from since ${when} and was not closed normally — anything it recorded after that is not here; switch it on and let it sync`);
       }
     }
     return out;
@@ -347,7 +350,7 @@ function register(getMainWindow) {
       if (kind === 'orphans') return Number(v[0]) <= Number(w[0]) && Number(v[1]) <= Number(w[1]);
       if (kind === 'peer') return v[0] === w[0] && Number(v[1]) <= Number(w[1]) && Number(v[2]) <= Number(w[2]);
       if (kind === 'stuck') return v[0] === w[0] && Number(v[1]) <= Number(w[1]);
-      if (kind === 'quiet') return v[0] === w[0] && w.slice(1).join(':') === v.slice(1).join(':'); // same station, still not heard from
+      if (kind === 'quiet' || kind === 'closed' || kind === 'offline') return v[0] === w[0] && w.slice(1).join(':') === v.slice(1).join(':'); // same station, still not heard from
       if (kind === 'older') return v[0] === w[0];
       return true;
     });
@@ -372,11 +375,12 @@ function register(getMainWindow) {
     }
   };
   const goAhead = (o = {}) => ({ allowIncompleteSync: o.allowIncompleteSync, acceptedProblems: o.acceptedProblems, checkedAt: Number(o.checkedAt) });
-  // The sync a removal runs first. Skipped when the person has just confirmed
-  // going ahead without the cloud (it would only fail the same way again), and
-  // quick when a good sync finished a moment ago.
+  // The sync a removal runs first — always, right before it: a record that
+  // reached the cloud a few seconds ago is on neither this laptop nor any
+  // report. Skipped only when the person has just confirmed going ahead
+  // without the cloud (it would only fail the same way again).
   const syncFor = (o = {}) => (o.allowIncompleteSync === true && (o.acceptedProblems || []).some((k) => /^(sync-failed|unreachable)/.test(k))
-    ? Promise.resolve({ ok: true, skipped: true }) : syncBeforeRemoving({ quick: true }));
+    ? Promise.resolve({ ok: true, skipped: true }) : syncBeforeRemoving());
   // What is still outstanding before a clinic is closed for good. The image
   // count from the DEXIS import folder is added by the caller, which is the only
   // side that can read the disk.
@@ -455,8 +459,8 @@ function register(getMainWindow) {
   handle('events:setState', ({ id, active }) => db.setEventActive(currentUser, id, active));
   handle('events:setPrereg', ({ id, open }) => db.setEventPreregOpen(currentUser, id, open));
   // Deleting a clinic that still has patients removes them from every station,
-  // like Finish — so the same check that this laptop holds the whole clinic.
-  // (No go-ahead here: Finish clinic is the way to confirm and go ahead.)
+  // like Finish — so the same check that this laptop holds the whole clinic,
+  // with the same list to confirm (see admin.js delEvent).
   handle('events:delete', async (o = {}) => {
     if (o.force && db.finishPreflight(o.id).patients > 0) {
       const last = await syncFor(o);

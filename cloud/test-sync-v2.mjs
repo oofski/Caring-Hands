@@ -39,7 +39,7 @@ const push = (e, rows, extra = {}) => call(e, 'POST', '/v1/push', { device_id: '
 const pull = (e, since, limit = 400) => call(e, 'GET', `/v1/pull?since=${since}&limit=${limit}`);
 function pull2(e, lanes, o = {}) {
   const qs = new URLSearchParams({ proto: '2', since: MAX, limit: '1', since_e: String(lanes.e), since_p: String(lanes.p), since_k: String(lanes.k), since_x: String(lanes.x),
-    rows: String(o.rows || 1000), max_bytes: String(o.max_bytes || 4194304), origin: o.origin || '', echo_min: String(o.echo_min || 0), device: o.device || '', backlog: o.backlog ? JSON.stringify(o.backlog) : '' });
+    rows: String(o.rows || 1000), max_bytes: String(o.max_bytes || 4194304), origin: o.origin || '', echo_min: String(o.echo_min || 0), device: o.device || '', backlog: o.backlog ? JSON.stringify(o.backlog) : '', ...(o.peers ? { peers: o.peers } : {}) });
   return call(e, 'GET', '/v1/pull?' + qs.toString());
 }
 
@@ -550,20 +550,33 @@ async function main() {
     check('backlog: a laptop downgraded while holding x-rays stays reported, counted down by what it sends', !!d && d.xrays === 2 && d.older === true, JSON.stringify(d));
     await call(e, 'POST', '/v1/push', { device_id: 'laptop-D', rows: [R('xray', 'xd2', { image_png: img(5) }), R('xray', 'xd3', { image_png: img(5) })] });
     const afterOld = (await pull2(e, { e: 0, p: 0, k: 0, x: 0 }, { device: 'laptop-B', backlog: { c: 0, x: 0, b: 0 } })).data;
-    await call(e, 'POST', '/v1/push', { device_id: 'laptop-D', rows: [R('xray', 'xd2', { image_png: img(5) }, { updated_at: '2026-01-01T00:00:00.000Z@d' })] }); // re-sent: already stored
     const dGone = afterOld.peers.find((p) => p.device === 'laptop-D');
     check('backlog: ...and counted down to nothing once it has sent them (still listed as an older app that cannot report)', !!dGone && dGone.xrays === 0 && dGone.older === true, JSON.stringify(dGone));
     await call(e, 'POST', '/v1/push', { device_id: 'laptop-E', rows: [R('patient', 'pe1', { n: 1 }, { event_uid: 'ev1' })] });
     const withE = (await pull2(e, { e: 0, p: 0, k: 0, x: 0 }, { device: 'laptop-B', backlog: { c: 0, x: 0, b: 0 } })).data;
     check('backlog: a laptop on an older app is known to the others from its uploads', withE.peers.some((p) => p.device === 'laptop-E' && p.older === true));
+    // A re-sent image (already stored) does not count down again.
+    await pull2(e, { e: 0, p: 0, k: 0, x: 0 }, { device: 'laptop-R', backlog: { c: 0, x: 3, b: 9, w: 'R' } });
+    const xr1 = R('xray', 'xr-once', { image_png: img(5) });
+    await call(e, 'POST', '/v1/push', { device_id: 'laptop-R', rows: [xr1] });
+    await call(e, 'POST', '/v1/push', { device_id: 'laptop-R', rows: [xr1] }); // the same image again: 'skipped'
+    const rr = (await pull2(e, { e: 0, p: 0, k: 0, x: 0 }, { device: 'laptop-B', backlog: { c: 0, x: 0, b: 0 } })).data.peers.find((p) => p.device === 'laptop-R');
+    check('backlog: an older app re-sending an image already stored does not count it down twice', !!rr && rr.xrays === 2, JSON.stringify(rr));
     await pull2(e, { e: 0, p: 0, k: 0, x: 0 }, { device: 'laptop-F', backlog: { c: 1, x: 2, b: 9, w: 'F' } });
     await call(e, 'POST', '/v1/push', { device_id: 'laptop-F', rows: [R('patient', 'pf1', { n: 1 }, { event_uid: 'ev1' }), R('xray', 'xf1', { image_png: img(5) })] });
     const f = (await pull2(e, { e: 0, p: 0, k: 0, x: 0 }, { device: 'laptop-B', backlog: { c: 0, x: 0, b: 0 } })).data.peers.find((p) => p.device === 'laptop-F');
     check('backlog: ...and an older app\'s upload of chart rows and an x-ray counts its report down too', !!f && f.xrays === 1 && f.clinical === 0, JSON.stringify(f));
     // A laptop signing off (closing, or going offline) says so, and is listed as such.
-    const so = await call(e, 'POST', '/v1/signoff', { device_id: 'laptop-G', backlog: { c: 0, x: 0, b: 0, w: 'G', e: 'ev1' } });
+    const so = await call(e, 'POST', '/v1/signoff', { device_id: 'laptop-G', reason: 'closed', backlog: { c: 0, x: 0, b: 0, w: 'G', e: 'ev1' } });
     const g = (await pull2(e, { e: 0, p: 0, k: 0, x: 0 }, { device: 'laptop-B', backlog: { c: 0, x: 0, b: 0 } })).data.peers.find((p) => p.device === 'laptop-G');
-    check('reports: a laptop that signs off is listed as signed off, with its clinic and an age measured by the server', so.status === 200 && !!g && g.off === true && g.ev === 'ev1' && typeof g.age === 'number' && g.age < 60000, JSON.stringify(g));
+    check('reports: a laptop that signs off is listed as closed, with its clinic and an age measured by the server', so.status === 200 && !!g && g.off === 'closed' && g.ev === 'ev1' && typeof g.age === 'number' && g.age < 60000, JSON.stringify(g));
+    await call(e, 'POST', '/v1/signoff', { device_id: 'laptop-H', reason: 'offline', backlog: { c: 0, x: 0, b: 0, w: 'H', e: 'ev1' } });
+    const hh = (await pull2(e, { e: 0, p: 0, k: 0, x: 0 }, { device: 'laptop-B', backlog: { c: 0, x: 0, b: 0 } })).data.peers.find((p) => p.device === 'laptop-H');
+    check('reports: ...and one switched to run offline as such', !!hh && hh.off === 'offline', JSON.stringify(hh));
+    // Reports only when asked; the laptop's own report is still kept current.
+    const quietPull = (await pull2(e, { e: 0, p: 0, k: 0, x: 0 }, { device: 'laptop-B', backlog: { c: 0, x: 4, b: 9 }, peers: '0' })).data;
+    const bRow = JSON.parse(e.DB._sqlite.prepare("SELECT v FROM sync_meta WHERE k = 'backlog:laptop-B'").get().v);
+    check('reports: a pull that does not ask for the other stations gets none, and its own report is still written', quietPull.proto === 2 && !('peers' in quietPull) && bRow.xrays === 4, JSON.stringify({ peers: quietPull.peers, mine: bRow.xrays }));
     await pull2(e, { e: 0, p: 0, k: 0, x: 0 }, { device: 'laptop-G', backlog: { c: 0, x: 0, b: 0, w: 'G', e: 'ev1' } });
     const g2 = (await pull2(e, { e: 0, p: 0, k: 0, x: 0 }, { device: 'laptop-B', backlog: { c: 0, x: 0, b: 0 } })).data.peers.find((p) => p.device === 'laptop-G');
     check('reports: ...and is no longer signed off once it syncs again', !!g2 && !g2.off, JSON.stringify(g2));

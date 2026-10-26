@@ -93,15 +93,19 @@ app.whenReady().then(() => {
 });
 
 // v1.14.0: tell the clinic cloud this laptop is closing (and what, if
-// anything, it still has to send) before the database closes — three seconds
-// at most. See cloud.signOff.
-let signedOff = false;
-app.on('window-all-closed', async () => {
-  if (!signedOff) {
-    signedOff = true;
-    try { await require('./cloud').signOff(); } catch (_e) { /* closing anyway */ }
-  }
-  db.close();
+// anything, it still has to send) before the database closes — a few seconds
+// at most. Every way of quitting passes here (closing the window, the menu's
+// Quit); not a quit for an update, which must not be held up and is back in
+// seconds. See cloud.signOff.
+let signOff = null; // null: not started; a promise: running; 'done'
+app.on('before-quit', (e) => {
+  if (signOff === 'done' || global.__chQuittingForUpdate) return;
+  e.preventDefault();
+  if (signOff) return;
+  signOff = require('./cloud').signOff({ reason: 'closed' }).catch(() => null)
+    .finally(() => { signOff = 'done'; app.quit(); });
+});
+app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
 });
 

@@ -4254,7 +4254,7 @@ async function main() {
     let sync = { blocked: false, problems: [] };
     let preExtra = {};
     const finishes = [], purges = [];
-    window.api.eventPreflight = okWrap(({ eventId } = {}) => ({ ...db.finishPreflight(eventId), ...preExtra, sync }));
+    window.api.eventPreflight = okWrap(({ eventId } = {}) => ({ ...db.finishPreflight(eventId), ...preExtra, sync: { checkedAt: Date.now(), ...sync } }));
     window.api.eventFinish = okWrap((p) => { finishes.push(p); return { ok: true, removed: 0 }; });
     window.api.eventPurge = okWrap((p) => { purges.push(p); return { ok: true, removed: 0 }; });
     window.api.exportClinic = okWrap(() => ({ saved: true, patients: 1, xlsxPath: '/tmp/g.xlsx', backupPath: '/tmp/g.chbak.json' }));
@@ -4311,6 +4311,7 @@ async function main() {
     root = await finishFrom();
     await press(/Finish clinic & remove/); root.remove();
     log(finishes.length === 2 && finishes[1].allowIncompleteSync === undefined, 'v1.14.0: with nothing outstanding, Finish asks once and sends no go-ahead', JSON.stringify(finishes[1] || {}));
+    log(finishes.length === 2 && Number.isFinite(finishes[1].checkedAt), '...but does say when the screen was checked (so the main process judges as of then)', JSON.stringify(finishes[1] || {}));
 
     // c2. While the check runs the button is disabled and a window says what is
     //     happening; a refusal comes back as a dialog, not a toast.
@@ -4331,6 +4332,10 @@ async function main() {
       for (let i = 0; i < 4; i++) await tick();
       const busyShown = Array.from(document.querySelectorAll('.modal-card')).some((c) => /Checking with the clinic cloud/.test(c.textContent));
       log(fbtn.disabled === true && busyShown, 'v1.14.0: while Finish checks with the cloud, the button is disabled and a window says so');
+      const hide = Array.from(document.querySelectorAll('.modal-card button')).find((b) => /^Hide$/.test(b.textContent.trim()));
+      if (hide) hide.click();
+      for (let i = 0; i < 2; i++) await tick();
+      log(!!hide && !Array.from(document.querySelectorAll('.modal-card')).some((c) => /Checking with the clinic cloud/.test(c.textContent)), '...and it can be hidden (the check carries on)');
       release();
       await press(/Finish clinic & remove/);
       for (let i = 0; i < 8; i++) await tick();

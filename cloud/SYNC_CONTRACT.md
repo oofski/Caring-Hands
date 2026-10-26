@@ -130,16 +130,28 @@ first row of a response always goes, so one row bigger than the cap still moves 
   the response, keeping every lane close to the frontier.
 - `reset: "cursor_ahead"` (a cursor past `head`) or a changed `instance` means a different
   database behind the same address: the app starts from nothing and re-sends everything.
-- `backlog` (`{c, x, b, t, w}`: unsent clinical rows, x-rays, bytes, records this laptop can
-  never send — too big for the cloud, or refused — and the station name) is stored when it
-  changes and otherwise about every 5 minutes, all-clears included, so the server knows when
-  each laptop was last heard from. It is written outside the read batch, so a refused write
-  never fails the pull. An older app is recorded from its uploads (it cannot report what it
-  holds), and a report it left from v1.14 is counted down by the x-rays it uploads. Other
-  laptops receive every report as `peers`: ones with something outstanding for 60 days, the
-  rest for 2 days. Finish clinic names a station with something outstanding, one holding
-  records the cloud can never take, one not heard from for 15 minutes (it may be working
-  offline), and one on an older version — each as a problem the person confirms.
+- `backlog` (`{c, x, b, t, w, e}`: unsent clinical rows, x-rays, bytes, records this laptop
+  can never send — too big for the cloud, or refused — the station name, and the clinic
+  (event uid) it is on) is stored when it changes and otherwise about every 5 minutes,
+  all-clears included, so the server knows when each laptop was last heard from. It is
+  written outside the read batch, so a refused write never fails the pull.
+- `peers=0|1`: the other stations' reports are returned (`peers`, each with `age`, measured on
+  the server's clock, `ev`, and `off`/`older` where set) only when asked — an app asks about
+  once a minute and always on the sync just before Finish / Delete — so an idle pull reads
+  only its own report. Stations holding something come first.
+- `POST /v1/signoff {device_id, reason: 'closed'|'offline', backlog}`: a laptop closing, or
+  switched to run offline, says so. A sign-off explains why a station went quiet; it never
+  excuses it (a laptop closed with everything sent can be reopened without wifi, and one
+  switched to offline goes on working).
+- An older app is recorded from its uploads (it cannot say what it holds); a report it left
+  from v1.14 is read before the upload is written and counted down by the x-rays the upload
+  newly stores.
+- Kept: 60 days with something outstanding (7 for an older app's), 30 days otherwise.
+- Finish clinic names: a station with something outstanding; one holding records the cloud
+  can never take; a station of this clinic not heard from for 15 minutes (closed, offline, or
+  simply quiet, worded accordingly); one on an older version; and, when the cloud gives no
+  reports at all, that it cannot see the other stations. Each is confirmed by the person; the
+  go-ahead names what was shown, judged as of the screen they confirmed on.
 
 **App side (v1.14).** Settings: `cloud_lanes` (`{v:1, e, p, k, x, base}`), `cloud_cursor` =
 the lowest lane (so an older version, if a laptop is downgraded, re-reads rather than

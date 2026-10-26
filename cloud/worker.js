@@ -515,8 +515,12 @@ export default {
           const device = body && typeof body.device_id === 'string' && DEVICE_RE.test(body.device_id) ? body.device_id : '';
           const b = parseBacklog(body && body.backlog ? JSON.stringify(body.backlog) : '');
           if (!device || !b) return json({ ok: false, error: 'device and backlog required' }, 400);
+          // Why it went quiet: closed, or switched to run offline (it goes on
+          // working). Either way the other laptops still name it once it has been
+          // quiet a while — a sign-off explains the silence, it does not excuse it.
+          const off = body.reason === 'offline' ? 'offline' : 'closed';
           await db.prepare('INSERT INTO sync_meta (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v')
-            .bind('backlog:' + device, JSON.stringify({ ...b, off: true, at: Date.now() })).run();
+            .bind('backlog:' + device, JSON.stringify({ ...b, off, at: Date.now() })).run();
           return json({ ok: true });
         }
 
@@ -587,9 +591,14 @@ async function handlePush(request, env, db) {
   // The app process that sent these rows: they come back to it as stubs, not
   // as full copies (see handlePullV2). Only a v2 app sends one.
   const origin = wantV2 && typeof body.origin === 'string' && ORIGIN_RE.test(body.origin) ? body.origin : null;
-  // An older app's upload keeps two statements back for its report (below).
+  // An older app's upload: its report is read now, while the request has
+  // room, and one statement is kept back to write it after the rows (below).
   const reportFor = !wantV2 && body && typeof body.device_id === 'string' && DEVICE_RE.test(body.device_id) ? body.device_id : null;
-  const { results, applied, error, limited } = await writeRows(db, env, rows, origin, reportFor ? { budget: statementBudget(env) - 2 } : {});
+  let reportRow = null, reportRead = false;
+  if (reportFor) {
+    try { reportRow = await db.prepare('SELECT v FROM sync_meta WHERE k = ?').bind('backlog:' + reportFor).first(); reportRead = true; } catch (_e) { /* skip the report this time */ }
+  }
+  const { results, applied, error, limited } = await writeRows(db, env, rows, origin, reportFor ? { budget: statementBudget(env) - 1 } : {});
   const count = (s) => results.reduce((n, r) => n + (r === s ? 1 : 0), 0);
   const skipped = count('skipped') + count('invalid') + count('too_big');
   const retry = count('retry');
@@ -599,10 +608,10 @@ async function handlePush(request, env, db) {
   // kept — that laptop may well still hold unsent x-rays — but counted down by
   // the x-rays this upload settled, and dropped only once nothing is left.
   // Best effort, after the writes; one read for a laptop with no report.
-  if (reportFor) {
+  if (reportFor && reportRead) {
     try {
       const key = 'backlog:' + reportFor;
-      const cur = await db.prepare('SELECT v FROM sync_meta WHERE k = ?').bind(key).first();
+      const cur = reportRow;
       const b = cur ? (JSON.parse(cur.v) || {}) : { clinical: 0, xrays: 0, bytes: 0, who: '' };
       // Only images newly stored by THIS upload count down: not one the cloud
       // already had (a re-sent batch would count it again and again), not a
@@ -828,6 +837,11 @@ async function handlePullV2(url, env, db) {
   const echoMin = /^\d{1,16}$/.test(q.get('echo_min') || '') ? Number(q.get('echo_min')) : 0;
   const device = DEVICE_RE.test(q.get('device') || '') ? q.get('device') : '';
   const backlog = parseBacklog(q.get('backlog'));
+  // The other stations' reports only when asked (an app asks about once a
+  // minute, and always before a Finish): reading every report on every
+  // four-second pull was most of an idle pull's D1 reads. Otherwise only this
+  // laptop's own report is read, to decide whether to write it.
+  const wantPeers = q.get('peers') !== '0';
   // How far ahead each lane is planned. Every planned entry is a D1 row read,
   // and the free plan allows 5,000,000 a day: planning 1,001 per lane whatever
   // the page could carry cost 10-60 rows read per row delivered in a catch-up.
@@ -846,7 +860,9 @@ async function handlePullV2(url, env, db) {
     for (const L of LANES) stmts.push(planStmt(db, L, since[L], lim[L] + 1));
     // A key range, so the primary key is used (LIKE is case-insensitive and
     // scanned the whole table on every pull).
-    stmts.push(db.prepare("SELECT k, v FROM sync_meta WHERE k >= 'backlog:' AND k < 'backlog;'"));
+    stmts.push(wantPeers
+      ? db.prepare("SELECT k, v FROM sync_meta WHERE k >= 'backlog:' AND k < 'backlog;'")
+      : db.prepare('SELECT k, v FROM sync_meta WHERE k = ?').bind('backlog:' + device));
     snap = await db.batch(stmts);
   } catch (e) {
     // An index or INDEXED BY the database will not honour: stop offering v2
@@ -860,14 +876,14 @@ async function handlePullV2(url, env, db) {
   const plans = {};
   LANES.forEach((L, i) => { plans[L] = (snap[1 + i].results || []).map((e) => ({ seq: Number(e.seq), origin: e.origin, n: Number(e.n || 0) })); });
   const metaRows = snap[snap.length - 1].results || [];
-  const peers = readPeers(metaRows, device);
+  const peers = wantPeers ? readPeers(metaRows, device) : undefined;
   // Reports nobody has refreshed for longer than they are believed: gone, so a
   // season of replaced laptops does not add a row to every pull's read.
-  const stale = metaRows.filter((r) => {
+  const stale = !wantPeers ? [] : metaRows.filter((r) => {
     try {
       const b = JSON.parse(r.v);
       const age = Date.now() - Number(b.at || 0);
-      return (b.clinical > 0 || b.xrays > 0 || b.stuck > 0) ? !(age < BACKLOG_FRESH_MS) : !(age < BACKLOG_CLEAR_MS);
+      return !(age < retentionOf(b));
     } catch (_e) { return true; }
   }).slice(0, 20);
   if (stale.length) {
@@ -1019,6 +1035,13 @@ function backlogChanged(rows, device, b) {
   // most often pile up unsent. (About 12 writes an hour per laptop.)
   return !(Date.now() - Number(old.at || 0) < BACKLOG_HEARTBEAT_MS);
 }
+// An older app's report of outstanding x-rays can only be counted down by its
+// uploads, imperfectly, so it is believed for a week rather than two months.
+const OLDER_FRESH_MS = 7 * 24 * 60 * 60 * 1000;
+function retentionOf(b) {
+  const outstanding = b.clinical > 0 || b.xrays > 0 || b.stuck > 0;
+  return !outstanding ? BACKLOG_CLEAR_MS : b.older ? OLDER_FRESH_MS : BACKLOG_FRESH_MS;
+}
 function readPeers(rows, self) {
   const now = Date.now();
   const out = [];
@@ -1028,13 +1051,12 @@ function readPeers(rows, self) {
     let b;
     try { b = JSON.parse(r.v); } catch (_e) { continue; }
     if (!b) continue;
-    const outstanding = b.clinical > 0 || b.xrays > 0 || b.stuck > 0;
-    if (!(now - Number(b.at || 0) < (outstanding ? BACKLOG_FRESH_MS : BACKLOG_CLEAR_MS))) continue;
+    if (!(now - Number(b.at || 0) < retentionOf(b))) continue;
     // age: measured on the server's clock, so a laptop whose own clock is off
     // still tells how long ago a station was last heard from.
     out.push({ device, who: b.who || '', clinical: b.clinical || 0, xrays: b.xrays || 0, stuck: b.stuck || 0, bytes: b.bytes || 0,
       at: new Date(Number(b.at)).toISOString(), age: Math.max(0, now - Number(b.at || 0)), ev: b.ev || '',
-      ...(b.older ? { older: true } : {}), ...(b.off ? { off: true } : {}) });
+      ...(b.older ? { older: true } : {}), ...(b.off ? { off: b.off === 'offline' ? 'offline' : 'closed' } : {}) });
   }
   // Stations holding something first, so a cap anywhere can only ever drop
   // an all-clear.

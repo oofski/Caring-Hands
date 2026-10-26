@@ -99,6 +99,9 @@ async function download() {
 function quitAndInstall() {
   const u = load();
   if (!u) throw new Error('Updater unavailable.');
+  // No sign-off on the way out (see main.js before-quit): holding the quit up
+  // could get in the installer's way, and the app is back in seconds.
+  global.__chQuittingForUpdate = true;
   setImmediate(() => u.quitAndInstall(false, true));
   return { installing: true };
 }

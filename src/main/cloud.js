@@ -320,12 +320,18 @@ function activeEventUid() {
 // is still outstanding, so the other laptops' Finish does not mistake a laptop
 // shut down with everything sent for one that went quiet holding x-rays. Best
 // effort, three seconds at most; a server older than v1.14 has nowhere to put it.
-async function signOff() {
+// reason: 'closed' (the app is quitting) or 'offline' (switched to run offline —
+// it goes on working, so the other laptops name it as such; a sign-off never
+// excuses a station, it only says why it went quiet).
+async function signOff({ reason = 'closed' } = {}) {
   const m = db.getSyncMeta();
   if (!m.enabled || !m.url || !m.key || serverProto !== 2) return { ok: false, skipped: true };
+  // No cycle may land after it and overwrite it with an ordinary report.
+  stop();
+  for (let i = 0; running && i < 40; i++) await new Promise((r) => setTimeout(r, 50));
   const clinicalLeft = db.collectSyncRows(1, { skip: ['xray'] }).rows.length;
   const b = { c: clinicalLeft ? 1 : 0, ...xrayBacklogNow(), w: String(os.hostname() || '').slice(0, 60), e: activeEventUid() };
-  const run = httpJson('POST', trimUrl(m.url) + '/v1/signoff', m.key, { device_id: db.ensureDeviceId(), backlog: b }).catch(() => null);
+  const run = httpJson('POST', trimUrl(m.url) + '/v1/signoff', m.key, { device_id: db.ensureDeviceId(), reason, backlog: b }).catch(() => null);
   const r = await Promise.race([run, new Promise((res) => setTimeout(() => res(null), 3000))]);
   return { ok: !!(r && r.ok) };
 }
@@ -519,6 +525,8 @@ function completeness(proto, behind, r, carry) {
   };
 }
 const PEERS_KEEP_MS = 10 * 60 * 1000;
+const PEERS_EVERY_MS = 60 * 1000;
+function peersFetchedAt() { const st = lastPull || db.getSyncState(); return (st && st.peersAt) || 0; }
 
 // Is this a page in the new protocol, and a sane one? A lane cursor that went
 // BACKWARDS, or past the server's own counter, means something is wrong on the
@@ -580,6 +588,9 @@ async function pullV2(base, key, ctx) {
       rows: '1000', max_bytes: String(Math.round(pullBytes)),
       origin: echoToken, echo_min: String(echoMin),
       device: ctx.deviceId, backlog: JSON.stringify({ c: backlog.c, x: backlog.x, b: backlog.b, t: backlog.t || 0, w: who, e: activeEventUid() }),
+      // The other stations' reports about once a minute, and always when a
+      // removal is about to be checked (ctx.reports).
+      peers: ctx.reports || !(peersFetchedAt() && Date.now() - peersFetchedAt() < PEERS_EVERY_MS) ? '1' : '0',
     });
     const info = {};
     let r;
@@ -667,7 +678,9 @@ async function pullV2(base, key, ctx) {
 }
 
 // One full push+pull cycle. Never throws — records status instead.
-async function syncOnce() {
+// opts.reports: fetch the other stations' reports on this cycle (the
+// Finish / Delete checks ask for them fresh).
+async function syncOnce(opts = {}) {
   const meta = db.getSyncMeta();
   if (!meta.enabled || !meta.url || !meta.key) return { ok: false, skipped: true };
   if (running) return { ok: false, busy: true };
@@ -676,7 +689,7 @@ async function syncOnce() {
   const deviceId = db.ensureDeviceId();
   // Captured once. A reset while this cycle is in flight changes it, and then
   // nothing this cycle learned is saved over the reset.
-  const ctx = { gen: db.syncGen(), deviceId };
+  const ctx = { gen: db.syncGen(), deviceId, reports: !!(opts && opts.reports) };
   try { db.unmarkResendXrays(XRAY_UNMARK_PER_CYCLE); } catch (_e) { /* next cycle */ }
   // Push and pull fail separately. A failed push used to skip the pull, so the
   // laptop busy uploading x-rays was exactly the one that stopped hearing about
@@ -782,7 +795,7 @@ function applyConfig({ url, key, enabled, mode, online }) {
   const before = trimUrl(db.getSyncMeta().url);
   const wasOnline = db.getSyncMeta().enabled;
   const goingOffline = wasOnline && (mode === 'offline' || online === false || enabled === false);
-  if (goingOffline) signOff().catch(() => {}); // sent with the settings still online
+  if (goingOffline) signOff({ reason: 'offline' }).catch(() => {}); // sent with the settings still online
   const patch = {};
   if (url !== undefined) patch.url = trimUrl(url);
   if (key !== undefined) patch.key = key;

@@ -90,6 +90,7 @@ async function openInstaller(installerPath) {
   const err = await shell.openPath(installerPath);
   if (err) throw new Error(err);
   // Give the installer a moment to spawn, then quit so it can replace files.
+  global.__chQuittingForUpdate = true; // no sign-off: see main.js before-quit
   setTimeout(() => app.quit(), 1500);
   return { launched: true };
 }
