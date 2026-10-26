@@ -491,7 +491,7 @@ export function renderAdmin(ctx, params = {}) {
           if (pre.sync && pre.sync.blocked) {
             await modal({
               title: 'Still receiving this clinic',
-              body: `${pre.sync.imagesBehind ? `<b>${pre.sync.imagesBehind} x-ray image(s)</b>` : 'Records'} from other stations are still arriving on this laptop.`
+              body: `${pre.sync.imagesBehind ? `<b>${pre.sync.imagesBehind}${pre.sync.imagesBehindExact === false ? ' or more' : ''} x-ray image(s)</b>` : 'Records'} from other stations are still arriving on this laptop.`
                 + ' Finishing now would delete them from every station without them being in your export.'
                 + '<br><br>Wait until the cloud badge stops saying <b>catching up</b>, export again, then finish.',
               confirmText: 'Got it',
@@ -790,7 +790,7 @@ export function renderAdmin(ctx, params = {}) {
         if (pre && pre.sync && pre.sync.blocked) {
           await modal({
             title: 'Still receiving this clinic',
-            body: `${pre.sync.imagesBehind ? `<b>${pre.sync.imagesBehind} x-ray image(s)</b>` : 'Records'} from other stations are still arriving on this laptop.`
+            body: `${pre.sync.imagesBehind ? `<b>${pre.sync.imagesBehind}${pre.sync.imagesBehindExact === false ? ' or more' : ''} x-ray image(s)</b>` : 'Records'} from other stations are still arriving on this laptop.`
               + ' Deleting now would remove them from every station without them being in your export.'
               + '<br><br>Wait until the cloud badge stops saying <b>catching up</b>, export again, then delete.',
             confirmText: 'Got it',

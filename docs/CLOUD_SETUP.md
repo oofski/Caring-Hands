@@ -24,8 +24,21 @@ It's a one-time setup of about **10 minutes**. You'll do it once for the whole c
 ## Part A — Stand up your cloud (once, on any computer with a browser)
 
 ### 1. Make a free Cloudflare account
-Go to **https://dash.cloudflare.com/sign-up**, create a free account, and log in. The
-free plan is more than enough for a clinic.
+Go to **https://dash.cloudflare.com/sign-up**, create a free account, and log in.
+
+The free plan works for an ordinary clinic, **within daily limits**: 100,000 database
+writes and 5 million database reads a day, reset at 00:00 UTC (late afternoon in the US).
+Go over either and the clinic cloud stops answering until then — every laptop keeps
+working on its own, but nothing moves between them, and the online sign-up link stops
+working too. A clinic day of a few hundred patients uses a small part of that. Two
+things can use a lot of it at once:
+- **moving to a new database** (or a new Cloud URL): every laptop sends everything it
+  holds again, about 7 writes per record, so a clinic with more than roughly 14,000
+  records cannot finish the move in one day;
+- **"Re-sync everything" on several laptops at once**: each one reads the whole clinic.
+
+Do those outside clinic hours. For a large clinic, or to be safe, the Workers Paid plan
+(from $5 a month) lifts the daily limits.
 
 ### 2. Create the database (D1)
 1. In the left menu, open **Storage & Databases → D1 SQL Database**.
@@ -136,7 +149,8 @@ file over the old one: Cloudflare dashboard → **Workers & Pages** → your Wor
   first, and none is left behind if you update them later.
 - **Free Cloudflare plan:** a request may run only 50 database statements. The v1.14 server
   stores what fits and tells the app to send the rest straight away, so a backlog still gets
-  through — just in more, smaller requests.
+  through — just in more, smaller requests. The upgrade itself costs about one database write
+  per stored record, once, against the free plan's 100,000 a day (see Part A, step 1).
 - **If something goes wrong:** add a Variable `SYNC_V2` = `off` (Settings → Variables) and
   Deploy. The server then talks to every laptop in the old protocol, the way v1.11 did
   (keeping the v1.14 fixes that make each save atomic). Pasting the previous worker.js back
@@ -170,7 +184,9 @@ file over the old one: Cloudflare dashboard → **Workers & Pages** → your Wor
   each station's Cloud tab.
 - All traffic is HTTPS. The server checks the key on every request with a constant-time
   comparison and refuses everything if the key isn't set.
-- A clinic's volume sits comfortably inside Cloudflare's **free** tier.
+- An ordinary clinic day fits inside the **free** plan's daily limits (Part A, step 1). A move
+  to a new database, or a fleet-wide re-sync of a large clinic, may not — do those outside
+  clinic hours, or use the Workers Paid plan.
 
 ---
 

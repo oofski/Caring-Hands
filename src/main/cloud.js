@@ -626,6 +626,7 @@ function status() {
     protocol: serverProto === 2 ? 'lanes' : serverProto === 1 ? 'single' : 'unknown',
     caughtUp: st ? !st.behind : null,
     imagesBehind: st ? st.imagesBehind || 0 : 0,
+    imagesBehindExact: st ? st.imagesBehindExact !== false : true,
     orphans: st ? st.orphans || 0 : 0,
     orphansWarn: !!(st && st.orphans >= db.PENDING_WARN),
     rowsRefused: Object.keys(db.getRefused()).length,
@@ -648,6 +649,7 @@ function syncCompleteness() {
     // Never heard from the cloud at all: assume the worst.
     behind: st ? !!st.behind : true,
     imagesBehind: st ? st.imagesBehind || 0 : 0,
+    imagesBehindExact: st ? st.imagesBehindExact !== false : true,
     orphans: pending.rows,
     orphanXrays: pending.xrays,
     peers: (st && st.peers) || [],

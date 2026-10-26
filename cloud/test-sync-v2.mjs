@@ -174,6 +174,30 @@ async function main() {
     check('...and the image still moves on its own, the next page', second && second.rows.length === 1 && second.rows[0].uid === 'xr-big', second ? second.rows.map((r) => r.uid).join(' ') : 'no page');
   }
 
+  // D1 bills every planned row as read (5M a day on the free plan): an image
+  // page must not plan the whole image backlog to deliver one image.
+  {
+    const e = await mkEnv();
+    await push(e, [R('event', 'ev-reads', { name: 'Reads' }), R('patient', 'pt-reads', { first_name: 'R' }, { event_uid: 'ev-reads' })]);
+    for (let i = 0; i < 120; i += 20) await push(e, Array.from({ length: 20 }, (_, j) => R('xray', `xr-r${i + j}`, { image_png: img(60) }, { patient_uid: 'pt-reads' })));
+    const first = (await pull2(e, { e: 0, p: 0, k: 0, x: 0 }, { max_bytes: 65536 })).data;
+    const lanes = {}; for (const L of ['e', 'p', 'k', 'x']) lanes[L] = Number(first.lanes[L].cursor);
+    const pg = (await pull2(e, lanes, { max_bytes: 65536 })).data;
+    check('reads: a one-image page plans a few dozen images ahead, not all 120 (and says the count is not exact)', pg.lanes.x.left <= 64 && pg.lanes.x.left_exact === false && pg.rows.length === 1,
+      `left ${pg.lanes.x.left}, exact ${pg.lanes.x.left_exact}, rows ${pg.rows.length}`);
+    // The server's own statement, captured as it runs, then explained.
+    const sent = [];
+    e.DB.setFaults({ beforeBatch: (sqls) => { sent.push(...sqls); } });
+    await pull2(e, lanes, { max_bytes: 65536 });
+    e.DB.setFaults({ beforeBatch: null });
+    const metaSql = sent.find((q) => /FROM sync_meta/.test(q)) || '';
+    const plan = metaSql ? e.DB._sqlite.prepare('EXPLAIN QUERY PLAN ' + metaSql).all().map((r) => r.detail).join(' ') : 'not found';
+    check('reads: the laptops\' reports are read by key range, not by scanning the table', /SEARCH/.test(plan) && !/SCAN/.test(plan), plan);
+    e.DB._sqlite.prepare("INSERT INTO sync_meta (k, v) VALUES ('backlog:gone-laptop', ?)").run(JSON.stringify({ clinical: 0, xrays: 4, bytes: 1, who: 'Gone', at: Date.now() - 8 * 86400000 }));
+    await pull2(e, lanes, { max_bytes: 65536 });
+    check('reads: a report nobody has refreshed for over a week is deleted', !e.DB._sqlite.prepare("SELECT 1 FROM sync_meta WHERE k = 'backlog:gone-laptop'").get());
+  }
+
   // ------------------------------------------------------------------ 3
   // A row is re-written BETWEEN a page's plan and its fetch. Its lane must stop
   // at the gap, later lanes must wait, and nothing may be lost.

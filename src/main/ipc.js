@@ -307,7 +307,7 @@ function register(getMainWindow) {
     const pending = db.pendingCounts(db.eventUid(evId));
     const c = { ...cloud.syncCompleteness(), orphans: pending.rows, orphanXrays: pending.xrays };
     if (c.online && c.reachable && c.behind) {
-      throw new Error(`${c.imagesBehind ? `${c.imagesBehind} x-ray image(s)` : 'Records'} from other stations are still arriving on this laptop.`
+      throw new Error(`${c.imagesBehind ? `${c.imagesBehind}${c.imagesBehindExact === false ? ' or more' : ''} x-ray image(s)` : 'Records'} from other stations are still arriving on this laptop.`
         + ' Finishing now would delete them from every station without them being in your export.'
         + ' Wait until the cloud badge stops saying “catching up”, export again, then finish.');
     }

@@ -65,7 +65,7 @@ export function renderManagement(ctx) {
         // at the end of a clinic.
         st.online && st.imagesBehind
           ? el('span', { class: 'pill pill--warning', title: 'Images other stations took that are still downloading to this laptop. Check-outs and charts arrive first.' },
-            [`X-rays still arriving: ${st.imagesBehind}`])
+            [`X-rays still arriving: ${st.imagesBehind}${st.imagesBehindExact === false ? '+' : ''}`])
           : null,
         st.online && st.toSend && st.toSend.xrays
           ? el('span', { class: 'pill pill--neutral', title: 'Images taken on this laptop that are still uploading.' },

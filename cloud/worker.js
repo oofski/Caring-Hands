@@ -755,12 +755,25 @@ async function handlePullV2(url, env, db) {
   const echoMin = /^\d{1,16}$/.test(q.get('echo_min') || '') ? Number(q.get('echo_min')) : 0;
   const device = DEVICE_RE.test(q.get('device') || '') ? q.get('device') : '';
   const backlog = parseBacklog(q.get('backlog'));
+  // How far ahead each lane is planned. Every planned entry is a D1 row read,
+  // and the free plan allows 5,000,000 a day: planning 1,001 per lane whatever
+  // the page could carry cost 10-60 rows read per row delivered in a catch-up.
+  // Images: a page of them holds a handful, so 64 is plenty (and "left" then
+  // reads "64 or more"). The rest: in proportion to the byte budget.
+  const lim = {
+    e: Math.min(rowsMax, Math.max(64, Math.ceil(maxBytes / 512))),
+    p: Math.min(rowsMax, Math.max(64, Math.ceil(maxBytes / 512))),
+    k: Math.min(rowsMax, Math.max(64, Math.ceil(maxBytes / 512))),
+    x: Math.min(rowsMax, 64),
+  };
 
   let snap;
   try {
     const stmts = [db.prepare('SELECT (SELECT v FROM sync_seq WHERE id = 1) AS head')];
-    for (const L of LANES) stmts.push(planStmt(db, L, since[L], rowsMax + 1));
-    stmts.push(db.prepare("SELECT k, v FROM sync_meta WHERE k LIKE 'backlog:%'"));
+    for (const L of LANES) stmts.push(planStmt(db, L, since[L], lim[L] + 1));
+    // A key range, so the primary key is used (LIKE is case-insensitive and
+    // scanned the whole table on every pull).
+    stmts.push(db.prepare("SELECT k, v FROM sync_meta WHERE k >= 'backlog:' AND k < 'backlog;'"));
     snap = await db.batch(stmts);
   } catch (e) {
     // An index or INDEXED BY the database will not honour: stop offering v2
@@ -775,6 +788,12 @@ async function handlePullV2(url, env, db) {
   LANES.forEach((L, i) => { plans[L] = (snap[1 + i].results || []).map((e) => ({ seq: Number(e.seq), origin: e.origin, n: Number(e.n || 0) })); });
   const metaRows = snap[snap.length - 1].results || [];
   const peers = readPeers(metaRows, device);
+  // Reports nobody has refreshed for longer than they are believed: gone, so a
+  // season of replaced laptops does not add a row to every pull's read.
+  const stale = metaRows.filter((r) => { try { return !(Date.now() - Number(JSON.parse(r.v).at || 0) < BACKLOG_FRESH_MS); } catch (_e) { return true; } }).slice(0, 20);
+  if (stale.length) {
+    try { await db.prepare(`DELETE FROM sync_meta WHERE k IN (${stale.map(() => '?').join(',')})`).bind(...stale.map((r) => r.k)).run(); } catch (_e) { /* next time */ }
+  }
   // Each laptop reports what it still has to send; every laptop is told what
   // the others have outstanding, so nobody finishes a clinic while another
   // station is still holding unsent x-rays. Written only when it changes (or
@@ -805,7 +824,7 @@ async function handlePullV2(url, env, db) {
     if (prevDrained) {
       w.served = true;
       let i = 0;
-      for (; i < plan.length && i < rowsMax; i++) {
+      for (; i < plan.length && i < lim[L]; i++) {
         const e = plan[i];
         const own = origin !== '' && e.origin === origin && e.seq > echoMin;
         const size = own ? STUB_BYTES : e.n + ROW_OVERHEAD;
@@ -820,7 +839,7 @@ async function handlePullV2(url, env, db) {
         if (taken > 0 && bytes + size > maxBytes) break;
         taken++; bytes += size; w.take.push(e.seq);
       }
-      w.drained = i === plan.length && plan.length < rowsMax + 1;
+      w.drained = i === plan.length && plan.length < lim[L] + 1;
     }
     walk[L] = w;
     prevDrained = w.served && w.drained;
@@ -856,7 +875,7 @@ async function handlePullV2(url, env, db) {
     const w = walk[L];
     const plan = plans[L];
     if (broken || !w.served || !w.take.length) {
-      lanes[L] = { cursor: since[L], more: broken || !w.served ? plan.length > 0 : !w.drained, served: w.served && !broken, drained: w.served && !broken && w.drained, left: plan.length, exact: plan.length < rowsMax + 1 };
+      lanes[L] = { cursor: since[L], more: broken || !w.served ? plan.length > 0 : !w.drained, served: w.served && !broken, drained: w.served && !broken && w.drained, left: plan.length, exact: plan.length < lim[L] + 1 };
       continue;
     }
     const rows = fetched[L] || [];
@@ -875,7 +894,7 @@ async function handlePullV2(url, env, db) {
     const laneBroken = missing !== Infinity;
     if (laneBroken) broken = true;
     const deliveredCount = rows.filter((r) => Number(r.seq) < missing).length;
-    lanes[L] = { cursor, more: laneBroken || !w.drained, served: true, drained: !laneBroken && w.drained, left: Math.max(0, plan.length - deliveredCount), exact: plan.length < rowsMax + 1 };
+    lanes[L] = { cursor, more: laneBroken || !w.drained, served: true, drained: !laneBroken && w.drained, left: Math.max(0, plan.length - deliveredCount), exact: plan.length < lim[L] + 1 };
   }
   // A lane that drained has no rows at or below D that it has not delivered, so
   // its cursor can move up to D — keeping every lane close to the frontier.
