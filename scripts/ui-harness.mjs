@@ -4238,6 +4238,130 @@ async function main() {
     currentUser = db.login('admin', 'admin');
   }
 
+  // ---- v1.14.0: the Finish / Delete guard on screen ----
+  // ipc.js decides (tested on the real ipc.js in cloud/test-client-v2.mjs);
+  // these check that the screens say what it decided, and send the override
+  // only after the second confirmation.
+  {
+    currentUser = db.login('admin', 'admin');
+    const storeG = (await import('../src/renderer/js/store.js')).store;
+    storeG.setUser(currentUser);
+    const evG = db.createEvent(currentUser, { name: 'Guard Screen' });
+    db.setActiveEvent(currentUser, evG.id);
+    db.createPatient(currentUser, { first_name: 'Guard', last_name: 'Screen', demographics: {}, medical_history: {}, dental_history: { reason: 'Pain' }, consents: SIGNED });
+    db.recordClinicExport(evG.id, { patients: 1, xlsxPath: '/tmp/g.xlsx', backupPath: '/tmp/g.chbak.json' });
+    const saved = { p: window.api.eventPreflight, f: window.api.eventFinish, u: window.api.eventPurge, x: window.api.exportClinic, c: window.api.cloudStatus };
+    let sync = { blocked: false, problems: [] };
+    let preExtra = {};
+    const finishes = [], purges = [];
+    window.api.eventPreflight = okWrap(({ eventId } = {}) => ({ ...db.finishPreflight(eventId), ...preExtra, sync }));
+    window.api.eventFinish = okWrap((p) => { finishes.push(p); return { ok: true, removed: 0 }; });
+    window.api.eventPurge = okWrap((p) => { purges.push(p); return { ok: true, removed: 0 }; });
+    window.api.exportClinic = okWrap(() => ({ saved: true, patients: 1, xlsxPath: '/tmp/g.xlsx', backupPath: '/tmp/g.chbak.json' }));
+    const modalTitle = () => { const t = document.querySelector('.modal-card .modal-title'); return t ? t.textContent : ''; };
+    const modalBody = () => { const b = document.querySelector('.modal-card .modal-body'); return b || null; };
+    const press = async (re) => {
+      for (let i = 0; i < 8; i++) await tick();
+      const b = Array.from(document.querySelectorAll('.modal-card button')).find((x) => re.test(x.textContent));
+      if (b) b.click();
+      for (let i = 0; i < 8; i++) await tick();
+      return !!b;
+    };
+    const { renderAdmin } = await import('../src/renderer/js/views/admin.js');
+    const finishFrom = async () => {
+      const root = renderAdmin({ navigate: () => {}, toast: () => {}, store: storeG }, { section: 'events' });
+      document.body.append(root);
+      for (let i = 0; i < 8; i++) await tick();
+      const row = Array.from(root.querySelectorAll('tr')).find((tr) => /Guard Screen/.test(tr.textContent));
+      const btn = row && Array.from(row.querySelectorAll('button')).find((b) => /Finish clinic/.test(b.textContent));
+      if (btn) btn.click();
+      for (let i = 0; i < 8; i++) await tick();
+      return root;
+    };
+
+    // a. Still receiving: a wait, with no way to go ahead.
+    sync = { blocked: true, imagesBehind: 7, problems: [] };
+    let root = await finishFrom();
+    log(/Still receiving/.test(modalTitle()) && /7 x-ray image/.test((modalBody() || {}).textContent || ''),
+      'v1.14.0: Finish says x-rays are still arriving, and how many');
+    log(!Array.from(document.querySelectorAll('.modal-card button')).some((b) => /anyway/i.test(b.textContent)), 'v1.14.0: ...and offers no way to finish anyway');
+    await press(/Got it/); root.remove();
+    log(finishes.length === 0, 'v1.14.0: ...and nothing is finished');
+
+    // b. Might not hold everything: shown in the list, then a second confirmation.
+    sync = { blocked: false, problems: ['Front <b>desk</b> still has 3 x-ray image(s) it has not sent'] };
+    root = await finishFrom();
+    const body = modalBody();
+    log(!!body && /Front <b>desk<\/b> still has 3 x-ray/.test(body.textContent) && !body.querySelector('li b + b, li > b ~ b'),
+      'v1.14.0: Finish lists another station still holding x-rays, its name shown as text (no HTML from another laptop)');
+    await press(/Finish clinic & remove/);
+    log(/without the rest of the clinic/.test(modalTitle()), 'v1.14.0: ...then asks a second time before going ahead');
+    await press(/^Cancel$/); root.remove();
+    log(finishes.length === 0, 'v1.14.0: ...and Cancel there finishes nothing');
+    root = await finishFrom();
+    await press(/Finish clinic & remove/);
+    await press(/Finish anyway/); root.remove();
+    log(finishes.length === 1 && finishes[0].allowIncompleteSync === true && finishes[0].eventId === evG.id,
+      'v1.14.0: ...and only "Finish anyway" sends the go-ahead', JSON.stringify(finishes));
+
+    // c. Nothing wrong: no second question, and no go-ahead sent.
+    sync = { blocked: false, problems: [] };
+    root = await finishFrom();
+    await press(/Finish clinic & remove/); root.remove();
+    log(finishes.length === 2 && finishes[1].allowIncompleteSync === undefined, 'v1.14.0: with nothing outstanding, Finish asks once and sends no go-ahead', JSON.stringify(finishes[1] || {}));
+
+    // d. Records arrived after the export.
+    preExtra = { needs_export: true, arrivals_since_export: 2 };
+    root = await finishFrom();
+    log(/Export this clinic again/.test(modalTitle()) && /2 record\(s\)/.test((modalBody() || {}).textContent || ''),
+      'v1.14.0: Finish asks for a new export when records arrived after the last one');
+    await press(/Got it/); root.remove();
+    preExtra = {};
+
+    // e. Delete this clinic's patient data: the same rules.
+    const dataView = async () => {
+      const r = renderAdmin({ navigate: () => {}, toast: () => {}, store: storeG }, { section: 'data' });
+      document.body.append(r);
+      for (let i = 0; i < 10; i++) await tick();
+      const exp = Array.from(r.querySelectorAll('button')).find((b) => /Export clinic/.test(b.textContent));
+      if (exp) exp.click();
+      for (let i = 0; i < 10; i++) await tick();
+      const del = Array.from(r.querySelectorAll('button')).find((b) => /Delete this clinic/.test(b.textContent));
+      if (del && !del.disabled) del.click();
+      for (let i = 0; i < 8; i++) await tick();
+      return r;
+    };
+    sync = { blocked: true, imagesBehind: 2, problems: [] };
+    root = await dataView();
+    log(/Still receiving/.test(modalTitle()), 'v1.14.0: Delete patient data also waits while x-rays are arriving');
+    await press(/Got it/); root.remove();
+    sync = { blocked: false, problems: ['this laptop has not reached the clinic cloud'] };
+    root = await dataView();
+    await press(/Delete the patient data/);
+    log(/Delete without the rest/.test(modalTitle()), 'v1.14.0: ...and asks a second time when it may not hold everything');
+    await press(/Delete anyway/); root.remove();
+    log(purges.length === 1 && purges[0].allowIncompleteSync === true, 'v1.14.0: ...sending the go-ahead only after it', JSON.stringify(purges));
+
+    // f. The Management cloud card.
+    window.api.cloudStatus = async () => ({ ok: true, data: { enabled: true, mode: 'online', online: true, url: 'http://127.0.0.1:1', hasKey: true, lastOk: '', lastError: '', pushed: 0, pulled: 0, applied: 0,
+      imagesBehind: 4, toSend: { clinical: 0, xrays: 2, bytes: 3 * 1048576 }, orphans: 3, orphansWarn: false, rowsRefused: 1,
+      peers: [{ device: 'd2', who: 'Desk <i>2</i>', clinical: 0, xrays: 5, bytes: 1, at: new Date().toISOString() }] } });
+    const { renderManagement } = await import('../src/renderer/js/views/management.js');
+    const mg = renderManagement({ navigate: () => {}, toast: () => {}, store: storeG }, {});
+    document.body.append(mg);
+    for (let i = 0; i < 10; i++) await tick();
+    const card = Array.from(mg.querySelectorAll('.card')).find((c) => /Cloud connection/.test(c.textContent));
+    const ct = card ? card.textContent : '';
+    log(/X-rays still arriving: 4/.test(ct) && /X-rays still sending: 2 \(≈3 MB\)/.test(ct) && /Waiting for their patient: 3/.test(ct) && /Refused by the cloud: 1/.test(ct),
+      'v1.14.0: the Management cloud card shows what is still arriving, still sending, waiting and refused', ct.slice(0, 200));
+    log(/Desk <i>2<\/i>: 5 x-ray\(s\) still to send/.test(ct) && !(card && card.querySelector('i')),
+      'v1.14.0: ...and names the other station still sending, as text');
+    mg.remove();
+
+    Object.assign(window.api, { eventPreflight: saved.p, eventFinish: saved.f, eventPurge: saved.u, exportClinic: saved.x, cloudStatus: saved.c });
+    document.querySelectorAll('.modal-overlay').forEach((m) => m.remove());
+  }
+
   await tick();
   if (errors.length) errors.forEach((e) => log(false, 'RUNTIME: ' + e));
   const failed = results.filter((r) => !r[0]).length;
