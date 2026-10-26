@@ -180,14 +180,19 @@ SCENARIOS.catchup = async ({ worker = WORKER, app = APP, xrays = QUICK ? 60 : 20
     record(tag, 'the far-behind laptop sees the check-out', r.ok, { detail: `${r.cycles} cycle(s), ${(r.ms / 1000).toFixed(1)}s, ${r.errors} failed cycle(s)` });
     record(tag, `...within ${targetCycles} cycle(s)`, r.ok && r.cycles <= targetCycles, { hard: false, detail: `${r.cycles}` });
     server.clearLinks();
-    // Convergence: everything X holds, O holds — patients, vitals, x-rays.
-    for (let i = 0; i < 30; i++) {
+    // Convergence. First let X finish sending: on a busy chair the x-ray laptop
+    // can still be uploading its own backlog, and O can only hold what the
+    // server has. Then O must hold everything X holds.
+    let sendCycles = 0;
+    for (; sendCycles < 80 && (await f.call('X', 'dirty')).rows > 0; sendCycles++) await f.call('X', 'sync');
+    record(tag, 'the x-ray laptop finishes sending its backlog', (await f.call('X', 'dirty')).rows === 0, { detail: `${sendCycles} more cycle(s) after the check-out` });
+    const same = (a, b) => ['patients', 'withVitals', 'consents', 'treatments', 'xrays'].every((k) => a[k] === b[k]);
+    for (let i = 0; i < 40; i++) {
       await f.call('O', 'sync');
-      const [x, o] = [await f.call('X', 'counts'), await f.call('O', 'counts')];
-      if (x.xrays === o.xrays && x.patients === o.patients && x.withVitals === o.withVitals) break;
+      if (same(await f.call('X', 'counts'), await f.call('O', 'counts'))) break;
     }
     const [x, o] = [await f.call('X', 'counts'), await f.call('O', 'counts')];
-    record(tag, 'it then holds every patient, every vital sign and every x-ray the clinic has', x.xrays === o.xrays && x.patients === o.patients && x.withVitals === o.withVitals,
+    record(tag, 'the far-behind laptop then holds every patient, vital sign, consent, treatment and x-ray', same(x, o),
       { detail: `X ${JSON.stringify(x)} / O ${JSON.stringify(o)}` });
   } finally { await f.close(); await server.close(); }
 };

@@ -168,6 +168,10 @@ const commands = {
   },
 
   async meters() { return { downloaded, uploaded }; },
+
+  // Rows still waiting to be sent. (Collecting only stamps a row whose content
+  // changed, exactly as the next real collect would, so this is a safe peek.)
+  async dirty() { return { rows: db.collectSyncRows(100000).rows.length }; },
 };
 
 // Any setting whose name mentions a cursor, so lane cursors show up whatever
