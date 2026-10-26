@@ -128,9 +128,10 @@ function localClinic(name = 'Local Clinic') { const ev = db.createEvent(admin, {
 // A forwarding proxy, so one address can be pointed at a different server —
 // what a clinic sees when the database behind its address is replaced.
 async function proxy(target) {
-  const p = { target };
+  const p = { target, failPush: false };
   const srv = http.createServer((req, res) => {
     const u = new URL(req.url, p.target);
+    if (p.failPush && u.pathname === '/v1/push') { req.resume(); res.writeHead(502, { 'content-type': 'application/json' }); res.end('{"ok":false,"error":"bad gateway"}'); return; }
     const up = http.request(u, { method: req.method, headers: req.headers }, (r) => { res.writeHead(r.statusCode, r.headers); r.pipe(res); });
     up.on('error', () => { try { res.writeHead(502); res.end(); } catch (_e) { /* gone */ } });
     req.pipe(up);
@@ -508,6 +509,118 @@ console.log(`client under test: ${path.relative(REPO, SRC) || SRC}`);
   db.recordClinicExport(ev.id, { patients: 1, xlsxPath: '/tmp/y.xlsx', backupPath: '/tmp/y.chbak.json' });
   check(db.finishPreflight(ev.id).needs_export === false, '...which a fresh export clears');
   await server.close();
+}
+
+// ===========================================================================
+// 16. A new server address saved while a sync is in flight.
+// ===========================================================================
+{
+  const A = await startServer({ workerPath: CUR_WORKER });
+  const B = await startServer({ workerPath: CUR_WORKER });
+  const c = clinic(300);
+  await peer(A, c.rows);
+  await freshLaptop(A.url);
+  A.DB.setLimits({ latencyMs: 120 });
+  const flying = cloud.syncOnce();
+  await sleep(40);
+  cloud.applyConfig({ url: B.url });
+  cloud.stop();
+  await flying; await idle();
+  A.DB.setLimits({ latencyMs: 0 });
+  await syncUntil(() => false, 4);
+  const here = raw.prepare("SELECT uid FROM patients WHERE last_name = 'Peer'").all().map((r) => r.uid);
+  const onB = new Set(B.DB._store.keys());
+  const stranded = here.filter((u) => !onB.has(u));
+  check(stranded.length === 0, 'address change mid-sync: every patient this laptop holds reaches the new server (none marked sent from the old one)', `${here.length} here, ${stranded.length} not on the new server`);
+  await A.close(); await B.close();
+}
+
+// ===========================================================================
+// 17. Rows waiting for a parent are saved row by row, not rewritten whole.
+// ===========================================================================
+{
+  const server = await startServer({ workerPath: CUR_WORKER });
+  await freshLaptop(server.url);
+  const hasTable = n("SELECT COUNT(*) AS n FROM sqlite_master WHERE name = 'sync_pending'") === 1;
+  if (!hasTable) check(false, 'waiting rows: kept in a table of their own');
+  else {
+    raw.exec('CREATE TABLE IF NOT EXISTS pend_writes (n INTEGER); INSERT INTO pend_writes VALUES (0);');
+    raw.exec("CREATE TRIGGER IF NOT EXISTS pend_w_i AFTER INSERT ON sync_pending BEGIN UPDATE pend_writes SET n = n + 1; END;");
+    raw.exec("CREATE TRIGGER IF NOT EXISTS pend_w_u AFTER UPDATE ON sync_pending BEGIN UPDATE pend_writes SET n = n + 1; END;");
+    const writes = () => raw.prepare('SELECT n FROM pend_writes').get().n;
+    const big = () => ({ ...xrayRow(uuid(), 200 * 1024) });
+    const list = Array.from({ length: 60 }, big);
+    db.commitPull({ gen: db.syncGen(), cursor: '10', pending: list });
+    const w1 = writes();
+    list.push(big());
+    db.commitPull({ gen: db.syncGen(), cursor: '11', pending: list });
+    check(w1 === 60 && writes() === 61, 'waiting rows: a page that adds one waiting x-ray writes one row, not all 61 images again', `${w1} then ${writes()}`);
+    db.commitPull({ gen: db.syncGen(), cursor: '12', pending: list.slice(30) });
+    check(db.pendingCounts().rows === 31 && writes() === 61, '...and rows that stop waiting are simply removed');
+    raw.exec('DROP TRIGGER pend_w_i; DROP TRIGGER pend_w_u; DROP TABLE pend_writes;');
+    // An upgrade from v1.13, which kept them in one settings value.
+    db.setSyncPending([]);
+    db.setSetting('cloud_pending', JSON.stringify([triageRow(uuid()), triageRow(uuid())]));
+    db.close(); db.init(dataDir);
+    check(db.getSyncPending().length === 2 && db.getSetting('cloud_pending') === '[]', 'waiting rows: an upgrade from v1.13 carries over what was waiting');
+  }
+  await server.close();
+}
+
+// ===========================================================================
+// 18. A laptop whose uploads fail still tells the others it has unsent rows.
+// ===========================================================================
+{
+  const server = await startServer({ workerPath: CUR_WORKER });
+  const px = await proxy(server.url);
+  await freshLaptop(px.url);
+  localClinic('Failing Uplink');
+  await sync(); await sync();
+  for (let i = 0; i < 5; i++) localPatient('Unsent' + i);
+  px.failPush = true;
+  await sync(); await sync();
+  const row = server.DB._sqlite.prepare("SELECT v FROM sync_meta WHERE k = ?").get('backlog:' + db.getSyncMeta().deviceId);
+  const b = row ? JSON.parse(row.v) : null;
+  check(!!b && b.clinical > 0, 'backlog: a laptop whose uploads keep failing still reports that it has unsent records', JSON.stringify(b));
+  await px.close(); await server.close();
+}
+
+// ===========================================================================
+// 19. After "Re-sync everything" the guard does not answer from before it.
+// ===========================================================================
+{
+  const server = await startServer({ workerPath: CUR_WORKER });
+  await freshLaptop(server.url);
+  await sync(); await sync();
+  const before = cloud.syncCompleteness();
+  await server.close();
+  await cloud.resyncAll();
+  const after = cloud.syncCompleteness();
+  check(before.reachable && !before.behind && (!after.reachable || after.behind), 'reset: after Re-sync everything (cloud now out of reach) the laptop no longer counts as caught up', JSON.stringify({ before: [before.reachable, before.behind], after: [after.reachable, after.behind] }));
+}
+
+// ===========================================================================
+// 20. A v2 answer whose results do not line up marks nothing sent.
+// ===========================================================================
+{
+  const srv = http.createServer((req, res) => {
+    let body = ''; req.on('data', (c2) => { body += c2; });
+    req.on('end', () => {
+      const u = new URL(req.url, 'http://x');
+      const send = (o) => { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify(o)); };
+      if (u.pathname === '/v1/push') return send({ ok: true, proto: 2, applied: 0, skipped: 0, complete: false, max_rows: 400, results: ['applied'] });
+      if (u.pathname === '/v1/pull') return send({ ok: true, rows: [], cursor: u.searchParams.get('since') || '0', more: false });
+      return send({ ok: true, seq: true });
+    });
+  });
+  await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+  await freshLaptop(`http://127.0.0.1:${srv.address().port}`);
+  localClinic('Misaligned');
+  localPatient('Misaligned1');
+  const dirtyBefore = db.collectSyncRows(100000).rows.length;
+  await sync();
+  check(dirtyBefore > 1 && db.collectSyncRows(100000).rows.length === dirtyBefore, 'push: an answer whose per-row results do not match the upload marks nothing as sent', `${dirtyBefore} before, ${db.collectSyncRows(100000).rows.length} after`);
+  await new Promise((r) => srv.close(r));
 }
 
 // ===========================================================================

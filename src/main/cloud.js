@@ -210,6 +210,10 @@ async function pushOnce(base, key, deviceId, ctx) {
         clinicalMax = Math.max(1, Math.floor(clinicalMax / 2));
         clinicalCeiling = { max: clinicalMax, until: Date.now() + CEILING_MS };
       }
+      // Still holding all of it: say so to the other laptops (the pull still
+      // runs, and carries this). Left as it was, a laptop whose uploads kept
+      // failing told everyone it had nothing to send.
+      backlog = { c: 1, ...xrayBacklogNow() };
       throw e;
     }
     pushed += clinical.rows.length;
@@ -218,6 +222,7 @@ async function pushOnce(base, key, deviceId, ctx) {
       // Nothing stored at all. Same as an error, said honestly.
       clinicalMax = Math.max(1, Math.floor(clinicalMax / 2));
       clinicalCeiling = { max: clinicalMax, until: Date.now() + CEILING_MS };
+      backlog = { c: 1, ...xrayBacklogNow() };
       throw new Error(res.error || 'The clinic cloud did not store this upload. It will try again.');
     }
     if (clinical.rows.length >= max && res.complete) clinicalMax = Math.min(PULL_LIMIT, clinicalMax * 2, ceilingOf(clinicalCeiling));
@@ -294,6 +299,10 @@ async function pushBatch(base, key, deviceId, batch, ctx) {
     if (Number(r.max_rows) >= 1) serverMaxRows = Math.min(PULL_LIMIT, Math.floor(Number(r.max_rows)));
     return { v2: true, settled: done.length + refused.length, complete: !!r.complete, error: r.error || (refused.length ? 'Some items are too large for the clinic cloud to store; they stay on this laptop.' : null) };
   }
+  // A v2 answer whose results do not line up with what was sent: its ok:true
+  // does NOT mean every row was stored (a v2 answer says ok:true with rows
+  // still to retry), so mark nothing and send again.
+  if (r && r.proto === 2) return { v2: false, settled: 0, complete: false, error: r.error || 'The clinic cloud\'s answer did not match the upload. It will try again.' };
   if (r && r.ok) {
     db.markSynced(batch.mark); db.setSyncMeta({ lastPush: new Date().toISOString() });
     return { v2: false, settled: batch.rows.length, complete: true };
@@ -356,6 +365,11 @@ async function pullLegacy(base, key, ctx) {
       if (isTimeout(e)) pullLimit = Math.max(1, Math.floor(pullLimit / 2));
       throw e;
     }
+    // A reset (a new server address, Re-sync everything) while this page was
+    // on its way: it is from the old server, or from before the reset. Apply
+    // none of it. Applying marks rows as already sent, which cancelled the
+    // reset's "send everything to the new server" for every row on the page.
+    if (db.syncGen() !== ctx.gen) break;
     const rows = (r && r.rows) || [];
     // Size the NEXT page from what this one weighed: a page of check-outs is a
     // few KB a row; a page of x-rays is half a megabyte a row.
@@ -440,10 +454,14 @@ function noteV2Failure(body) {
 // in the queue came from: start again from nothing, and send everything this
 // laptop holds, since the new database may have none of it.
 function newDatabase() {
-  db.resetSyncCursor();
-  db.markAllDirty();
+  db.startOver();
   rotateEchoToken();
+  forgetPullState();
 }
+// What the last pull said about how complete this laptop is no longer holds
+// after a reset. Kept, it told the Finish guard "caught up and reachable" until
+// the first page after the reset arrived.
+function forgetPullState() { lastPull = null; lastPullOkAt = 0; }
 
 async function pullV2(base, key, ctx) {
   let lanes = db.getSyncLanes();
@@ -467,6 +485,7 @@ async function pullV2(base, key, ctx) {
     try {
       r = await httpJson('GET', base + '/v1/pull?' + q.toString(), key, null, info);
     } catch (e) {
+      if (db.syncGen() !== ctx.gen) throw e; // a reset meanwhile: learn nothing from the old server
       if (isTimeout(e)) { pullBytes = Math.max(PULL_BYTES_MIN, Math.floor(pullBytes / 2)); throw e; }
       if (!e.status) throw e; // offline: not a protocol question
       if (e.status >= 500) pullBytes = Math.max(PULL_BYTES_MIN, Math.floor(pullBytes / 2));
@@ -477,6 +496,9 @@ async function pullV2(base, key, ctx) {
       if (pages) throw e;
       return 'legacy';
     }
+    // A reset while this page was on its way (see pullLegacy): apply nothing,
+    // and take nothing about the server from it either.
+    if (db.syncGen() !== ctx.gen) break;
     if (!isV2(r, lanes)) {
       noteV2Failure(r);
       if (pages) throw new Error('The clinic cloud sent a page this laptop could not use. It will try again.');
@@ -618,7 +640,7 @@ function status() {
 function syncCompleteness() {
   const m = db.getSyncMeta();
   const st = lastPull || db.getSyncState();
-  const pending = db.getSyncPending();
+  const pending = db.pendingCounts();
   return {
     online: !!m.enabled,
     reachable: Date.now() - lastPullOkAt < REACHABLE_MS,
@@ -626,8 +648,8 @@ function syncCompleteness() {
     // Never heard from the cloud at all: assume the worst.
     behind: st ? !!st.behind : true,
     imagesBehind: st ? st.imagesBehind || 0 : 0,
-    orphans: pending.length,
-    orphanXrays: pending.filter((r) => r && r.entity === 'xray').length,
+    orphans: pending.rows,
+    orphanXrays: pending.xrays,
     peers: (st && st.peers) || [],
   };
 }
@@ -687,6 +709,7 @@ async function resyncAll() {
   for (let i = 0; running && i < 240; i++) await new Promise((r) => setTimeout(r, 500));
   rotateEchoToken();
   db.resetSyncCursor();
+  forgetPullState();
   const r = await syncOnce();
   return { ok: true, ...r };
 }

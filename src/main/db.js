@@ -295,6 +295,18 @@ function migrate() {
     db.exec(`CREATE INDEX IF NOT EXISTS idx_sync_${t}_uid ON ${t}(uid)`);
   }
   migrateXraySigCache();
+  // v1.14.0: rows waiting for their parent, one table row each. They used to be
+  // ONE settings value, rewritten whole — images included — after every page:
+  // 63 s of frozen screen catching up 250 x-rays on the old protocol, and past
+  // ~512 MB a list too big to save at all, so the laptop could never get past
+  // that page. Now each page writes only the rows that started or stopped
+  // waiting.
+  db.exec(`CREATE TABLE IF NOT EXISTS sync_pending (
+    uid TEXT PRIMARY KEY, updated_at TEXT NOT NULL, entity TEXT, patient_uid TEXT, env TEXT NOT NULL)`);
+  const oldPending = safeJson(getSetting('cloud_pending'), []);
+  if (Array.isArray(oldPending) && oldPending.length) {
+    db.transaction(() => { savePending(oldPending); setSetting('cloud_pending', '[]'); })();
+  }
   // v1.5.21 ONE-TIME HEAL. Until now the pull cursor was a timestamp high-water
   // mark, so any row that reached the cloud with an older stamp — a check-in made
   // while this station was offline, or anything written by a laptop whose clock
@@ -305,6 +317,7 @@ function migrate() {
   if (getSetting('cloud_cursor_heal') !== 'v1') {
     setSetting('cloud_cursor', '');
     setSetting('cloud_pending', '[]');
+    db.exec('DELETE FROM sync_pending');
     setSetting('cloud_cursor_heal', 'v1');
   }
   rebaselineTriageSig();
@@ -3115,9 +3128,9 @@ function purgeEventPatients(actor, eventId) {
     }
     // A purged patient's rows may also be parked in the orphan buffer waiting for
     // a parent that will never come back; drop them or they are re-applied later.
-    const purged = new Set(patients.map((p) => p.uid).filter(Boolean));
-    const pending = safeJson(getSetting('cloud_pending'), []) || [];
-    setSetting('cloud_pending', JSON.stringify(pending.filter((r) => !purged.has(r.patient_uid) && !purged.has(r.uid))));
+    const purged = patients.map((p) => p.uid).filter(Boolean);
+    const drop = db.prepare('DELETE FROM sync_pending WHERE uid = ? OR patient_uid = ?');
+    for (const u of purged) drop.run(u, u);
   });
   tx();
   persistStamp();
@@ -3464,7 +3477,6 @@ function applyRemoteRows(remoteRows) {
   // an export taken before rows arrived from another station is known to be
   // missing them (see finishPreflight).
   let arrivedIn = null;
-  const arrivals = new Map();
   const applyOne = (env) => {
     const entity = env.entity, table = ENTITY_TABLE[entity];
     if (!table || !env.uid) { skipped++; return; }
@@ -3609,14 +3621,18 @@ function applyRemoteRows(remoteRows) {
   };
   // Each row is applied in its own transaction so one malformed/poison row can
   // never roll back or wedge the whole pull batch — it is counted and skipped.
-  for (const env of list) {
+  // The arrival is counted in the same transaction as the row: counted after
+  // the loop, a crash part-way through a page left rows applied and never
+  // counted — and the page, pulled again, finds them already here.
+  const applyCounted = db.transaction((env) => {
     arrivedIn = null;
-    try {
-      db.transaction(applyOne)(env);
-      if (arrivedIn) arrivals.set(arrivedIn, (arrivals.get(arrivedIn) || 0) + 1);
-    } catch (e) { skipped++; }
+    applyOne(env);
+    if (arrivedIn) setSetting(arrivalsKey(arrivedIn), String(syncArrivals(arrivedIn) + 1));
+  });
+  for (const env of list) {
+    try { applyCounted(env); }
+    catch (e) { skipped++; }
   }
-  for (const [evId, n] of arrivals) setSetting(arrivalsKey(evId), String(syncArrivals(evId) + n));
   // If any event synced in, re-resolve the clinic's active event so a "Set active"
   // performed on another laptop takes effect here too (highest selected_at wins).
   if (list.some((e) => e.entity === 'event')) resolveActiveEvent();
@@ -3677,6 +3693,7 @@ function resetSyncCursor() {
   db.transaction(() => {
     setSetting('cloud_cursor', '');
     setSetting('cloud_pending', '[]');
+    db.exec('DELETE FROM sync_pending');
     setSetting('cloud_lanes', '');
     setSetting('cloud_server_instance', '');
     setSetting('cloud_refused', '');
@@ -3755,7 +3772,7 @@ function commitPull({ gen, lanes, cursor, pending, instance, state } = {}) {
     } else if (cursor != null) {
       setSetting('cloud_cursor', String(cursor));
     }
-    if (pending) setSetting('cloud_pending', JSON.stringify(pending));
+    if (pending) savePending(pending);
     if (instance) setSetting('cloud_server_instance', String(instance));
     if (state) setSetting('cloud_sync_state', JSON.stringify(state));
     ok = true;
@@ -3861,11 +3878,42 @@ function ensureDeviceId() {
 // legitimately hold more than 5000 for a moment. PENDING_WARN is now only the
 // size at which the Management card says so.
 const PENDING_WARN = 5000;
-function getSyncPending() { return safeJson(getSetting('cloud_pending'), []); }
-function setSyncPending(rows) {
-  const arr = Array.isArray(rows) ? rows : [];
-  setSetting('cloud_pending', JSON.stringify(arr));
+function getSyncPending() {
+  return db.prepare('SELECT env FROM sync_pending ORDER BY rowid').all().map((r) => safeJson(r.env, null)).filter(Boolean);
 }
+function setSyncPending(rows) { db.transaction(() => savePending(Array.isArray(rows) ? rows : []))(); }
+// Make the table hold exactly `rows`, writing only the difference. One row per
+// uid: if two versions of a row are waiting, the newer is the one that would
+// win on apply anyway (last-write-wins), so keeping it alone changes nothing.
+function savePending(rows) {
+  const want = new Map();
+  for (const r of rows) {
+    if (!r || !r.uid) continue; // applyRemoteRows never parks one of these
+    const cur = want.get(r.uid);
+    if (!cur || String(r.updated_at || '') >= String(cur.updated_at || '')) want.set(r.uid, r);
+  }
+  const have = new Map(db.prepare('SELECT uid, updated_at FROM sync_pending').all().map((x) => [x.uid, x.updated_at]));
+  const del = db.prepare('DELETE FROM sync_pending WHERE uid = ?');
+  for (const uid of have.keys()) if (!want.has(uid)) del.run(uid);
+  const put = db.prepare(`INSERT INTO sync_pending (uid, updated_at, entity, patient_uid, env) VALUES (?, ?, ?, ?, ?)
+                          ON CONFLICT(uid) DO UPDATE SET updated_at = excluded.updated_at, entity = excluded.entity,
+                            patient_uid = excluded.patient_uid, env = excluded.env`);
+  for (const [uid, r] of want) {
+    const stamp = String(r.updated_at || '');
+    if (have.get(uid) === stamp) continue; // already saved, exactly this version
+    put.run(uid, stamp, r.entity || null, r.patient_uid || null, JSON.stringify(r));
+  }
+}
+// How many rows wait, and how many of them are x-rays, without loading them.
+function pendingCounts() {
+  const r = db.prepare("SELECT COUNT(*) AS n, COALESCE(SUM(entity = 'xray'), 0) AS x FROM sync_pending").get();
+  return { rows: r.n, xrays: r.x };
+}
+// Start over against a different database: reset AND re-send everything, in
+// one transaction. As two, a laptop killed between them (marking every row to
+// send is the slow part) came back reset but with nothing marked, and never
+// sent its records to the new database.
+function startOver() { db.transaction(() => { resetSyncCursor(); markAllDirty(); })(); }
 
 function close() {
   if (db) db.close();
@@ -3900,5 +3948,5 @@ module.exports = {
   getSyncPending, setSyncPending, resetSyncCursor,
   // v1.14.0 lanes
   syncGen, getSyncLanes, commitPull, getSyncState, echoMissing, getRefused, markRefused, markAllDirty,
-  xrayBacklog, syncArrivals, PENDING_WARN,
+  xrayBacklog, syncArrivals, PENDING_WARN, pendingCounts, startOver,
 };
