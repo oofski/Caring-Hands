@@ -11,6 +11,7 @@
 // This file imports both and compares them. Run: node cloud/test-parity.mjs
 import { createRequire } from 'node:module';
 import worker, { PARITY } from './worker.js';
+import { makeD1 } from './d1-sqlite.mjs';
 const require = createRequire(import.meta.url);
 import { CATALOG, VISIT_TYPES, CONDITIONS, ALLERGIES } from '../src/renderer/i18n/strings.js';
 
@@ -113,27 +114,15 @@ for (const lang of ['en', 'es']) {
 // 3. Behavioural parity: a submission missing a field the DESK requires must be
 //    refused ONLINE too. Driven through the real worker against a fake D1.
 // ---------------------------------------------------------------------------
-function fakeD1() {
-  const store = new Map();
-  store.set('evt-p', { uid: 'evt-p', entity: 'event', deleted: 0, data: JSON.stringify({ name: 'Parity Clinic', active: 1 }) });
-  let seq = 0;
-  return {
-    prepare(sql) {
-      return {
-        _b: [],
-        bind(...a) { this._b = a; return this; },
-        async first() {
-          if (/entity = 'event'/.test(sql)) { const r = store.get(this._b[0]); return r ? { data: r.data, deleted: 0 } : null; }
-          if (/RETURNING v/.test(sql)) { seq += 1; return { v: seq }; }
-          return null;
-        },
-        async run() { return { success: true }; },
-        async all() { return { results: [] }; },
-      };
-    },
-  };
-}
-const env = { CLINIC_KEY: 'k', DB: fakeD1() };
+// Real SQLite behind a D1-shaped API (./d1-sqlite.mjs) — the worker's actual SQL
+// runs, instead of a fake that recognised the strings it happened to send.
+// The clinic the sign-ups go to is pushed in through the worker itself.
+const env = { CLINIC_KEY: 'k', DB: makeD1() };
+await worker.fetch(new Request('https://sync.example.com/v1/push', {
+  method: 'POST',
+  headers: { authorization: 'Bearer k', 'content-type': 'application/json' },
+  body: JSON.stringify({ rows: [{ entity: 'event', uid: 'evt-p', deleted: 0, updated_at: '2026-01-01T00:00:00.000Z@seed', data: { name: 'Parity Clinic', active: 1 } }] }),
+}), env, {});
 // A real PNG with an actual stroke in it, built here so the test has no fixture
 // file to drift from. The server decodes the payload and checks the magic bytes.
 const SIG = (() => {

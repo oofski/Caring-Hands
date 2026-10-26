@@ -78,8 +78,10 @@ async function main() {
       h.data &&
       h.data.ok === true &&
       h.data.service === 'caring-hands-sync' &&
-      h.data.version === '1.11.0' &&
+      h.data.version === '1.14.0' &&
       h.data.seq === true &&
+      (h.data.sync_api === 1 || h.data.sync_api === 2) &&
+      Array.isArray(h.data.caps) && h.data.caps.includes('atomic_seq') &&
       typeof h.data.time === 'string'
   );
 

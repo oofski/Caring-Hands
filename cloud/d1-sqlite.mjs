@@ -15,6 +15,7 @@
 //   maxQueries      — more statements than this in one request fails, like the
 //                     Workers per-invocation limit (call newRequest() per request)
 //   latencyMs       — added to every statement, to model a slow D1
+//   jitterMs        — random extra delay, so concurrent calls can overtake
 //
 // The API is the subset worker.js uses: prepare(sql).bind(...).first() /
 // .all() / .run(), batch([stmts]) and exec(sql).
@@ -34,9 +35,19 @@ export function makeD1(opts = {}) {
     maxBoundParams: opts.maxBoundParams || 0,
     maxQueries: opts.maxQueries || 0,
     latencyMs: opts.latencyMs || 0,
+    // Random extra delay per statement. Real D1 calls do not finish in the order
+    // they started; without jitter two writers' calls could never overtake each
+    // other, and a race between them could never be observed.
+    jitterMs: opts.jitterMs || 0,
   };
+  const delay = () => (limits.latencyMs || limits.jitterMs ? sleep(limits.latencyMs + Math.random() * limits.jitterMs) : null);
   let queries = 0;      // in the current request
   let totalQueries = 0; // ever
+  // Fault injection, for tests that must prove nothing is lost when D1 fails:
+  //   failBatches   — the next N batches throw failBatchMessage (nothing commits)
+  //   failWritesWith — every INSERT/UPDATE throws this (e.g. a full database)
+  //   beforeBatch   — called with the batch's SQL before it runs; may write
+  const faults = { failBatches: 0, failBatchMessage: 'D1_ERROR: network connection lost', failWritesWith: null, beforeBatch: null };
 
   function normalise(args) {
     return args.map((a) => {
@@ -51,6 +62,7 @@ export function makeD1(opts = {}) {
 
   function checkLimits(sql, binds) {
     queries++; totalQueries++;
+    if (faults.failWritesWith && /^\s*(INSERT|REPLACE|UPDATE)/i.test(sql)) throw new Error(faults.failWritesWith);
     if (limits.maxQueries && queries > limits.maxQueries) {
       throw new Error('Too many API requests by single worker invocation.');
     }
@@ -73,7 +85,7 @@ export function makeD1(opts = {}) {
   function statement(sql, binds = []) {
     const exec = async (mode) => {
       checkLimits(sql, binds);
-      if (limits.latencyMs) await sleep(limits.latencyMs);
+      await delay();
       const st = db.prepare(sql);
       const args = normalise(binds);
       if (mode === 'first') {
@@ -105,6 +117,8 @@ export function makeD1(opts = {}) {
     prepare(sql) { return statement(sql, []); },
     // D1 runs a batch as one implicit transaction: all or nothing.
     async batch(stmts) {
+      if (faults.beforeBatch) await faults.beforeBatch(stmts.map((s) => s._sql), api);
+      if (faults.failBatches > 0) { faults.failBatches--; throw new Error(faults.failBatchMessage); }
       const out = [];
       const tx = db.transaction(() => {
         for (const s of stmts) {
@@ -115,7 +129,7 @@ export function makeD1(opts = {}) {
           else { const info = st.run(...args); out.push({ results: [], success: true, meta: { changes: info.changes } }); }
         }
       });
-      if (limits.latencyMs) await sleep(limits.latencyMs);
+      await delay();
       tx();
       return out;
     },
@@ -127,6 +141,7 @@ export function makeD1(opts = {}) {
     get queriesThisRequest() { return queries; },
     get totalQueries() { return totalQueries; },
     setLimits(next) { Object.assign(limits, next || {}); },
+    setFaults(next) { Object.assign(faults, next || {}); },
     // The old fake's view of the table, which the worker suite inspects:
     // uid -> row, with data still the stored JSON text.
     get _store() {

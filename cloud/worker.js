@@ -1,4 +1,4 @@
-// Caring Hands — Cloud Sync Worker (v1.11.0)
+// Caring Hands — Cloud Sync Worker (v1.14.0)
 // =============================================================================
 // NO INSTALLS NEEDED. To deploy: create a Worker in the Cloudflare dashboard,
 // paste THIS ENTIRE FILE into its code editor, then:
@@ -15,7 +15,7 @@
 // See ./SYNC_CONTRACT.md for the exact API + schema this implements.
 
 const SERVICE = 'caring-hands-sync';
-const VERSION = '1.11.0';
+const VERSION = '1.14.0';
 // Smallest believable signature image. A 1x1 pixel is ~70 bytes and an empty
 // canvas of any size compresses to a few hundred; a real drawn signature is
 // comfortably above this. Deliberately conservative — the job here is to reject
@@ -46,39 +46,352 @@ const SCHEMA_STATEMENTS = [
   // them and never hand them to the other laptops. Every write now takes the
   // NEXT value of this counter, and pulls page by that instead.
   'CREATE TABLE IF NOT EXISTS sync_seq (id INTEGER PRIMARY KEY, v INTEGER NOT NULL)',
+  // v1.14.0 — small facts about this database: whether the v2 schema is in
+  // place, a per-database instance id, and each laptop's last reported backlog.
+  'CREATE TABLE IF NOT EXISTS sync_meta (k TEXT PRIMARY KEY, v TEXT NOT NULL)',
 ];
-// Best-effort migrations for a database created by an earlier version. Each is
-// expected to fail harmlessly once it has already been applied (SQLite has no
-// ADD COLUMN IF NOT EXISTS), so they run individually and swallow their error.
-const MIGRATION_STATEMENTS = [
-  'ALTER TABLE sync_rows ADD COLUMN seq INTEGER',
-  // Existing rows keep their insertion order (rowid) as their seq, so nothing
-  // already in the cloud is stranded below a client's first seq cursor.
-  'UPDATE sync_rows SET seq = rowid WHERE seq IS NULL',
-  'CREATE INDEX IF NOT EXISTS idx_sync_seq ON sync_rows(seq)',
-  // Start the counter above every backfilled row.
-  'INSERT INTO sync_seq (id, v) SELECT 1, IFNULL((SELECT MAX(seq) FROM sync_rows), 0) ' +
-    'WHERE NOT EXISTS (SELECT 1 FROM sync_seq WHERE id = 1)',
-];
-let schemaReady = false;
-async function ensureSchema(env) {
-  if (schemaReady || !env || !env.DB) return;
-  for (const sql of SCHEMA_STATEMENTS) {
-    await env.DB.prepare(sql).run();
-  }
-  for (const sql of MIGRATION_STATEMENTS) {
-    try { await env.DB.prepare(sql).run(); } catch (_e) { /* already applied */ }
-  }
-  schemaReady = true;
+
+// ---------------------------------------------------------------------------
+// v1.14.0 sync engine.
+//
+// What changed, and why, in one place:
+//
+// 1. WRITES ARE ATOMIC. Until v1.14 a write reserved its delivery number
+//    (nextSeq) and stored the row as two separate D1 calls. A pull landing
+//    between the two could see number s+1 before s existed, move its cursor
+//    past s — and never receive that row. Laptops push at the same moment all
+//    day at a clinic, so this was a live data-loss race. Now a batch reserves a
+//    block of numbers and writes its rows in ONE D1 batch, which is one
+//    transaction, so rows only ever become visible in delivery order.
+//
+// 2. PULLS COME IN FOUR LANES, parents first: clinic-level records and every
+//    deletion (e), then people and reports (p), then charts — vitals,
+//    treatment, consents (k) — then x-ray images (x). A laptop that has fallen
+//    hundreds of images behind gets the check-outs, vitals and notes first, in
+//    seconds, instead of after downloading every image ahead of them; and a
+//    child never arrives before its parent while it catches up.
+//
+// 3. PAGES ARE CAPPED BY BYTES on the server, for new and old apps alike.
+//
+// 4. A LAPTOP NO LONGER DOWNLOADS ITS OWN ROWS. Rows the requesting app process
+//    wrote come back as small stubs; the app checks each against its own
+//    database before moving past it, and asks again in full if anything is off.
+//
+// 5. PUSHES ARE HONEST AND FIT THE PLAN. Every D1 statement is counted against a
+//    per-request budget, so a clinic on the Workers free plan always makes
+//    progress instead of failing the whole request; one oversized row no longer
+//    fails everything after it; and a client is told "ok" only when every row
+//    it sent is stored or legitimately superseded.
+//
+// Every one of these is opt-in for the app: a laptop on an older version gets
+// the same request and response shapes it always has. See SYNC_CONTRACT.md.
+// ---------------------------------------------------------------------------
+
+// Which lane a row belongs to. Used word for word in CREATE INDEX and in every
+// lane query, so SQLite can match the query to the partial index. Every row is
+// in exactly one lane: deleted and entity are NOT NULL, and k is the catch-all.
+const LANES = ['e', 'p', 'k', 'x'];
+const LANE_WHERE = {
+  e: "(deleted <> 0 OR entity IN ('event','staffdir'))",
+  p: "(deleted = 0 AND entity IN ('user','report','patient'))",
+  k: "(deleted = 0 AND entity NOT IN ('event','staffdir','user','report','patient','xray'))",
+  x: "(deleted = 0 AND entity = 'xray')",
+};
+
+const MAX_DATA_BYTES = 1990000;        // D1 cannot store a row much over 2,000,000 bytes
+const BATCH_MAX_ROWS = 23;             // + one counter statement = 24 per D1 batch
+const BATCH_MAX_CHARS = 2000000;       // bound data per D1 batch (always at least one row)
+const PREREAD_CHUNK = 900;             // uids per json_each pre-read
+const PREREAD_IN_CHUNK = 90;           // uids per IN (...) pre-read (D1 allows ~100 params)
+const V2_MAX_BYTES_DEFAULT = 4194304;
+const V2_MAX_BYTES_MIN = 65536;
+const V2_MAX_BYTES_MAX = 8388608;
+const LEGACY_PAGE_BYTES = 2097152;
+const ROW_OVERHEAD = 256;
+const STUB_BYTES = 256;
+const ORIGIN_RE = /^[A-Za-z0-9-]{8,64}$/;
+const DEVICE_RE = /^[A-Za-z0-9._:-]{1,80}$/;
+const SINCE_MAX = '9007199254740991';
+const BACKLOG_FRESH_MS = 30 * 60 * 1000;
+
+// Per isolate. All of these only ever move one way once learned.
+let schemaReady = false;   // tables + migrations done
+let hasCols = false;       // origin and nbytes columns exist
+let lanesReady = false;    // lane indexes exist and INDEXED BY works
+let haveOctet = false;     // octet_length() is available
+let instanceId = null;     // this database's identity
+let lastLaneCheck = 0;
+let preReadJson = true;    // json_each available for the pre-read
+let learnedBudget = Infinity;
+
+const v2Off = (env) => !!(env && String(env.SYNC_V2 || '').toLowerCase() === 'off');
+function statementBudget(env) {
+  const raw = parseInt(env && env.SYNC_STATEMENT_BUDGET, 10);
+  // Paid plans allow about 1,000 statements per request; the free plan about
+  // 50. Without a setting, start high and LEARN the real limit from the first
+  // "too many" error — so a paid clinic is never slowed down, and a free one
+  // loses at most one batch the first time it meets the limit.
+  const configured = Number.isFinite(raw) ? Math.min(950, Math.max(10, raw)) : 950;
+  return Math.min(configured, learnedBudget);
+}
+const isLimitError = (e) => /too many|subrequest|limit|exceeded/i.test(errMessage(e)) && !isTooBig(e);
+const isTooBig = (e) => /SQLITE_TOOBIG|too big|string or blob/i.test(errMessage(e));
+const utf8Len = (s) => (/[^\x00-\x7f]/.test(s) ? new TextEncoder().encode(s).length : s.length);
+
+// Every D1 call made for one request goes through this, so the request can stay
+// inside the per-request statement limit. A batch counts each statement.
+function meter(DB) {
+  const m = { used: 0 };
+  const wrap = (st) => ({
+    __raw: st,
+    bind(...args) { return wrap(st.bind(...args)); },
+    async first(col) { m.used++; return st.first(col); },
+    async all() { m.used++; return st.all(); },
+    async run() { m.used++; return st.run(); },
+  });
+  m.prepare = (sql) => wrap(DB.prepare(sql));
+  m.batch = async (stmts) => { m.used += stmts.length; return DB.batch(stmts.map((s) => s.__raw || s)); };
+  return m;
 }
 
-// Reserve the next delivery number. A single atomic upsert, so two laptops
-// pushing at the same moment can never be handed the same value.
-async function nextSeq(env) {
-  const row = await env.DB
-    .prepare('INSERT INTO sync_seq (id, v) VALUES (1, 1) ON CONFLICT(id) DO UPDATE SET v = v + 1 RETURNING v')
-    .first();
-  return row && row.v != null ? Number(row.v) : null;
+// ---------------------------------------------------------------------------
+// Schema. Runs on first use in each isolate; on a warm database it is one
+// statement. Lane indexes are built only on authenticated requests (never by
+// the public sign-up form), at most once an hour if a build fails.
+// ---------------------------------------------------------------------------
+async function ensureSchema(db, { heavy = false } = {}) {
+  if (!db) return;
+  if (schemaReady && (lanesReady || !heavy || Date.now() - lastLaneCheck < 60000)) return;
+
+  if (!schemaReady) {
+    try {
+      const r = await db.prepare("SELECT k, v FROM sync_meta WHERE k IN ('schema','octet','instance')").all();
+      const m = Object.fromEntries(((r && r.results) || []).map((x) => [x.k, x.v]));
+      if (m.schema === '2') {
+        schemaReady = hasCols = lanesReady = true;
+        haveOctet = m.octet === '1';
+        instanceId = m.instance || null;
+        return;
+      }
+    } catch (_e) { /* no sync_meta yet: run the full path */ }
+  }
+
+  if (!schemaReady) {
+    for (const sql of SCHEMA_STATEMENTS) await db.prepare(sql).run();
+    const quiet = async (sql, ...binds) => { try { return await db.prepare(sql).bind(...binds).run(); } catch (_e) { return null; } };
+    // v1.5 delivery counter. If the column is new, this database never served a
+    // seq cursor, so the insertion order is a safe starting point.
+    const seqAdded = !!(await quiet('ALTER TABLE sync_rows ADD COLUMN seq INTEGER'));
+    const repair = 'INSERT INTO sync_seq (id, v) VALUES (1, IFNULL((SELECT MAX(seq) FROM sync_rows), 0)) ' +
+      'ON CONFLICT(id) DO UPDATE SET v = MAX(sync_seq.v, excluded.v)';
+    await quiet(repair);
+    if (seqAdded) await quiet('UPDATE sync_rows SET seq = rowid WHERE seq IS NULL');
+    // Otherwise a stray NULL seq gets a FRESH number above every cursor. (v1.11
+    // set it to rowid, which could put a row below cursors laptops already hold
+    // — where nobody would ever fetch it.)
+    else await quiet('UPDATE sync_rows SET seq = (SELECT v FROM sync_seq WHERE id = 1) + rowid WHERE seq IS NULL');
+    await quiet(repair);
+    await quiet('CREATE INDEX IF NOT EXISTS idx_sync_seq ON sync_rows(seq)');
+    await quiet('ALTER TABLE sync_rows ADD COLUMN origin TEXT');
+    await quiet('ALTER TABLE sync_rows ADD COLUMN nbytes INTEGER');
+    hasCols = !!(await quiet('SELECT origin, nbytes FROM sync_rows LIMIT 0'));
+    try {
+      const o = await db.prepare("SELECT octet_length('ab') AS n").first();
+      haveOctet = !!o && Number(o.n) === 2;
+    } catch (_e) { haveOctet = false; }
+    await quiet("INSERT INTO sync_meta (k, v) VALUES ('octet', ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v", haveOctet ? '1' : '0');
+    await quiet("INSERT INTO sync_meta (k, v) VALUES ('instance', ?) ON CONFLICT(k) DO NOTHING", crypto.randomUUID());
+    try {
+      const i = await db.prepare("SELECT v FROM sync_meta WHERE k = 'instance'").first();
+      instanceId = i ? i.v : null;
+    } catch (_e) { instanceId = null; }
+    schemaReady = true;
+  }
+
+  if (heavy && !lanesReady && hasCols) {
+    lastLaneCheck = Date.now();
+    // Build the lane indexes, throttled: a failed build is retried at most once
+    // an hour, so a database that cannot build them is not hammered.
+    let attempt = null;
+    try { const a = await db.prepare("SELECT v FROM sync_meta WHERE k = 'idx_attempt'").first(); attempt = a ? Number(a.v) : null; } catch (_e) { /* none */ }
+    const probe = async () => {
+      const parts = LANES.map((L) => `(SELECT seq FROM sync_rows INDEXED BY idx_lane_${L} WHERE ${LANE_WHERE[L]} AND seq > 0 ORDER BY seq LIMIT 1) AS ${L}`);
+      try { await db.prepare('SELECT ' + parts.join(', ')).first(); return true; } catch (_e) { return false; }
+    };
+    if (!(await probe()) && (!attempt || Date.now() - attempt > 3600000)) {
+      try { await db.prepare("INSERT INTO sync_meta (k, v) VALUES ('idx_attempt', ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v").bind(String(Date.now())).run(); } catch (_e) { /* best effort */ }
+      for (const L of LANES) {
+        try { await db.prepare(`CREATE INDEX IF NOT EXISTS idx_lane_${L} ON sync_rows(seq, origin, nbytes) WHERE ${LANE_WHERE[L]}`).run(); } catch (_e) { /* retried later */ }
+      }
+    }
+    lanesReady = await probe();
+    if (lanesReady) {
+      try { await db.prepare("INSERT INTO sync_meta (k, v) VALUES ('schema', '2') ON CONFLICT(k) DO UPDATE SET v = excluded.v").run(); } catch (_e) { /* next time */ }
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The write engine. Used by every write: pushes from any app version, and the
+// public pre-registration form.
+//
+// rows: [{uid, entity, event_uid, patient_uid, deleted, updated_at, data, undelete}]
+// Returns { results: ['applied'|'skipped'|'invalid'|'too_big'|'retry', ...]
+//           aligned with `rows`, applied, error }.
+//
+// Guarantees:
+// - Last-write-wins and sticky deletions are decided INSIDE the upsert, so a
+//   concurrent write cannot make the decision stale.
+// - Rows are committed in request order. Nothing after the first 'retry' is
+//   committed, so parents stay ahead of children (apps send rows parents first).
+// - A batch that fails commits nothing (a D1 batch is one transaction).
+// ---------------------------------------------------------------------------
+async function writeRows(db, env, rows, origin, { budget } = {}) {
+  const results = new Array(rows.length).fill(null);
+  let error = null;
+  const todo = [];
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i];
+    if (!isValidRow(row)) { results[i] = 'invalid'; continue; }
+    const value = typeof row.data === 'string' ? parseData(row.data) : row.data;
+    const text = JSON.stringify(value);
+    if (typeof text !== 'string') { results[i] = 'invalid'; continue; }
+    const nbytes = utf8Len(text);
+    if (nbytes > MAX_DATA_BYTES) { results[i] = 'too_big'; continue; }
+    todo.push({
+      i, uid: row.uid, entity: row.entity,
+      event_uid: row.event_uid != null ? row.event_uid : null,
+      patient_uid: row.patient_uid != null ? row.patient_uid : null,
+      deleted: row.deleted ? 1 : 0, updated_at: String(row.updated_at), text, nbytes,
+      undelete: isUndelete(row) ? 1 : 0,
+    });
+  }
+  const cap = () => Math.min(budget || statementBudget(env), statementBudget(env));
+
+  // Pre-read: a row that is not newer than what is stored can never be applied
+  // (a stored updated_at only ever increases), so it is settled here cheaply.
+  // That is what lets a client that re-sends a half-stored batch make progress.
+  const stored = new Map();
+  try {
+    for (let s = 0; s < todo.length;) {
+      if (preReadJson) {
+        const part = todo.slice(s, s + PREREAD_CHUNK).map((t) => t.uid);
+        try {
+          const r = await db.prepare('SELECT uid, updated_at FROM sync_rows WHERE uid IN (SELECT value FROM json_each(?))').bind(JSON.stringify(part)).all();
+          for (const x of (r.results || [])) stored.set(x.uid, String(x.updated_at));
+          s += part.length;
+          continue;
+        } catch (e) {
+          if (isLimitError(e)) throw e;
+          preReadJson = false; // fall through to the IN (...) form
+        }
+      }
+      const part = todo.slice(s, s + PREREAD_IN_CHUNK).map((t) => t.uid);
+      const r = await db.prepare(`SELECT uid, updated_at FROM sync_rows WHERE uid IN (${part.map(() => '?').join(',')})`).bind(...part).all();
+      for (const x of (r.results || [])) stored.set(x.uid, String(x.updated_at));
+      s += part.length;
+    }
+  } catch (e) {
+    if (isLimitError(e)) learnedBudget = Math.max(10, db.used - 1);
+    for (const t of todo) results[t.i] = 'retry';
+    return { results, applied: 0, error: errMessage(e) };
+  }
+  const pending = [];
+  for (const t of todo) {
+    const have = stored.get(t.uid);
+    if (have != null && t.updated_at <= have) results[t.i] = 'skipped';
+    else pending.push(t);
+  }
+
+  // Batches of rows, in request order. A failed multi-row batch is split and
+  // each half REBUILT from scratch (fresh counter block, fresh positions), so a
+  // retry can never put a row at a number at or below what laptops have read.
+  let queue = [];
+  for (let s = 0; s < pending.length;) {
+    const b = [];
+    let chars = 0;
+    while (s < pending.length && b.length < BATCH_MAX_ROWS && (b.length === 0 || chars + pending[s].text.length <= BATCH_MAX_CHARS)) {
+      chars += pending[s].text.length;
+      b.push(pending[s++]);
+    }
+    queue.push(b);
+  }
+  let applied = 0;
+  let stopped = false;
+  while (queue.length && !stopped) {
+    let batch = queue.shift();
+    // Stay inside the request's statement budget: shrink the batch to fit, or
+    // stop and leave the rest for the next request.
+    const room = cap() - db.used - 1;
+    if (room < 1) { stopped = true; queue.unshift(batch); break; }
+    if (batch.length > room) { queue.unshift(batch.slice(room)); batch = batch.slice(0, room); }
+    try {
+      const outcome = await writeBatch(db, batch, origin);
+      for (let k = 0; k < batch.length; k++) {
+        results[batch[k].i] = outcome[k] ? 'applied' : 'skipped';
+        if (outcome[k]) applied++;
+      }
+    } catch (e) {
+      if (isLimitError(e)) {
+        learnedBudget = Math.max(10, db.used - batch.length - 1);
+        queue.unshift(batch);
+        error = errMessage(e);
+        stopped = true;
+      } else if (batch.length > 1) {
+        const mid = Math.ceil(batch.length / 2);
+        queue.unshift(batch.slice(mid));
+        queue.unshift(batch.slice(0, mid));
+      } else if (isTooBig(e)) {
+        results[batch[0].i] = 'too_big';
+      } else {
+        queue.unshift(batch);
+        error = errMessage(e);
+        stopped = true;
+      }
+    }
+  }
+  for (const b of queue) for (const t of b) if (results[t.i] == null) results[t.i] = 'retry';
+  return { results, applied, error };
+}
+
+// One D1 batch: reserve n delivery numbers, then upsert n rows numbered in
+// order. Returns [applied?] per row. Throws if anything about the numbering is
+// not exactly as expected, so nothing is reported as stored that might not be.
+async function writeBatch(db, batch, origin) {
+  const n = batch.length;
+  // MAX(seq) repairs a counter that is missing or behind (it is safe beside an
+  // older isolate still handing out single numbers: theirs are all <= v).
+  const bump = db.prepare(
+    'INSERT INTO sync_seq (id, v) VALUES (1, IFNULL((SELECT MAX(seq) FROM sync_rows), 0) + ?) ' +
+    'ON CONFLICT(id) DO UPDATE SET v = MAX(sync_seq.v, IFNULL((SELECT MAX(seq) FROM sync_rows), 0)) + ? RETURNING v'
+  ).bind(n, n);
+  const cols = hasCols
+    ? '(uid, entity, event_uid, patient_uid, deleted, updated_at, data, seq, origin, nbytes)'
+    : '(uid, entity, event_uid, patient_uid, deleted, updated_at, data, seq)';
+  const vals = hasCols ? '(?, ?, ?, ?, ?, ?, ?, (SELECT v FROM sync_seq WHERE id = 1) - ?, ?, ?)' : '(?, ?, ?, ?, ?, ?, ?, (SELECT v FROM sync_seq WHERE id = 1) - ?)';
+  const set = 'entity = excluded.entity, event_uid = excluded.event_uid, patient_uid = excluded.patient_uid, ' +
+    'deleted = excluded.deleted, updated_at = excluded.updated_at, data = excluded.data, seq = excluded.seq' +
+    (hasCols ? ', origin = excluded.origin, nbytes = excluded.nbytes' : '');
+  // Last-write-wins, and a deletion is sticky unless this row is a deliberate
+  // restore — decided atomically, in the statement that writes.
+  const sql = `INSERT INTO sync_rows ${cols} VALUES ${vals} ON CONFLICT(uid) DO UPDATE SET ${set} ` +
+    'WHERE excluded.updated_at > sync_rows.updated_at AND (sync_rows.deleted = 0 OR excluded.deleted = 1 OR ? = 1) RETURNING seq';
+  const stmts = [bump];
+  batch.forEach((t, k) => {
+    const binds = [t.uid, t.entity, t.event_uid, t.patient_uid, t.deleted, t.updated_at, t.text, n - 1 - k];
+    if (hasCols) binds.push(origin || null, t.nbytes);
+    binds.push(t.undelete);
+    stmts.push(db.prepare(sql).bind(...binds));
+  });
+  const res = await db.batch(stmts);
+  const v = Number((res[0] && res[0].results && res[0].results[0] && res[0].results[0].v));
+  if (!Number.isFinite(v)) throw new Error('sync: delivery counter did not return a value');
+  return batch.map((t, k) => {
+    const r = res[k + 1] && res[k + 1].results && res[k + 1].results[0];
+    if (!r) return false;
+    if (Number(r.seq) !== v - (n - 1 - k)) throw new Error(`sync: row numbered ${r.seq}, expected ${v - (n - 1 - k)}`);
+    return true;
+  });
 }
 
 export default {
@@ -90,6 +403,9 @@ export default {
 
     const url = new URL(request.url);
     const path = url.pathname;
+    // Every D1 call for this request is counted, so a request can stay inside
+    // the Workers per-request statement limit (see writeRows).
+    const db = env && env.DB ? meter(env.DB) : null;
 
     try {
       // Friendly landing at the root so visiting the bare URL isn't alarming.
@@ -106,6 +422,8 @@ export default {
       // Health check — no auth (used by the app's "Test connection").
       if (path === '/health') {
         if (request.method !== 'GET') return methodNotAllowed();
+        try { await ensureSchema(db, { heavy: false }); } catch (_e) { /* health never fails on the database */ }
+        const v2 = lanesReady && hasCols && !v2Off(env);
         return json({
           ok: true,
           service: SERVICE,
@@ -113,6 +431,10 @@ export default {
           // Tells the app this server delivers rows by counter, not by clock —
           // so it can switch to the cursor that can't skip a late arrival.
           seq: true,
+          // v1.14: which sync protocol this server offers. Diagnostic only — an
+          // app decides from each response, so a rollback is noticed at once.
+          sync_api: v2 ? 2 : 1,
+          caps: v2Off(env) ? ['atomic_seq'] : ['atomic_seq', 'push2', 'page_bytes'].concat(v2 ? ['pull2', 'stubs', 'backlog'] : []),
           time: nowIso(),
         });
       }
@@ -123,10 +445,10 @@ export default {
       // pulls in on its next sync. The event_uid in the path is a random,
       // unguessable id, and we only accept submissions for events that exist.
       if (path === '/checkin' || path.startsWith('/checkin/')) {
-        await ensureSchema(env);
+        await ensureSchema(db, { heavy: false });
         const eventUid = decodeURIComponent((path.replace(/^\/checkin\/?/, '').split('/')[0] || '').trim());
         if (request.method === 'GET') return await handleCheckinGet(eventUid, env, url);
-        if (request.method === 'POST') return await handleCheckinPost(eventUid, request, env);
+        if (request.method === 'POST') return await handleCheckinPost(eventUid, request, env, db);
         return methodNotAllowed();
       }
 
@@ -137,16 +459,16 @@ export default {
         }
 
         // Create the table on first authorized call — no CLI migration needed.
-        await ensureSchema(env);
+        await ensureSchema(db, { heavy: true });
 
         if (path === '/v1/push') {
           if (request.method !== 'POST') return methodNotAllowed();
-          return await handlePush(request, env);
+          return await handlePush(request, env, db);
         }
 
         if (path === '/v1/pull') {
           if (request.method !== 'GET') return methodNotAllowed();
-          return await handlePull(url, env);
+          return await handlePull(url, env, db);
         }
 
         // Diagnostic: which clinics does the server actually know about, and is
@@ -164,7 +486,9 @@ export default {
 
       return json({ ok: false, error: 'not found' }, 404);
     } catch (err) {
-      return json({ ok: false, error: errMessage(err) }, 500);
+      // A v2 app tells a failing NEW server apart from an old one by this field.
+      const v2 = path === '/v1/pull' && url.searchParams.get('proto') === '2';
+      return json({ ok: false, ...(v2 ? { proto: 2 } : {}), error: errMessage(err) }, 500);
     }
   },
 };
@@ -201,7 +525,7 @@ async function handleEventList(url, env) {
   return json({ ok: true, count: events.length, events });
 }
 
-async function handlePush(request, env) {
+async function handlePush(request, env, db) {
   let body;
   try {
     body = await request.json();
@@ -210,74 +534,46 @@ async function handlePush(request, env) {
   }
 
   const rows = body && Array.isArray(body.rows) ? body.rows : [];
-  let applied = 0;
-  let skipped = 0;
+  const wantV2 = !!body && body.proto === 2 && !v2Off(env);
+  // The app process that sent these rows: they come back to it as stubs, not
+  // as full copies (see handlePullV2). Only a v2 app sends one.
+  const origin = wantV2 && typeof body.origin === 'string' && ORIGIN_RE.test(body.origin) ? body.origin : null;
+  const { results, applied, error } = await writeRows(db, env, rows, origin);
+  const count = (s) => results.reduce((n, r) => n + (r === s ? 1 : 0), 0);
+  const skipped = count('skipped') + count('invalid') + count('too_big');
+  const retry = count('retry');
+  const tooBig = count('too_big');
 
-  for (const row of rows) {
-    if (!isValidRow(row)) {
-      skipped++;
-      continue;
-    }
-
-    // Last-Write-Wins: read the stored updated_at first, and only overwrite
-    // only when the incoming updated_at is STRICTLY newer than the stored one.
-    // updated_at is a globally-unique, totally-ordered stamp (monotonic ISO time
-    // + device id), so this tie-break ("skip on <=") is identical to the client's
-    // apply rule ("apply only when env > local") — server and client can never
-    // diverge on an equal-timestamp tie.
-    const existing = await env.DB
-      .prepare('SELECT updated_at, deleted FROM sync_rows WHERE uid = ?')
-      .bind(row.uid)
-      .first();
-
-    if (existing && String(row.updated_at) <= String(existing.updated_at)) {
-      skipped++;
-      continue;
-    }
-
-    // A deletion is sticky. Plain last-write-wins let a station that had been
-    // offline push its old copy back over the tombstone — the row's `deleted`
-    // flag was cleared and the patient reappeared on every station, as a shell
-    // with no chart (the children stayed deleted). A record only comes back when
-    // someone deliberately restores it, which says so explicitly.
-    if (existing && existing.deleted && !row.deleted && !isUndelete(row)) {
-      skipped++;
-      continue;
-    }
-
-    const dataStr =
-      typeof row.data === 'string' ? row.data : JSON.stringify(row.data);
-
-    // Take the next delivery number. A row that is written LATE (a laptop that
-    // was offline, or one whose clock is behind) still lands at the END of the
-    // delivery order, so every device that hasn't reached it yet still gets it.
-    const seq = await nextSeq(env);
-
-    await env.DB
-      .prepare(
-        'INSERT OR REPLACE INTO sync_rows ' +
-          '(uid, entity, event_uid, patient_uid, deleted, updated_at, data, seq) ' +
-          'VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
-      )
-      .bind(
-        row.uid,
-        row.entity,
-        row.event_uid != null ? row.event_uid : null,
-        row.patient_uid != null ? row.patient_uid : null,
-        row.deleted ? 1 : 0,
-        row.updated_at,
-        dataStr,
-        seq
-      )
-      .run();
-
-    applied++;
+  if (wantV2) {
+    const complete = retry === 0;
+    return json({
+      ok: true, proto: 2, applied, skipped, complete,
+      max_rows: complete ? 400 : Math.max(1, rows.length - retry),
+      results, time: nowIso(), ...(error ? { error } : {}),
+    });
   }
 
-  return json({ ok: true, applied, skipped, time: nowIso() });
+  // An older app marks EVERY row it sent as synced when it sees ok:true. So
+  // ok:true only when every row is stored, or legitimately superseded by a
+  // newer one. Anything else must not read as success.
+  if (retry === 0 && tooBig === 0) return json({ ok: true, applied, skipped, time: nowIso() });
+  const why = tooBig
+    ? 'One item is too large for the clinic cloud to store — usually an x-ray saved by an older version of the app. Update this laptop.'
+    : 'The clinic cloud stored part of this upload; the rest follows on the next sync.';
+  // Something was settled: the app re-sends, the stored rows are skipped
+  // cheaply, and every attempt makes progress.
+  if (applied + count('skipped') + count('invalid') > 0) {
+    return json({ ok: false, partial: true, applied, skipped, time: nowIso(), error: error ? `${why} (${error})` : why }, 200);
+  }
+  // Nothing was stored at all. Say so as loudly as the old server's 500 did, so
+  // no version of the app can show "synced" over it.
+  return json({ ok: false, applied: 0, skipped, error: error || why }, 503);
 }
 
-async function handlePull(url, env) {
+// ---------------------------------------------------------------------------
+// Pull
+// ---------------------------------------------------------------------------
+async function handlePull(url, env, db) {
   const since = url.searchParams.get('since') || '';
   const eventUid = url.searchParams.get('event_uid');
   const limit = clampLimit(url.searchParams.get('limit'));
@@ -287,44 +583,297 @@ async function handlePull(url, env) {
   //   time (older app)   — the legacy "<ISO>@<device>" stamp. Served exactly as
   //                        before so an un-updated laptop keeps working.
   const seqMode = since === '' || /^\d+$/.test(since);
-  const columns =
-    'uid, entity, event_uid, patient_uid, deleted, updated_at, data, seq';
+  if (!seqMode) return legacyTimePull(since, eventUid, limit, db);
+  if (url.searchParams.get('proto') === '2' && !v2Off(env) && lanesReady && hasCols && !eventUid) {
+    return handlePullV2(url, env, db);
+  }
+  if (!eventUid && lanesReady && hasCols && !v2Off(env)) return legacyPlannedPull(since, limit, db);
+  return legacyPlainPull(since, eventUid, limit, db);
+}
 
-  const orderCol = seqMode ? 'seq' : 'updated_at';
-  const sinceVal = seqMode ? Number(since || 0) : since;
-  let sql =
-    'SELECT ' + columns + ' FROM sync_rows WHERE ' +
-    // A row written before this column existed and never re-pushed would have a
-    // NULL seq; the backfill fills them, and IFNULL keeps it safe regardless.
-    (seqMode ? 'IFNULL(seq, 0) > ?' : 'updated_at > ?');
+const COLUMNS = 'uid, entity, event_uid, patient_uid, deleted, updated_at, data, seq';
+const shapeRow = (r) => ({
+  entity: r.entity,
+  uid: r.uid,
+  event_uid: r.event_uid != null ? r.event_uid : null,
+  patient_uid: r.patient_uid != null ? r.patient_uid : null,
+  deleted: r.deleted ? 1 : 0,
+  updated_at: r.updated_at,
+  data: parseData(r.data),
+});
+
+// The pre-v1.5 timestamp dialect, unchanged.
+async function legacyTimePull(since, eventUid, limit, db) {
+  let sql = 'SELECT ' + COLUMNS + ' FROM sync_rows WHERE updated_at > ?';
+  const binds = [since];
+  if (eventUid) { sql += ' AND event_uid = ?'; binds.push(eventUid); }
+  sql += ' ORDER BY updated_at ASC, uid ASC LIMIT ?';
+  binds.push(limit);
+  const result = await db.prepare(sql).bind(...binds).all();
+  const dbRows = result && Array.isArray(result.results) ? result.results : [];
+  const last = dbRows.length ? dbRows[dbRows.length - 1] : null;
+  return json({ ok: true, rows: dbRows.map(shapeRow), cursor: last ? last.updated_at : since, more: dbRows.length === limit, mode: 'time' });
+}
+
+// The seq dialect without lane indexes (or scoped to one event). Same SQL as
+// v1.11, except `seq > ?` instead of `IFNULL(seq, 0) > ?`: identical results
+// (every row has a seq), but SQLite can now seek the index instead of walking it.
+async function legacyPlainPull(since, eventUid, limit, db) {
+  const sinceVal = Number(since || 0);
+  let sql = 'SELECT ' + COLUMNS + ' FROM sync_rows WHERE seq > ?';
   const binds = [sinceVal];
   if (eventUid) { sql += ' AND event_uid = ?'; binds.push(eventUid); }
-  sql += ' ORDER BY ' + orderCol + ' ASC, uid ASC LIMIT ?';
+  sql += ' ORDER BY seq ASC, uid ASC LIMIT ?';
   binds.push(limit);
-
-  const result = await env.DB.prepare(sql).bind(...binds).all();
+  const result = await db.prepare(sql).bind(...binds).all();
   const dbRows = result && Array.isArray(result.results) ? result.results : [];
+  const last = dbRows.length ? dbRows[dbRows.length - 1] : null;
+  return json({
+    ok: true, rows: dbRows.map(shapeRow),
+    cursor: String(last && last.seq != null ? last.seq : sinceVal),
+    more: dbRows.length === limit, mode: 'seq',
+  });
+}
 
-  const rows = dbRows.map((r) => ({
-    entity: r.entity,
-    uid: r.uid,
+// How big a row is, without reading it. New rows carry nbytes; an older row is
+// measured with octet_length, which SQLite answers from the record header
+// without loading an image. Without octet_length, an old x-ray is assumed big.
+function sizeExpr(L) {
+  if (haveOctet) return 'IFNULL(nbytes, octet_length(data))';
+  return L === 'x' ? 'IFNULL(nbytes, 2000000)' : 'IFNULL(nbytes, LENGTH(data))';
+}
+function planStmt(db, L, since, n) {
+  return db.prepare(`SELECT seq, origin, ${sizeExpr(L)} AS n FROM sync_rows INDEXED BY idx_lane_${L} WHERE ${LANE_WHERE[L]} AND seq > ? ORDER BY seq LIMIT ?`).bind(since, n);
+}
+
+// A row's data as JSON text for the response, without parsing and
+// re-serialising it where that can be avoided. A row this worker wrote is
+// stored exactly as JSON.stringify produced it (nbytes is set), so it is
+// spliced in raw. An older row is checked first, so a malformed value can
+// never break the whole response.
+function dataJson(r) {
+  if (r.nbytes != null) return r.data;
+  if (typeof r.data !== 'string') return JSON.stringify(r.data);
+  try { JSON.parse(r.data); return r.data; } catch (_e) { return JSON.stringify(r.data); }
+}
+function rowJson(r, extra) {
+  const head = JSON.stringify({
+    ...(extra || {}),
+    entity: r.entity, uid: r.uid,
     event_uid: r.event_uid != null ? r.event_uid : null,
     patient_uid: r.patient_uid != null ? r.patient_uid : null,
-    deleted: r.deleted ? 1 : 0,
-    updated_at: r.updated_at,
-    data: parseData(r.data),
-  }));
+    deleted: r.deleted ? 1 : 0, updated_at: r.updated_at,
+  });
+  return head.slice(0, -1) + ',"data":' + dataJson(r) + '}';
+}
+function jsonText(text, status) {
+  return new Response(text, { status: status || 200, headers: { 'content-type': 'application/json; charset=utf-8', ...CORS_HEADERS } });
+}
 
-  const last = dbRows.length ? dbRows[dbRows.length - 1] : null;
-  const cursor = !last
-    ? (seqMode ? String(sinceVal) : since)
-    : (seqMode ? String(last.seq != null ? last.seq : sinceVal) : last.updated_at);
-  const more = rows.length === limit;
+// The seq dialect for an older app, with byte-capped pages. Rows and order are
+// exactly what v1.11 served; a page just ends earlier (more:true) once it
+// reaches about 2MB, so an older laptop can no longer ask for a page of 400
+// x-rays that no clinic connection can download in time.
+async function legacyPlannedPull(since, limit, db) {
+  const sinceVal = Number(since || 0);
+  const res = await db.batch(LANES.map((L) => planStmt(db, L, sinceVal, limit + 1)));
+  const merged = [];
+  res.forEach((r) => { for (const e of (r.results || [])) merged.push({ seq: Number(e.seq), n: Number(e.n || 0) }); });
+  merged.sort((a, b) => a.seq - b.seq);
+  let taken = 0, bytes = 0, cut = null;
+  for (const e of merged) {
+    if (taken >= limit) break;
+    if (taken > 0 && bytes + e.n + ROW_OVERHEAD > LEGACY_PAGE_BYTES) break;
+    taken++; bytes += e.n + ROW_OVERHEAD; cut = e.seq;
+  }
+  if (cut == null) return json({ ok: true, rows: [], cursor: String(sinceVal), more: false, mode: 'seq' });
+  const f = await db.prepare(`SELECT ${COLUMNS}, nbytes FROM sync_rows WHERE seq > ? AND seq <= ? ORDER BY seq ASC, uid ASC`).bind(sinceVal, cut).all();
+  const rows = (f.results || []);
+  const more = merged.length > taken;
+  return jsonText('{"ok":true,"rows":[' + rows.map((r) => rowJson(r)).join(',') + '],"cursor":' + JSON.stringify(String(cut)) + ',"more":' + more + ',"mode":"seq"}');
+}
 
-  // `mode` tells the app which dialect this server speaks, so a v1.5.0+ app can
-  // tell a seq-capable server from an older deployment and store the right kind
-  // of cursor either way.
-  return json({ ok: true, rows, cursor, more, mode: seqMode ? 'seq' : 'time' });
+// ---------------------------------------------------------------------------
+// v2 pull: four lanes, parents first, byte-capped, own rows as stubs.
+//
+//   ?proto=2&since=<MAX>&limit=1            <- an OLD worker answers an empty page
+//   &since_e=&since_p=&since_k=&since_x=     lane cursors
+//   &rows=&max_bytes=&origin=&echo_min=&device=&backlog=
+//
+// Plan (one snapshot): every lane's next rows by seq, with their sizes, read
+// from covering indexes so planning never touches an image. Walk the lanes in
+// order, taking rows until the byte budget; a lane is served only if every
+// earlier lane DRAINED in this response — so a parent always arrives before its
+// children. Fetch exactly the planned ranges. A planned row that is gone at
+// fetch time (rewritten in between, so it now has a higher seq) stops its lane
+// there, and every later lane waits for the next request.
+// ---------------------------------------------------------------------------
+async function handlePullV2(url, env, db) {
+  const q = url.searchParams;
+  const since = {};
+  for (const L of LANES) {
+    const s = q.get('since_' + L);
+    if (s == null || !/^\d{1,16}$/.test(s)) return json({ ok: false, proto: 2, error: 'bad lane cursor' }, 400);
+    since[L] = Number(s);
+  }
+  let rowsMax = parseInt(q.get('rows'), 10);
+  if (!Number.isFinite(rowsMax) || rowsMax < 1) rowsMax = 1000;
+  rowsMax = Math.min(1000, rowsMax);
+  let maxBytes = parseInt(q.get('max_bytes'), 10);
+  if (!Number.isFinite(maxBytes)) maxBytes = V2_MAX_BYTES_DEFAULT;
+  maxBytes = Math.min(V2_MAX_BYTES_MAX, Math.max(V2_MAX_BYTES_MIN, maxBytes));
+  const origin = ORIGIN_RE.test(q.get('origin') || '') ? q.get('origin') : '';
+  const echoMin = /^\d{1,16}$/.test(q.get('echo_min') || '') ? Number(q.get('echo_min')) : 0;
+  const device = DEVICE_RE.test(q.get('device') || '') ? q.get('device') : '';
+  const backlog = parseBacklog(q.get('backlog'));
+
+  let snap;
+  try {
+    const stmts = [db.prepare('SELECT (SELECT v FROM sync_seq WHERE id = 1) AS head')];
+    for (const L of LANES) stmts.push(planStmt(db, L, since[L], rowsMax + 1));
+    // Each laptop reports what it still has to send; every laptop is told what
+    // the others have outstanding, so nobody finishes a clinic while another
+    // station is still holding unsent x-rays.
+    if (device && backlog) {
+      stmts.push(db.prepare("INSERT INTO sync_meta (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v")
+        .bind('backlog:' + device, JSON.stringify({ ...backlog, at: Date.now() })));
+    }
+    stmts.push(db.prepare("SELECT k, v FROM sync_meta WHERE k LIKE 'backlog:%'"));
+    snap = await db.batch(stmts);
+  } catch (e) {
+    // An index or INDEXED BY the database will not honour: stop offering v2
+    // from this isolate until the next schema check, and say so in v2 terms.
+    lanesReady = false;
+    return json({ ok: false, proto: 2, error: errMessage(e) }, 500);
+  }
+  const head = Number((snap[0].results && snap[0].results[0] && snap[0].results[0].head) || 0);
+  const plans = {};
+  LANES.forEach((L, i) => { plans[L] = (snap[1 + i].results || []).map((e) => ({ seq: Number(e.seq), origin: e.origin, n: Number(e.n || 0) })); });
+  const peers = readPeers(snap[snap.length - 1].results || [], device);
+
+  // A cursor from another database (the clinic moved to a new one behind the
+  // same address): start again rather than wait for numbers that will never come.
+  if (LANES.some((L) => since[L] > head)) {
+    const lanes = {};
+    for (const L of LANES) lanes[L] = { cursor: String(since[L]), more: false };
+    return json({ ok: true, proto: 2, reset: 'cursor_ahead', head: String(head), instance: instanceId, more: false, lanes, peers, rows: [] });
+  }
+
+  // Walk the plans.
+  let taken = 0, bytes = 0, prevDrained = true;
+  const walk = {};
+  for (const L of LANES) {
+    const plan = plans[L];
+    const w = { served: false, take: [], drained: false };
+    if (prevDrained) {
+      w.served = true;
+      let i = 0;
+      for (; i < plan.length && i < rowsMax; i++) {
+        const e = plan[i];
+        const own = origin !== '' && e.origin === origin && e.seq > echoMin;
+        const size = own ? STUB_BYTES : e.n + ROW_OVERHEAD;
+        if (taken >= rowsMax) break;
+        // The first row of every lane reached is always taken, so a single row
+        // bigger than the budget still moves.
+        if (w.take.length > 0 && bytes + size > maxBytes) break;
+        taken++; bytes += size; w.take.push(e.seq);
+      }
+      w.drained = i === plan.length && plan.length < rowsMax + 1;
+    }
+    walk[L] = w;
+    prevDrained = w.served && w.drained;
+  }
+
+  // Fetch exactly the planned ranges.
+  const fetchLanes = LANES.filter((L) => walk[L].take.length);
+  const fetched = {};
+  if (fetchLanes.length) {
+    const stmts = fetchLanes.map((L) => {
+      const cut = walk[L].take[walk[L].take.length - 1];
+      return db.prepare(
+        'SELECT seq, uid, entity, event_uid, patient_uid, deleted, updated_at, nbytes, ' +
+        'CASE WHEN origin = ? AND seq > ? THEN NULL ELSE data END AS data, ' +
+        'CASE WHEN origin = ? AND seq > ? THEN 1 ELSE 0 END AS own ' +
+        `FROM sync_rows INDEXED BY idx_lane_${L} WHERE ${LANE_WHERE[L]} AND seq > ? AND seq <= ? ORDER BY seq`
+      ).bind(origin, echoMin, origin, echoMin, since[L], cut);
+    });
+    try {
+      const res = await db.batch(stmts);
+      fetchLanes.forEach((L, i) => { fetched[L] = (res[i].results || []); });
+    } catch (e) {
+      lanesReady = false;
+      return json({ ok: false, proto: 2, error: errMessage(e) }, 500);
+    }
+  }
+
+  // Contiguity, lane by lane.
+  const lanes = {};
+  const out = [];
+  let broken = false, D = 0, stubs = 0, outBytes = 0;
+  for (const L of LANES) {
+    const w = walk[L];
+    const plan = plans[L];
+    if (broken || !w.served || !w.take.length) {
+      lanes[L] = { cursor: since[L], more: broken || !w.served ? plan.length > 0 : !w.drained, served: w.served && !broken, drained: w.served && !broken && w.drained, left: plan.length, exact: plan.length < rowsMax + 1 };
+      continue;
+    }
+    const rows = fetched[L] || [];
+    const present = new Set(rows.map((r) => Number(r.seq)));
+    let missing = Infinity;
+    for (const s of w.take) { if (!present.has(s)) { missing = s; break; } }
+    let cursor = since[L];
+    for (const r of rows) {
+      const s = Number(r.seq);
+      if (s >= missing) break;
+      if (r.own) { out.push(JSON.stringify({ lane: L, seq: s, entity: r.entity, uid: r.uid, event_uid: r.event_uid != null ? r.event_uid : null, patient_uid: r.patient_uid != null ? r.patient_uid : null, deleted: r.deleted ? 1 : 0, updated_at: r.updated_at, own: 1 })); stubs++; outBytes += STUB_BYTES; }
+      else { const t = rowJson(r, { lane: L, seq: s }); out.push(t); outBytes += t.length; }
+      cursor = s;
+      if (s > D) D = s;
+    }
+    const laneBroken = missing !== Infinity;
+    if (laneBroken) broken = true;
+    const deliveredCount = rows.filter((r) => Number(r.seq) < missing).length;
+    lanes[L] = { cursor, more: laneBroken || !w.drained, served: true, drained: !laneBroken && w.drained, left: Math.max(0, plan.length - deliveredCount), exact: plan.length < rowsMax + 1 };
+  }
+  // A lane that drained has no rows at or below D that it has not delivered, so
+  // its cursor can move up to D — keeping every lane close to the frontier.
+  // Never further: D is the most this response can vouch for.
+  for (const L of LANES) {
+    if (lanes[L].drained && D > lanes[L].cursor) lanes[L].cursor = D;
+  }
+  const more = LANES.some((L) => lanes[L].more);
+  const laneOut = {};
+  for (const L of LANES) {
+    laneOut[L] = { cursor: String(lanes[L].cursor), more: !!lanes[L].more, left: lanes[L].more ? lanes[L].left : 0, left_exact: lanes[L].exact };
+  }
+  const headJson = JSON.stringify({
+    ok: true, proto: 2, mode: 'seq', head: String(head), instance: instanceId, more,
+    bytes: outBytes, stubs, lanes: laneOut, peers,
+  });
+  return jsonText(headJson.slice(0, -1) + ',"rows":[' + out.join(',') + ']}');
+}
+
+function parseBacklog(raw) {
+  if (!raw) return null;
+  try {
+    const b = JSON.parse(raw);
+    const num = (v) => (Number.isFinite(Number(v)) ? Math.max(0, Math.min(1e9, Math.floor(Number(v)))) : 0);
+    return { clinical: num(b.c), xrays: num(b.x), bytes: num(b.b), who: typeof b.w === 'string' ? b.w.slice(0, 60) : '' };
+  } catch (_e) { return null; }
+}
+function readPeers(rows, self) {
+  const now = Date.now();
+  const out = [];
+  for (const r of rows) {
+    const device = String(r.k || '').slice('backlog:'.length);
+    if (!device || device === self) continue;
+    let b;
+    try { b = JSON.parse(r.v); } catch (_e) { continue; }
+    if (!b || !(now - Number(b.at || 0) < BACKLOG_FRESH_MS)) continue;
+    if (!(b.clinical > 0 || b.xrays > 0)) continue;
+    out.push({ device, who: b.who || '', clinical: b.clinical || 0, xrays: b.xrays || 0, bytes: b.bytes || 0, at: new Date(Number(b.at)).toISOString() });
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -383,7 +932,7 @@ async function handleCheckinGet(eventUid, env, url) {
   return htmlResponse(checkinFormPage(eventUid, ev.name, lang));
 }
 
-async function handleCheckinPost(eventUid, request, env) {
+async function handleCheckinPost(eventUid, request, env, db) {
   const ev = await getEventRow(env, eventUid);
   if (!ev || ev.deleted) return json({ ok: false, error: 'This pre-registration link is not valid.' }, 404);
   // Checked again on submit, not only on load: a form opened before the clinic
@@ -527,13 +1076,15 @@ async function handleCheckinPost(eventUid, request, env) {
     } });
   }
 
-  for (const r of rows) {
-    // Same delivery-number rule as a push: a pre-registration is queued at the
-    // end of the order, so every laptop picks it up regardless of its clock.
-    const seq = await nextSeq(env);
-    await env.DB.prepare(
-      'INSERT OR REPLACE INTO sync_rows (uid, entity, event_uid, patient_uid, deleted, updated_at, data, seq) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
-    ).bind(r.uid, r.entity, eventUid, r.patient_uid, 0, r.stamp, JSON.stringify(r.data), seq).run();
+  // The patient and their consents go in ONE batch: they become visible
+  // together, in order, at the end of the delivery queue, so every laptop picks
+  // them up regardless of its clock — and never a consent without its patient.
+  const out = await writeRows(db || meter(env.DB), env, rows.map((r) => ({
+    uid: r.uid, entity: r.entity, event_uid: eventUid, patient_uid: r.patient_uid,
+    deleted: 0, updated_at: r.stamp, data: r.data,
+  })), null);
+  if (out.results.some((x) => x !== 'applied' && x !== 'skipped')) {
+    throw new Error(out.error || 'The sign-up could not be saved. Please try again.');
   }
 
   return json({ ok: true });
