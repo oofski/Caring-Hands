@@ -101,9 +101,11 @@ export const api = {
   exportZip: () => call('exportZip'),
   exportClinic: (eventId) => call('exportClinic', { eventId }),
   importClinic: () => call('importClinic'),
-  finishEvent: (eventId) => call('eventFinish', { eventId }),
+  // opts.allowIncompleteSync: the person has confirmed finishing although this
+  // laptop may not hold the whole clinic (see the guard in ipc.js).
+  finishEvent: (eventId, opts) => call('eventFinish', { eventId, ...(opts || {}) }),
   finishPreflight: (eventId) => call('eventPreflight', { eventId }),
-  purgeEvent: (eventId) => call('eventPurge', { eventId }),
+  purgeEvent: (eventId, opts) => call('eventPurge', { eventId, ...(opts || {}) }),
   archivedReports: () => call('reportsArchived'),
   reportRollup: (eventId) => call('reportsRollup', { eventId }),
   rebuildReport: () => call('reportsRebuild'),

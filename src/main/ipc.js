@@ -199,6 +199,10 @@ function register(getMainWindow) {
   // clinic back (signatures and x-ray images cannot live in a spreadsheet).
   handle('export:clinic', async ({ eventId } = {}) => {
     const bundle = db.exportClinicBundle(eventId);
+    // Counted in the same tick the bundle was built, before the save dialog
+    // waits on a person: anything that syncs in from another station after
+    // this moment is not in the file (see finishPreflight).
+    const arrivals = db.syncArrivals((bundle.event && bundle.event.id) || eventId || db.getSetting('active_event_id'));
     const evName = String((bundle.event && bundle.event.name) || 'clinic').replace(/[^a-z0-9]+/gi, '-');
     const stamp = new Date().toISOString().slice(0, 10);
     const base = `Clinic-${evName}-${stamp}`;
@@ -215,7 +219,7 @@ function register(getMainWindow) {
     // The receipt that arms both destructive buttons. Recorded only after both
     // files are on disk, so a failed write cannot license a deletion.
     const receipt = db.recordClinicExport((bundle.event && bundle.event.id) || eventId, {
-      patients: bundle.patients.length, xlsxPath, backupPath,
+      patients: bundle.patients.length, xlsxPath, backupPath, arrivals,
     });
     return { saved: true, xlsxPath, backupPath, patients: bundle.patients.length, receipt };
   });
@@ -230,7 +234,12 @@ function register(getMainWindow) {
     let bundle;
     try { bundle = JSON.parse(fs.readFileSync(res.filePaths[0], 'utf8')); }
     catch (_e) { throw new Error('That file could not be read. Choose the .chbak.json file saved with the export.'); }
-    return { imported: true, ...db.importClinicBundle(currentUser, bundle) };
+    const out = db.importClinicBundle(currentUser, bundle);
+    // The server sends this app's own uploads back as stubs on the strength of
+    // this run having pushed them. A restore just rewrote what is here, so stop
+    // trusting that: full copies from now on.
+    cloud.rotateEchoToken();
+    return { imported: true, ...out };
   });
 
   // Pull everything in before the records go. The kept totals are counted from
@@ -240,16 +249,61 @@ function register(getMainWindow) {
   const syncBeforeRemoving = async () => {
     try { if (cloud.status().enabled) await cloud.syncOnce(); } catch (_e) { /* offline: proceed with local totals */ }
   };
+  // v1.14.0: and refuse while this laptop does not hold the whole clinic.
+  // Finishing deletes every record of it from every station — including the
+  // ones still on their way HERE, which the export taken here does not have.
+  // Reproduced: x-rays still downloading when the clinic was finished were
+  // gone from every laptop and in no backup.
+  //   - still downloading, and the cloud is reachable: wait. No override; it
+  //     finishes on its own, usually in minutes.
+  //   - rows waiting for a parent, the cloud unreachable, or another station
+  //     still holding unsent records: refused unless the person confirms, on
+  //     the finish screen, that they mean to go ahead anyway.
+  const syncProblems = (c) => {
+    const out = [];
+    if (c.orphans > 0) out.push(`${c.orphans} record(s) from other stations${c.orphanXrays ? ` (${c.orphanXrays} x-ray image(s))` : ''} are still waiting for the patient they belong to`);
+    if (!c.reachable) out.push(c.lastContactAt ? `this laptop has not reached the clinic cloud since ${new Date(c.lastContactAt).toLocaleString()}${c.behind ? ', and it was still receiving records then' : ''}` : 'this laptop has not reached the clinic cloud');
+    for (const p of c.peers || []) {
+      out.push(`${p.who || 'another station'} still has ${p.xrays ? `${p.xrays} x-ray image(s)` : 'records'} it has not sent`);
+    }
+    return out;
+  };
+  const syncGuard = (opts) => {
+    const c = cloud.syncCompleteness();
+    if (!c.online) return; // running offline by choice: this laptop is the whole clinic
+    if (c.reachable && c.behind) {
+      throw new Error(`${c.imagesBehind ? `${c.imagesBehind} x-ray image(s)` : 'Records'} from other stations are still arriving on this laptop.`
+        + ' Finishing now would delete them from every station without them being in your export.'
+        + ' Wait until the cloud badge reads “synced”, export again, then finish.');
+    }
+    const problems = syncProblems(c);
+    if (problems.length && !(opts && opts.allowIncompleteSync === true)) {
+      throw new Error(`This laptop may not hold the whole clinic: ${problems.join('; ')}. Anything missing here is not in your export, and finishing deletes it from every station.`);
+    }
+  };
   // What is still outstanding before a clinic is closed for good. The image
   // count from the DEXIS import folder is added by the caller, which is the only
   // side that can read the disk.
-  handle('event:preflight', ({ eventId } = {}) => db.finishPreflight(eventId));
-  handle('event:finish', async ({ eventId } = {}) => {
+  handle('event:preflight', ({ eventId } = {}) => {
+    const pre = db.finishPreflight(eventId);
+    const c = cloud.syncCompleteness();
+    return {
+      ...pre,
+      sync: {
+        ...c,
+        blocked: !!(c.online && c.reachable && c.behind),
+        problems: c.online ? syncProblems(c) : [],
+      },
+    };
+  });
+  handle('event:finish', async ({ eventId, allowIncompleteSync } = {}) => {
     await syncBeforeRemoving();
+    syncGuard({ allowIncompleteSync });
     return db.finishEvent(currentUser, eventId);
   });
-  handle('event:purge', async ({ eventId } = {}) => {
+  handle('event:purge', async ({ eventId, allowIncompleteSync } = {}) => {
     await syncBeforeRemoving();
+    syncGuard({ allowIncompleteSync });
     return db.purgeEventPatients(currentUser, eventId);
   });
   handle('reports:archived', () => db.listEventReports());

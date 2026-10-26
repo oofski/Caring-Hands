@@ -21,8 +21,8 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 export async function startServer({ workerPath, port = 0, d1 = {} } = {}) {
   // A query string gives every server its own module instance, so two workers
   // (old and new) can run side by side in one process.
-  const mod = await import(pathToFileURL(workerPath).href + '?rig=' + Math.random().toString(36).slice(2));
-  const worker = mod.default;
+  const load = async (p) => (await import(pathToFileURL(p).href + '?rig=' + Math.random().toString(36).slice(2))).default;
+  let worker = await load(workerPath);
   const DB = makeD1(d1);
   const env = { DB, CLINIC_KEY: KEY };
   const opts = { upBps: 0, downBps: 0, links: {}, failPulls: 0, failPullsFor: null, failPullsAfter: 0 };
@@ -116,6 +116,12 @@ export async function startServer({ workerPath, port = 0, d1 = {} } = {}) {
     log,
     DB,
     setOpts(next) { Object.assign(opts, next || {}); },
+    // Paste a different worker.js over the running one, keeping the database:
+    // what a clinic does in the Cloudflare dashboard (and what a rollback is).
+    // A fresh module instance, so it starts cold, as a new deploy does.
+    async swapWorker(p) { worker = await load(p); },
+    // The server's delivery counter, for cursor sanity checks.
+    head() { try { return Number(DB._sqlite.prepare('SELECT v FROM sync_seq WHERE id = 1').get().v); } catch (_e) { return null; } },
     setLink(laptop, link) { opts.links[laptop] = Object.assign({}, opts.links[laptop] || {}, link); },
     clearLinks() { opts.links = {}; opts.upBps = 0; opts.downBps = 0; },
     // Fail `n` pulls from `laptop`, after letting `after` pulls through first.

@@ -122,6 +122,27 @@ Use two or three stations (or two windows on different computers):
 
 ---
 
+## Updating the server (pasting a new worker.js)
+
+When a release changes `cloud/worker.js`, the clinic's server is updated by pasting the new
+file over the old one: Cloudflare dashboard → **Workers & Pages** → your Worker → **Edit code**
+→ select all, paste, **Deploy**. The database, its binding and `CLINIC_KEY` are untouched.
+
+- **Paste it at a quiet time** — not mid-clinic. The first request after a deploy upgrades
+  the database in place (new columns and indexes); on a database holding hundreds of x-rays
+  this can take a little while, and laptops simply retry meanwhile.
+- **Paste the whole file at once, at 100%** — not a gradual or percentage rollout. Laptops
+  on any version work with both the old and the new server, so no laptop has to be updated
+  first, and none is left behind if you update them later.
+- **Free Cloudflare plan:** a request may run only 50 database statements. The v1.14 server
+  stores what fits and tells the app to send the rest straight away, so a backlog still gets
+  through — just in more, smaller requests.
+- **If something goes wrong:** add a Variable `SYNC_V2` = `off` (Settings → Variables) and
+  Deploy. The server then answers every laptop exactly the way the old one did. Pasting the
+  previous worker.js back is also safe.
+
+---
+
 ## Troubleshooting
 
 | Symptom | Cause | Fix |

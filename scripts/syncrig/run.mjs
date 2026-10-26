@@ -336,10 +336,69 @@ SCENARIOS.compat = async () => {
   }
 };
 
+// The clinic pastes the new worker over the old one mid-day — and might paste
+// the old one back. Laptops on the new and old app keep working throughout,
+// lose nothing, and end up holding the same clinic.
+SCENARIOS.swap = async () => {
+  const tag = `swap[current → worker-1.11.0 → current, laptops ${APP} + 1.13.0]`;
+  console.log(`\n# ${tag}`);
+  const server = await startServer({ workerPath: workerPath('current') });
+  const f = await fleet(server, { N: APP, O: 'app-1.13.0', M: APP });
+  const sane = async (when) => {
+    // A lane cursor past the server's own counter could never be caught up.
+    const head = server.head();
+    for (const n of ['N', 'M']) {
+      const s = (await f.call(n, 'sync')).settings || {};
+      const L = s.cloud_lanes ? JSON.parse(s.cloud_lanes) : null;
+      const top = L ? Math.max(L.e, L.p, L.k, L.x) : Number(s.cursor || 0);
+      if (!(top <= server.head())) record(tag, `${n}'s cursors stay within the server's counter (${when})`, false, { detail: `${JSON.stringify(L)} head ${head}` });
+    }
+  };
+  try {
+    await setup(f, 10);
+    await f.call('N', 'addXrays', { first: ['P01'], count: 4, bytes: 120 * 1024 });
+    await f.call('N', 'complete', { first: 'P02' });
+    await f.call('O', 'complete', { first: 'P03' });
+    await f.syncAll(2);
+    await sane('before the swap');
+    // Roll back to the worker clinics have today, in the middle of the day.
+    await server.swapWorker(workerPath('worker-1.11.0'));
+    await f.call('O', 'retooth', { first: 'P01', tooth: '17' }); // an edit of an image N took
+    await f.call('N', 'dismiss', { first: 'P02' });
+    await f.call('M', 'createPatients', { prefix: 'R', n: 5 });
+    await f.call('O', 'addXrays', { first: ['P05'], count: 2, bytes: 120 * 1024 });
+    // N is offline for all of this (its lid is shut), and learns of O's edit
+    // only after the new worker is back. (The old worker stores rows with
+    // INSERT OR REPLACE, which clears the new worker's origin and size columns,
+    // so a row it rewrote can never come back to N as N's own stub.)
+    for (let i = 0; i < 3; i++) { await f.call('O', 'sync'); await f.call('M', 'sync'); }
+    await sane('on the old worker');
+    // And forward again.
+    await server.swapWorker(workerPath('current'));
+    await f.call('O', 'dismiss', { first: 'P03' });
+    await f.call('M', 'complete', { first: 'R02' });
+    for (let i = 0; i < 4; i++) await f.syncAll(1);
+    await sane('after swapping back');
+    const keys = ['patients', 'withVitals', 'consents', 'treatments', 'xrays'];
+    const c = {};
+    for (const n of f.names) c[n] = await f.call(n, 'counts');
+    const same = f.names.every((n) => keys.every((k) => c[n][k] === c.N[k]));
+    record(tag, 'every laptop ends up holding the same clinic', same, { detail: f.names.map((n) => `${n} ${JSON.stringify(c[n])}`).join(' / ') });
+    record(tag, '...with nothing lost', c.N.patients === 15 && c.N.xrays === 6 && c.N.treatments === 3, { detail: JSON.stringify(c.N) });
+    for (const [first, want] of [['P02', 'dismissed'], ['P03', 'dismissed'], ['R02', 'completed']]) {
+      const got = await Promise.all(f.names.map(async (n) => (await f.call(n, 'status', { first })).status));
+      record(tag, `${first} reads ${want} on every laptop`, got.every((g) => g === want), { detail: got.join(',') });
+    }
+    // O changed an image N took, while the old worker was in place.
+    const t = await Promise.all(f.names.map(async (n) => (await f.call(n, 'teeth', { first: 'P01' })).teeth.slice().sort().join('|')));
+    record(tag, 'an edit made on the old worker to an image another laptop took reaches that laptop', t.every((x) => x === t[1]) && t[0].includes('17'), { detail: t.join(' / ') });
+  } finally { await f.close(); await server.close(); }
+};
+
 // ---------------------------------------------------------------------------
-const ORDER = ['baseline', 'compat', 'xraylaptop', 'catchup', 'catchup5', 'poison', 'orphans', 'echo', 'freeplan'];
+const ORDER = ['baseline', 'compat', 'xraylaptop', 'catchup', 'catchup5', 'poison', 'orphans', 'echo', 'freeplan', 'swap'];
 SCENARIOS.catchup5 = (o = {}) => SCENARIOS.catchup({ ...o, down: 5, up: 2, targetCycles: 3 });
-const chosen = WANT.length ? WANT : (QUICK ? ['baseline', 'compat', 'xraylaptop', 'catchup', 'poison', 'orphans', 'echo'] : ORDER);
+const chosen = WANT.length ? WANT : (QUICK ? ['baseline', 'compat', 'xraylaptop', 'catchup', 'poison', 'orphans', 'echo', 'swap'] : ORDER);
 const started = Date.now();
 for (const s of chosen) {
   if (!SCENARIOS[s]) { console.error('unknown scenario ' + s); process.exit(2); }

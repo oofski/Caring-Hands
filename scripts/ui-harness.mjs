@@ -3987,6 +3987,10 @@ async function main() {
           return;
         }
         if (u.pathname === '/v1/pull') {
+          // v1.14.0 asks every server once whether it speaks the lane protocol,
+          // with a cursor no older server has rows past. This stand-in is an
+          // older server: it answers exactly as v1.11 does, with an empty page.
+          if (u.searchParams.get('proto') === '2') { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: true, rows: [], cursor: u.searchParams.get('since'), more: false })); return; }
           seen.push({ path: 'pull', limit: Number(u.searchParams.get('limit')) });
           res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: true, rows: [], cursor: '7', more: false }));
           return;
@@ -4029,6 +4033,8 @@ async function main() {
       const u = new URL(req.url, 'http://x');
       if (u.pathname === '/v1/push') { res.writeHead(200, { 'content-type': 'application/json' }); res.end('{"ok":true}'); return; }
       if (u.pathname === '/v1/pull') {
+        // An older server answering the v1.14 probe (see above).
+        if (u.searchParams.get('proto') === '2') { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: true, rows: [], cursor: u.searchParams.get('since'), more: false })); return; }
         const limit = Number(u.searchParams.get('limit'));
         asks.push(limit);
         const pg = pages.shift() || { n: 0, size: 10 };
@@ -4095,6 +4101,8 @@ async function main() {
           return send(200, { ok: true });
         }
         if (u.pathname === '/v1/pull') {
+          // An older server answering the v1.14 probe (see the block above).
+          if (u.searchParams.get('proto') === '2') return send(200, { ok: true, rows: [], cursor: u.searchParams.get('since'), more: false });
           const pg = script.pulls.shift();
           if (!pg) return send(200, { ok: true, rows: [], cursor: u.searchParams.get('since') || '0', more: false });
           if (pg.fail) return send(500, { error: 'boom' });

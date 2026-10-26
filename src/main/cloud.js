@@ -5,6 +5,8 @@
 // nothing runs unless an admin has entered a URL + key and enabled sync. All
 // network failures are swallowed into a status field so the app keeps working.
 
+const crypto = require('crypto');
+const os = require('os');
 const db = require('./db');
 
 const INTERVAL_MS = 4000;
@@ -57,7 +59,61 @@ const PULL_TIME_BUDGET_MS = 20000;
 
 const isTimeout = (e) => !!(e && (e.name === 'AbortError' || e.timeout || /abort/i.test(String(e.message || ''))));
 
+// v1.14.0 — four lanes. See cloud/SYNC_CONTRACT.md.
+//
+// A v1.14 server hands rows out in four lanes — deletions and clinics, then
+// patients, then the rest of the chart, then x-ray images — each with its own
+// cursor, and every page capped in BYTES. A laptop that has fallen behind gets
+// every check-out first and the image backlog after, instead of the check-outs
+// queued behind the images. It also sends this app's own uploads back as
+// stubs instead of a second copy of every image.
+//
+// RULE: when the server does not answer in the new protocol, every code path
+// below is v1.13's. An older server is asked once every ten minutes, with a
+// request it answers with an empty page.
+const LANES = ['e', 'p', 'k', 'x'];
+const PROBE_SINCE = '9007199254740991'; // an older server: "rows after this" = none
+const PULL_BYTES_INIT = 1024 * 1024;
+const PULL_BYTES_FLOOR = 256 * 1024;  // where the measured rate cannot push it below
+const PULL_BYTES_MIN = 64 * 1024;     // where timeouts can
+const PULL_BYTES_CAP = 4 * 1024 * 1024;
+const PAGE_TARGET_MS = 3000;          // aim for pages this link fetches in ~3 s
+const IMAGE_SLICE_MS = 4000;          // images only: give the push its turn this often
+const PROTO_RETRY_MS = 10 * 60 * 1000;
+const PUSH_V2_ROUNDS = 3;
+const PUSH_TIME_BUDGET_MS = 8000;
+const CEILING_MS = 10 * 60 * 1000;
+const NOTIFY_THROTTLE_MS = 1000;
+const REACHABLE_MS = 120000;
+
+// The echo token names THIS run of the app to the server, which then sends our
+// own rows back as stubs. Never saved: after a restart, a restore or an import
+// the local database may no longer hold what this run pushed, so a new run
+// gets a new token and full copies of everything.
+let echoToken = crypto.randomUUID();
+let echoMin = 0;
+function rotateEchoToken() { echoToken = crypto.randomUUID(); echoMin = 0; }
+
+let serverProto = 0;    // 0 not yet known, 1 older server, 2 lanes
+let protoRetryAt = 0;
+let v2Fails = 0;
+let pullBytes = PULL_BYTES_INIT;
+let rateBps = 0;
+let serverMaxRows = PULL_LIMIT;
+let clinicalCeiling = null; // { max, until }: no growing back past a size that failed
+let xrayCeiling = null;
+let lastPull = null;        // what the last good page said about how complete this laptop is
+let lastPullOkAt = 0;
+let lastNotify = 0;
+let backlog = { c: 0, x: 0, b: 0 };
+const isSeq = (v) => /^\d+$/.test(String(v == null ? '' : v));
+const ceilingOf = (c) => (c && Date.now() < c.until ? c.max : Infinity);
+// A failed request counts against its size if it timed out or the server
+// errored. Not an offline laptop: that is no reason to send less.
+const sizeFailure = (e) => isTimeout(e) || (e && e.status >= 500);
+
 let timer = null;
+let againTimer = null;    // v1.14.0: the quick follow-up cycle while catching up
 let running = false;      // a sync cycle is in flight
 let getWindow = () => null;
 let lastResult = { pushed: 0, pulled: 0, applied: 0 };
@@ -79,6 +135,7 @@ function trimUrl(u) {
 async function httpJson(method, url, key, body, info) {
   const controller = new AbortController();
   const to = setTimeout(() => controller.abort(), HTTP_TIMEOUT_MS);
+  const t0 = Date.now();
   try {
     const headers = { 'content-type': 'application/json' };
     if (key) headers.authorization = 'Bearer ' + key;
@@ -93,12 +150,12 @@ async function httpJson(method, url, key, body, info) {
       }
       throw new Error('The connection to the clinic cloud dropped part-way through. It will try again.');
     }
-    if (info) info.bytes = text.length;
+    if (info) { info.bytes = text.length; info.ms = Date.now() - t0; }
     let json = null;
     try { json = text ? JSON.parse(text) : null; } catch { /* non-json */ }
     if (!res.ok) {
       const msg = (json && json.error) || `HTTP ${res.status}`;
-      const err = new Error(msg); err.status = res.status; throw err;
+      const err = new Error(msg); err.status = res.status; err.body = json; throw err;
     }
     return json || {};
   } catch (e) {
@@ -118,7 +175,7 @@ async function testConnection(url, key) {
   if (!health || health.ok !== true) throw new Error('That URL did not return a Caring Hands sync server.');
   // Key check — a bad key returns 401.
   await httpJson('GET', base + '/v1/pull?since=&limit=1', key);
-  return { ok: true, service: health.service, version: health.version, time: health.time };
+  return { ok: true, service: health.service, version: health.version, time: health.time, sync_api: health.sync_api || 1 };
 }
 
 // Two requests, in this order:
@@ -130,44 +187,121 @@ async function testConnection(url, key) {
 //      request (a day offline, a restored backup), sending images in the same
 //      cycle could put an x-ray on the cloud before its patient; other laptops
 //      would then hold it as an orphan until the patient caught up.
-async function pushOnce(base, key, deviceId) {
-  let pushed = 0;
-  const clinical = db.collectSyncRows(clinicalMax, { skip: ['xray'] });
-  if (clinical.rows.length) {
+async function pushOnce(base, key, deviceId, ctx) {
+  let pushed = 0, more = false, note = null;
+  const t0 = Date.now();
+  // The clinical lane. Against a v1.14 server it may take more than one round:
+  // on the free Cloudflare plan the server can store only so many rows per
+  // request, and says how many it got through, so the rest go straight after
+  // rather than four seconds later.
+  for (let round = 0; ; round++) {
+    const max = Math.max(1, Math.min(clinicalMax, serverMaxRows));
+    const clinical = db.collectSyncRows(max, { skip: ['xray'] });
+    if (!clinical.rows.length) break;
+    let res;
     try {
-      const r = await httpJson('POST', base + '/v1/push', key, { device_id: deviceId, rows: clinical.rows });
-      if (r && r.ok) { db.markSynced(clinical.mark); db.setSyncMeta({ lastPush: new Date().toISOString() }); }
-      pushed += clinical.rows.length;
-      if (clinical.rows.length >= clinicalMax) clinicalMax = Math.min(PULL_LIMIT, clinicalMax * 2);
+      res = await pushBatch(base, key, deviceId, clinical, ctx);
     } catch (e) {
-      if (isTimeout(e)) clinicalMax = Math.max(1, Math.floor(clinicalMax / 2));
+      // Too big for this link or this server: send fewer next time, and do not
+      // grow back past the size that failed for a while. A free-plan server
+      // that cannot store 400 rows in one request used to be sent the same
+      // 400 rows every four seconds, forever.
+      if (sizeFailure(e)) {
+        clinicalMax = Math.max(1, Math.floor(clinicalMax / 2));
+        clinicalCeiling = { max: clinicalMax, until: Date.now() + CEILING_MS };
+      }
       throw e;
     }
-    // More clinical rows still waiting? They go first, next cycle. (Asking for
-    // one row is a peek: collecting only stamps a row whose content changed,
-    // exactly as the real collect next cycle would.)
-    if (db.collectSyncRows(1, { skip: ['xray'] }).rows.length) return pushed;
+    pushed += clinical.rows.length;
+    if (res.error) note = res.error;
+    if (res.settled === 0) {
+      // Nothing stored at all. Same as an error, said honestly.
+      clinicalMax = Math.max(1, Math.floor(clinicalMax / 2));
+      clinicalCeiling = { max: clinicalMax, until: Date.now() + CEILING_MS };
+      throw new Error(res.error || 'The clinic cloud did not store this upload. It will try again.');
+    }
+    if (clinical.rows.length >= max && res.complete) clinicalMax = Math.min(PULL_LIMIT, clinicalMax * 2, ceilingOf(clinicalCeiling));
+    const again = res.v2 && (!res.complete || clinical.truncated)
+      && round + 1 < PUSH_V2_ROUNDS && Date.now() - t0 < PUSH_TIME_BUDGET_MS;
+    if (!again) break;
+  }
+  // More clinical rows still waiting? They go first, next cycle. (Asking for
+  // one row is a peek: collecting only stamps a row whose content changed,
+  // exactly as the real collect next cycle would.)
+  if (db.collectSyncRows(1, { skip: ['xray'] }).rows.length) {
+    backlog = { c: 1, ...xrayBacklogNow() };
+    return { pushed, more: true, note };
   }
   const xr = db.collectSyncRows(PULL_LIMIT, { only: ['xray'], tombstones: false, xrayBytes: xrayBatchBytes });
   xraysTooBig = xr.xraysTooBig || 0;
   if (xr.rows.length) {
+    let res;
     try {
-      const r = await httpJson('POST', base + '/v1/push', key, { device_id: deviceId, rows: xr.rows });
-      if (r && r.ok) { db.markSynced(xr.mark); db.setSyncMeta({ lastPush: new Date().toISOString() }); }
-      pushed += xr.rows.length;
-      // It fitted. Only grow if the budget was actually what limited it: a
-      // one-small-image push says nothing about whether a bigger one would fit,
-      // and growing on it swung a marginal link back into a timeout.
-      const sent = xr.rows.reduce((n, row) => n + String((row.data && row.data.image_png) || '').length, 0);
-      if (sent >= xrayBatchBytes / 2) xrayBatchBytes = Math.min(XRAY_BATCH_MAX, Math.round(xrayBatchBytes * 1.5));
+      res = await pushBatch(base, key, deviceId, xr, ctx);
     } catch (e) {
       // Too big for this link: send less next time rather than the identical
       // batch again. Down to a single image, which always goes.
-      if (isTimeout(e)) xrayBatchBytes = Math.max(XRAY_BATCH_MIN, Math.floor(xrayBatchBytes / 2));
+      if (sizeFailure(e)) {
+        xrayBatchBytes = Math.max(XRAY_BATCH_MIN, Math.floor(xrayBatchBytes / 2));
+        xrayCeiling = { max: xrayBatchBytes, until: Date.now() + CEILING_MS };
+      }
+      backlog = { c: 0, ...xrayBacklogNow() };
       throw e;
     }
+    pushed += xr.rows.length;
+    if (res.error) note = res.error;
+    if (res.settled === 0) {
+      xrayBatchBytes = Math.max(XRAY_BATCH_MIN, Math.floor(xrayBatchBytes / 2));
+      xrayCeiling = { max: xrayBatchBytes, until: Date.now() + CEILING_MS };
+      backlog = { c: 0, ...xrayBacklogNow() };
+      throw new Error(res.error || 'The clinic cloud did not store this upload. It will try again.');
+    }
+    // It fitted. Only grow if the budget was actually what limited it: a
+    // one-small-image push says nothing about whether a bigger one would fit,
+    // and growing on it swung a marginal link back into a timeout.
+    const sent = xr.rows.reduce((n, row) => n + String((row.data && row.data.image_png) || '').length, 0);
+    if (sent >= xrayBatchBytes / 2 && res.complete) xrayBatchBytes = Math.min(XRAY_BATCH_MAX, Math.round(xrayBatchBytes * 1.5), ceilingOf(xrayCeiling));
+    more = xr.truncated || !res.complete;
   }
-  return pushed;
+  backlog = { c: 0, ...xrayBacklogNow() };
+  return { pushed, more, note };
+}
+
+function xrayBacklogNow() {
+  try { const b = db.xrayBacklog(); return { x: b.count || 0, b: b.bytes || 0 }; } catch (_e) { return { x: 0, b: 0 }; }
+}
+
+// One upload, and what it settled. A v1.14 server answers row by row:
+//   applied / skipped / invalid — final, marked sent
+//   too_big — it can never be stored as it is; set aside until it changes
+//   retry   — not stored this time (the server ran out of room in this
+//             request); still waiting, sent again
+// An older server answers ok:true for the whole batch, or fails it.
+async function pushBatch(base, key, deviceId, batch, ctx) {
+  const r = await httpJson('POST', base + '/v1/push', key, { device_id: deviceId, proto: 2, origin: echoToken, rows: batch.rows });
+  // A reset (Re-sync everything, a new server address) happened while this
+  // upload was in flight. Marking now would mark rows sent that the reset just
+  // asked to send again — to a different server, possibly.
+  if (ctx && db.syncGen() !== ctx.gen) return { v2: false, settled: batch.rows.length, complete: true };
+  if (r && r.proto === 2 && Array.isArray(r.results) && r.results.length === batch.rows.length) {
+    const done = [], refused = [];
+    r.results.forEach((res, i) => {
+      if (res === 'applied' || res === 'skipped' || res === 'invalid') done.push(batch.mark[i]);
+      else if (res === 'too_big') refused.push(batch.mark[i]);
+    });
+    if (done.length) { db.markSynced(done); db.setSyncMeta({ lastPush: new Date().toISOString() }); }
+    if (refused.length) db.markRefused(refused);
+    if (Number(r.max_rows) >= 1) serverMaxRows = Math.min(PULL_LIMIT, Math.floor(Number(r.max_rows)));
+    return { v2: true, settled: done.length + refused.length, complete: !!r.complete, error: r.error || (refused.length ? 'Some items are too large for the clinic cloud to store; they stay on this laptop.' : null) };
+  }
+  if (r && r.ok) {
+    db.markSynced(batch.mark); db.setSyncMeta({ lastPush: new Date().toISOString() });
+    return { v2: false, settled: batch.rows.length, complete: true };
+  }
+  // Part stored, part not ({ok:false, partial:true}), or an answer whose
+  // results do not line up with what was sent: mark nothing, send again. The
+  // stored rows are skipped cheaply the second time.
+  return { v2: false, settled: r && r.partial ? batch.rows.length : 0, complete: false, error: (r && r.error) || null };
 }
 
 // A cursor is either the server's delivery counter (a plain number, v1.5.0+
@@ -176,7 +310,7 @@ async function pushOnce(base, key, deviceId) {
 // clock is behind).
 const isSeqCursor = (c) => /^\d+$/.test(String(c || ''));
 
-async function pullOnce(base, key) {
+async function pullOnce(base, key, ctx) {
   let cursor = db.getSyncMeta().cursor || '';
   // Still on a timestamp cursor? Ask whether this server now delivers by
   // counter, and if so restart from the beginning ONCE. That both switches this
@@ -186,7 +320,19 @@ async function pullOnce(base, key) {
     try { health = await httpJson('GET', base + '/health', null); } catch { /* offline / older server */ }
     if (health && health.seq === true) { cursor = ''; db.setSyncMeta({ cursor }); }
   }
-  let pulled = 0, applied = 0, removed = 0, guard = 0;
+  if (serverProto !== 1 || Date.now() >= protoRetryAt) {
+    const r = await pullV2(base, key, ctx);
+    if (r !== 'legacy') return r;
+  }
+  return pullLegacy(base, key, ctx);
+}
+
+// The single-cursor pull, for a server older than v1.14 (or one with the new
+// protocol switched off). v1.13's loop, except that the cursor and the rows
+// waiting for a parent are now saved together, after every page.
+async function pullLegacy(base, key, ctx) {
+  let cursor = db.getSyncMeta().cursor || '';
+  let pulled = 0, applied = 0, removed = 0, guard = 0, more = true;
   // Retry any previously-orphaned rows first — their parent may have arrived
   // since (e.g. a treatment that was pulled before its patient).
   let carry = db.getSyncPending();
@@ -197,13 +343,6 @@ async function pullOnce(base, key) {
   // delta are parked in the persistent pending buffer and retried next cycle
   // (never dropped, never wedging the cursor).
   const started = Date.now();
-  // try/finally, because the cursor is saved after EVERY page but the orphans
-  // carried between pages were only saved when the loop ended normally. A page
-  // that failed — and since v1.13.0 a timeout fails instead of being swallowed —
-  // dropped every orphan collected so far while the cursor had already moved
-  // past them for good. Reproduced: a patient arrived on another laptop as
-  // "triaged" with NO vitals and NO blood-thinner flag.
-  try {
   for (;;) {
     if (guard++ > 500) break;
     const qs = `?since=${encodeURIComponent(cursor)}&limit=${pullLimit}`;
@@ -240,22 +379,159 @@ async function pullOnce(base, key) {
     }
     // Accept "0" as a real cursor value (a counter can legitimately be 0).
     const pageCursor = (r && r.cursor != null && r.cursor !== '') ? String(r.cursor) : cursor;
-    if (pageCursor !== cursor) { cursor = pageCursor; db.setSyncMeta({ cursor }); }
+    more = !!(r && r.more);
+    // One transaction: the cursor never moves past rows that are not either
+    // applied or saved as waiting. v1.13 saved the waiting rows only when the
+    // loop ended, so a crash in between lost them for good.
+    const state = completeness(1, more, null, carry);
+    if (!db.commitPull({ gen: ctx.gen, cursor: pageCursor, pending: carry, state })) break; // reset meanwhile
+    cursor = pageCursor;
+    lastPull = state; lastPullOkAt = Date.now();
     // The server sets `more` against the limit we asked for, so it stays right
     // whatever size we choose.
-    if (!r || !r.more) break;
+    if (!more) break;
     // Give the push its turn; the next cycle carries on from this cursor. Not
     // while orphans are waiting for their parent, though: during a catch-up
     // the parent is usually a page or two away, and stopping here would park
     // full x-ray images in the pending buffer instead of applying them.
     if (Date.now() - started > PULL_TIME_BUDGET_MS && !carry.length) break;
   }
-  } finally {
-    // Park still-unresolved orphans for the next cycle (bounded, persisted) —
-    // on the way out of a failure as much as of a success.
-    db.setSyncPending(carry);
+  return { pulled, applied, deleted: removed, again: false };
+}
+
+// What a pull knows about how complete this laptop is, kept on disk with the
+// cursor so the Finish guard can use it even after the network has gone.
+function completeness(proto, behind, r, carry) {
+  const x = r && r.lanes && r.lanes.x;
+  return {
+    at: new Date().toISOString(), proto, behind: !!behind,
+    imagesBehind: x && x.more ? Number(x.left) || 0 : 0,
+    imagesBehindExact: x ? x.left_exact !== false : true,
+    orphans: carry.length,
+    orphanXrays: carry.filter((row) => row.entity === 'xray').length,
+    peers: (r && Array.isArray(r.peers)) ? r.peers.slice(0, 20) : [],
+  };
+}
+
+// Is this a page in the new protocol, and a sane one? A lane cursor that went
+// BACKWARDS, or past the server's own counter, means something is wrong on the
+// server: apply nothing from it.
+function isV2(r, sent) {
+  if (!r || r.ok !== true || r.proto !== 2 || !Array.isArray(r.rows) || !isSeq(r.head) || !r.lanes) return false;
+  for (const L of LANES) {
+    const l = r.lanes[L];
+    if (!l || !isSeq(l.cursor) || Number(l.cursor) < Number(sent[L])) return false;
+    if (!r.reset && Number(l.cursor) > Number(r.head)) return false;
   }
-  return { pulled, applied, deleted: removed };
+  return true;
+}
+
+// The server did not answer in the new protocol. An older server answers the
+// probe with an ordinary empty page: believe it straight away, and ask again
+// in ten minutes (the clinic may paste the new server in at any time). Anything
+// else — an error from a new server — needs three in a row.
+function noteV2Failure(body) {
+  if (body && body.ok === true && body.proto === undefined) { v2Fails = 0; serverProto = 1; protoRetryAt = Date.now() + PROTO_RETRY_MS; return; }
+  v2Fails++;
+  if (v2Fails >= 3) { v2Fails = 0; serverProto = 1; protoRetryAt = Date.now() + PROTO_RETRY_MS; }
+}
+
+// The clinic database behind this address is not the one this laptop's place
+// in the queue came from: start again from nothing, and send everything this
+// laptop holds, since the new database may have none of it.
+function newDatabase() {
+  db.resetSyncCursor();
+  db.markAllDirty();
+  rotateEchoToken();
+}
+
+async function pullV2(base, key, ctx) {
+  let lanes = db.getSyncLanes();
+  if (!lanes) return 'legacy'; // still on the old timestamp cursor
+  const knownInstance = db.getSetting('cloud_server_instance') || '';
+  let carry = db.getSyncPending();
+  let pulled = 0, applied = 0, removed = 0, guard = 0, pages = 0, again = false;
+  const started = Date.now();
+  const who = String(os.hostname() || '').slice(0, 60);
+  for (;;) {
+    if (guard++ > 500) break;
+    const q = new URLSearchParams({
+      proto: '2', since: PROBE_SINCE, limit: '1',
+      since_e: String(lanes.e), since_p: String(lanes.p), since_k: String(lanes.k), since_x: String(lanes.x),
+      rows: '1000', max_bytes: String(Math.round(pullBytes)),
+      origin: echoToken, echo_min: String(echoMin),
+      device: ctx.deviceId, backlog: JSON.stringify({ c: backlog.c, x: backlog.x, b: backlog.b, w: who }),
+    });
+    const info = {};
+    let r;
+    try {
+      r = await httpJson('GET', base + '/v1/pull?' + q.toString(), key, null, info);
+    } catch (e) {
+      if (isTimeout(e)) { pullBytes = Math.max(PULL_BYTES_MIN, Math.floor(pullBytes / 2)); throw e; }
+      if (!e.status) throw e; // offline: not a protocol question
+      if (e.status >= 500) pullBytes = Math.max(PULL_BYTES_MIN, Math.floor(pullBytes / 2));
+      noteV2Failure(e.body);
+      // Nothing from this page was applied. Fall back to the old protocol for
+      // the rest of this cycle — unless pages already came in, in which case
+      // stop here and let the next cycle carry on.
+      if (pages) throw e;
+      return 'legacy';
+    }
+    if (!isV2(r, lanes)) {
+      noteV2Failure(r);
+      if (pages) throw new Error('The clinic cloud sent a page this laptop could not use. It will try again.');
+      return 'legacy';
+    }
+    serverProto = 2; v2Fails = 0;
+    pages++;
+    if (r.reset === 'cursor_ahead' || (r.instance && knownInstance && r.instance !== knownInstance)) {
+      newDatabase();
+      return { pulled, applied, deleted: removed, again: true };
+    }
+    // Our own uploads come back as stubs. Accept a page of them only if every
+    // one is already here exactly as the server holds it; otherwise ask again
+    // for full copies of the whole range.
+    const stubs = r.rows.filter((row) => row.own === 1);
+    if (stubs.length && db.echoMissing(stubs).length) {
+      echoMin = Math.max(echoMin, ...LANES.map((L) => Number(r.lanes[L].cursor)));
+      continue;
+    }
+    const rows = stubs.length ? r.rows.filter((row) => row.own !== 1) : r.rows;
+    const batch = carry.length ? carry.concat(rows) : rows;
+    let pageApplied = 0;
+    if (batch.length) {
+      const res = db.applyRemoteRows(batch);
+      pageApplied = res.applied;
+      applied += res.applied; removed += (res.deleted || 0);
+      carry = res.deferredRows || [];
+    }
+    pulled += rows.length;
+    const next = {};
+    for (const L of LANES) next[L] = Number(r.lanes[L].cursor);
+    const state = completeness(2, r.more, r, carry);
+    if (!db.commitPull({ gen: ctx.gen, lanes: next, pending: carry, instance: r.instance || null, state })) break; // reset meanwhile
+    lanes = next;
+    lastPull = state; lastPullOkAt = Date.now();
+    // Let the screens update while a long catch-up is still running.
+    if (pageApplied && Date.now() - lastNotify > NOTIFY_THROTTLE_MS) {
+      lastResult = { ...lastResult, pulled, applied, deleted: removed };
+      notifyRenderer();
+    }
+    // Size the next page from how fast this link actually is.
+    if (info.bytes >= 65536 && info.ms > 0) {
+      const bps = info.bytes / (info.ms / 1000);
+      rateBps = rateBps ? 0.7 * rateBps + 0.3 * bps : bps;
+      pullBytes = Math.min(PULL_BYTES_CAP, Math.max(PULL_BYTES_FLOOR, rateBps * PAGE_TARGET_MS / 1000));
+    }
+    if (!r.more) break;
+    const elapsed = Date.now() - started;
+    // Give the push its turn, as v1.13 did — and when only images are left,
+    // much sooner, so a laptop downloading a backlog of x-rays still sends its
+    // own check-outs every few seconds. Not while rows wait for a parent.
+    const onlyImages = !r.lanes.e.more && !r.lanes.p.more && !r.lanes.k.more && r.lanes.x.more;
+    if (!carry.length && (elapsed > PULL_TIME_BUDGET_MS || (onlyImages && elapsed >= IMAGE_SLICE_MS))) { again = true; break; }
+  }
+  return { pulled, applied, deleted: removed, again };
 }
 
 // One full push+pull cycle. Never throws — records status instead.
@@ -266,30 +542,44 @@ async function syncOnce() {
   running = true;
   const base = trimUrl(meta.url);
   const deviceId = db.ensureDeviceId();
+  // Captured once. A reset while this cycle is in flight changes it, and then
+  // nothing this cycle learned is saved over the reset.
+  const ctx = { gen: db.syncGen(), deviceId };
   // Push and pull fail separately. A failed push used to skip the pull, so the
   // laptop busy uploading x-rays was exactly the one that stopped hearing about
   // everyone else's check-outs. Applying rows is last-write-wins, so pulling
   // while our own push is unfinished is safe.
-  let pushed = 0, pushError = null;
+  let pushed = 0, pushMore = false, pushNote = null, pushError = null, again = false;
   try {
-    pushed = await pushOnce(base, meta.key, deviceId);
+    const p = await pushOnce(base, meta.key, deviceId, ctx);
+    pushed = p.pushed; pushMore = p.more; pushNote = p.note;
   } catch (e) { pushError = e; }
   try {
-    const { pulled, applied, deleted } = await pullOnce(base, meta.key);
+    const { pulled, applied, deleted, again: pullAgain } = await pullOnce(base, meta.key, ctx);
     lastResult = { pushed, pulled, applied, deleted };
     if (applied > 0) notifyRenderer();
     if (pushError) {
       db.setSyncMeta({ lastError: pushError.message || String(pushError) });
       return { ok: false, error: pushError.message || String(pushError), pushed, pulled, applied, deleted };
     }
+    // Still catching up, or more of our own to send: go again straight away
+    // rather than four seconds from now.
+    again = !!(pullAgain || pushMore);
+    // (A server's note about a partial upload or a refused row is not an
+    // error: the rest is on its way, and refused rows have their own count.)
+    void pushNote;
     db.setSyncMeta({ lastOk: new Date().toISOString(), lastError: '' });
-    return { ok: true, pushed, pulled, applied, deleted };
+    return { ok: true, pushed, pulled, applied, deleted, again };
   } catch (e) {
     const msg = (pushError ? (pushError.message || String(pushError)) + ' · ' : '') + (e.message || String(e));
     db.setSyncMeta({ lastError: msg });
     return { ok: false, error: msg };
   } finally {
     running = false;
+    if (again && timer && !againTimer) {
+      againTimer = setTimeout(() => { againTimer = null; syncOnce(); }, 250);
+      if (againTimer.unref) againTimer.unref();
+    }
   }
 }
 
@@ -303,16 +593,47 @@ function notifyRenderer() {
 
 function status() {
   const m = db.getSyncMeta();
+  const st = lastPull || db.getSyncState();
   return {
     enabled: m.enabled, mode: m.mode, online: m.mode === 'online',
     url: m.url, hasKey: !!m.key, usingDefaultCloud: m.usingDefaultCloud,
     deviceId: m.deviceId, cursor: m.cursor,
     lastOk: m.lastOk, lastPush: m.lastPush, lastError: m.lastError,
     running, ...lastResult, xraysTooBig,
+    // v1.14.0
+    protocol: serverProto === 2 ? 'lanes' : serverProto === 1 ? 'single' : 'unknown',
+    caughtUp: st ? !st.behind : null,
+    imagesBehind: st ? st.imagesBehind || 0 : 0,
+    orphans: st ? st.orphans || 0 : 0,
+    orphansWarn: !!(st && st.orphans >= db.PENDING_WARN),
+    rowsRefused: Object.keys(db.getRefused()).length,
+    toSend: { clinical: backlog.c, xrays: backlog.x, bytes: backlog.b },
+    peers: (st && st.peers) || [],
+  };
+}
+
+// How complete this laptop's copy of the clinic is — what the Finish and
+// Delete guards in ipc.js decide on. A laptop that cannot reach the cloud
+// answers from what the last good pull saved.
+function syncCompleteness() {
+  const m = db.getSyncMeta();
+  const st = lastPull || db.getSyncState();
+  const pending = db.getSyncPending();
+  return {
+    online: !!m.enabled,
+    reachable: Date.now() - lastPullOkAt < REACHABLE_MS,
+    lastContactAt: st ? st.at : null,
+    // Never heard from the cloud at all: assume the worst.
+    behind: st ? !!st.behind : true,
+    imagesBehind: st ? st.imagesBehind || 0 : 0,
+    orphans: pending.length,
+    orphanXrays: pending.filter((r) => r && r.entity === 'xray').length,
+    peers: (st && st.peers) || [],
   };
 }
 
 function applyConfig({ url, key, enabled, mode, online }) {
+  const before = trimUrl(db.getSyncMeta().url);
   const patch = {};
   if (url !== undefined) patch.url = trimUrl(url);
   if (key !== undefined) patch.key = key;
@@ -322,12 +643,21 @@ function applyConfig({ url, key, enabled, mode, online }) {
   else if (enabled !== undefined) patch.mode = enabled ? 'online' : 'offline';
   db.ensureDeviceId();
   db.setSyncMeta(patch);
+  // A different server. This laptop's place in the old one's queue means
+  // nothing there, and the new one may hold none of this laptop's records, so
+  // start over in both directions. (v1.13 kept the old cursor, and never sent
+  // the new server anything already sent to the old one.)
+  if (trimUrl(db.getSyncMeta().url) !== before) {
+    newDatabase();
+    serverProto = 0; v2Fails = 0; protoRetryAt = 0;
+  }
   restartTimer();
   return status();
 }
 
 function restartTimer() {
   if (timer) { clearInterval(timer); timer = null; }
+  if (againTimer) { clearTimeout(againTimer); againTimer = null; }
   const m = db.getSyncMeta();
   if (m.enabled && m.url && m.key) {
     // Kick one immediately, then on an interval.
@@ -341,7 +671,10 @@ function start(windowGetter) {
   getWindow = windowGetter || (() => null);
   restartTimer();
 }
-function stop() { if (timer) { clearInterval(timer); timer = null; } }
+function stop() {
+  if (timer) { clearInterval(timer); timer = null; }
+  if (againTimer) { clearTimeout(againTimer); againTimer = null; }
+}
 
 // Forget this station's place in the queue and re-read everything on the next
 // sync — the fix when a laptop is missing patients the other laptops can see.
@@ -349,14 +682,26 @@ async function resyncAll() {
   // A cycle already running would carry on from the OLD cursor and could save
   // it back over the reset. Let it finish first. Cycles can now legitimately
   // take a while on a slow link, so this waits up to two minutes.
+  // (Since v1.14.0 a cycle that outlasts the wait cannot save over the reset
+  // either: the reset changes the sync generation it checks before saving.)
   for (let i = 0; running && i < 240; i++) await new Promise((r) => setTimeout(r, 500));
+  rotateEchoToken();
   db.resetSyncCursor();
   const r = await syncOnce();
   return { ok: true, ...r };
 }
 
 // For the tests: the adaptive sizes, and a way to put them back.
-function _tuning() { return { xrayBatchBytes, pullLimit, httpTimeoutMs: HTTP_TIMEOUT_MS }; }
-function _resetTuning() { xrayBatchBytes = XRAY_BATCH_MAX; pullLimit = PULL_FIRST_LIMIT; clinicalMax = PULL_LIMIT; }
+function _tuning() {
+  return { xrayBatchBytes, pullLimit, httpTimeoutMs: HTTP_TIMEOUT_MS, pullBytes, serverProto, protoRetryAt, v2Fails, echoMin, echoToken, clinicalMax, serverMaxRows };
+}
+function _resetTuning() {
+  xrayBatchBytes = XRAY_BATCH_MAX; pullLimit = PULL_FIRST_LIMIT; clinicalMax = PULL_LIMIT;
+  pullBytes = PULL_BYTES_INIT; rateBps = 0; serverProto = 0; protoRetryAt = 0; v2Fails = 0;
+  serverMaxRows = PULL_LIMIT; clinicalCeiling = null; xrayCeiling = null; lastPull = null; lastPullOkAt = 0;
+}
 
-module.exports = { start, stop, syncOnce, resyncAll, testConnection, status, applyConfig, normalizeUrl: trimUrl, _tuning, _resetTuning };
+module.exports = {
+  start, stop, syncOnce, resyncAll, testConnection, status, applyConfig, normalizeUrl: trimUrl,
+  syncCompleteness, rotateEchoToken, _tuning, _resetTuning,
+};

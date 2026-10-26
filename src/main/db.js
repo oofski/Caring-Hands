@@ -288,6 +288,13 @@ function migrate() {
   addColumn('treatments', 'completed_by_name', 'TEXT');
   db.exec('CREATE INDEX IF NOT EXISTS idx_sync_patients ON patients(uid)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_sync_events ON events(uid)');
+  // v1.14.0: every pulled row is looked up by uid, and only patients and events
+  // had an index on it. Measured on a clinic with 200 x-rays: 200 x-ray lookups
+  // took 3.0 s without one and 3.4 ms with it.
+  for (const t of ['triage', 'treatments', 'consents', 'xrays', 'users', 'staff_directory', 'event_reports']) {
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_sync_${t}_uid ON ${t}(uid)`);
+  }
+  migrateXraySigCache();
   // v1.5.21 ONE-TIME HEAL. Until now the pull cursor was a timestamp high-water
   // mark, so any row that reached the cloud with an older stamp — a check-in made
   // while this station was offline, or anything written by a laptop whose clock
@@ -302,6 +309,40 @@ function migrate() {
   }
   rebaselineTriageSig();
 }
+
+// v1.14.0: the x-ray signature cache.
+//
+// Deciding whether an x-ray needs uploading meant hashing its whole image, for
+// every x-ray in the clinic, every four seconds: 741 ms of the main process per
+// cycle on a clinic with 200 films, and growing with every one taken. The hash
+// of an unchanged image never changes, so it is kept beside the image, and a
+// trigger throws the kept hash away the moment any column it covers is written.
+//
+// A side table rather than a column, so caching a hash never rewrites a
+// megabyte-sized row. The trigger's name carries a hash of the column list: if
+// a later version adds a synced x-ray column, the old trigger (which would miss
+// writes to it) is replaced rather than kept by IF NOT EXISTS.
+function migrateXraySigCache() {
+  db.exec('CREATE TABLE IF NOT EXISTS xray_sig (id INTEGER PRIMARY KEY, sig TEXT NOT NULL)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_xrays_synced ON xrays(synced_rev)');
+  const cols = SYNC_COLS.xray;
+  const name = 'trg_xray_sig_upd_' + crypto.createHash('sha256').update(cols.join(',')).digest('hex').slice(0, 8);
+  const trigger = (n) => !!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'trigger' AND name = ?").get(n);
+  const stale = db.prepare("SELECT name FROM sqlite_master WHERE type = 'trigger' AND name LIKE 'trg_xray_sig_upd_%' AND name <> ?").all(name);
+  // A kept hash is only trustworthy if both triggers have existed for as long
+  // as it has. If either is missing now — first run, a changed column list, or
+  // something rebuilt the xrays table (which drops its triggers) — any writes
+  // made meanwhile went unseen, so every kept hash is thrown away.
+  if (stale.length || !trigger(name) || !trigger('trg_xray_sig_del')) db.exec('DELETE FROM xray_sig');
+  for (const t of stale) db.exec(`DROP TRIGGER IF EXISTS "${t.name}"`);
+  db.exec(`CREATE TRIGGER IF NOT EXISTS ${name} AFTER UPDATE OF ${cols.join(', ')} ON xrays
+           BEGIN DELETE FROM xray_sig WHERE id = NEW.id; END`);
+  db.exec(`CREATE TRIGGER IF NOT EXISTS trg_xray_sig_del AFTER DELETE ON xrays
+           BEGIN DELETE FROM xray_sig WHERE id = OLD.id; END`);
+}
+// The cache holds sig(buildData('xray', row)). That is a function of the row's
+// own columns only while none of them is a name resolved from the users table.
+const xraySigCacheOn = () => !SYNC_COLS.xray.some((c) => NAME_SOURCE[c]) && getSetting('cloud_xray_sigcache') !== 'off';
 
 // ONE-TIME, on the upgrade that adds station_notes to SYNC_COLS.triage.
 //
@@ -2948,6 +2989,11 @@ function rebuildSummaryFromBundle(actor, bundle) {
 // dentist's. The machine that pulls the trigger is the machine that must be
 // holding a copy.
 const exportReceiptKey = (evId) => `export_receipt_event_${Number(evId)}`;
+// v1.14.0: how many patient-record rows of a clinic have ever arrived here from
+// the clinic cloud. An export records the count; anything that arrives after it
+// is not in that file. A LOCAL setting, like the receipt.
+const arrivalsKey = (evId) => `sync_arrivals_event_${Number(evId)}`;
+function syncArrivals(eventId) { return Number(getSetting(arrivalsKey(eventId)) || 0) || 0; }
 
 function recordClinicExport(eventId, info) {
   const evId = Number(eventId || getSetting('active_event_id'));
@@ -2957,6 +3003,7 @@ function recordClinicExport(eventId, info) {
     patients: Number((info && info.patients) || 0),
     xlsxPath: (info && info.xlsxPath) || null,
     backupPath: (info && info.backupPath) || null,
+    arrivals: info && Number.isFinite(Number(info.arrivals)) && info.arrivals !== null ? Number(info.arrivals) : syncArrivals(evId),
   };
   setSetting(exportReceiptKey(evId), JSON.stringify(receipt));
   return receipt;
@@ -3014,6 +3061,12 @@ function finishPreflight(eventId) {
         WHERE a.entity = 'patient' AND p.event_id = ? AND a.created_at > ?`,
       evId, lastExport.at);
   }
+  // Rows that reached this laptop from other stations AFTER the export — a
+  // check-out, a chart, an x-ray still downloading when the file was saved.
+  // The export does not hold them, and finishing deletes them everywhere. A
+  // receipt from before v1.14 has no count; every arrival counted since the
+  // upgrade came after it, so 0 is the right starting point.
+  const arrivalsSinceExport = lastExport ? Math.max(0, syncArrivals(evId) - (Number(lastExport.arrivals) || 0)) : 0;
   return {
     event_id: evId,
     event_name: ev.name,
@@ -3024,9 +3077,10 @@ function finishPreflight(eventId) {
     xrays,
     last_export: lastExport,
     changes_since_export: changesSinceExport,
+    arrivals_since_export: arrivalsSinceExport,
     // Nothing left to lose: a clinic whose records were already purged can be
     // closed without exporting an empty file first.
-    needs_export: patients > 0 && !lastExport,
+    needs_export: patients > 0 && (!lastExport || arrivalsSinceExport > 0),
   };
 }
 
@@ -3086,6 +3140,11 @@ function finishEvent(actor, eventId) {
   if (!ev) throw new Error('Event not found.');
   // The interlock. See recordClinicExport above for why the receipt is local.
   const pre = finishPreflight(evId);
+  if (pre.needs_export && pre.last_export) {
+    throw new Error(`Export “${ev.name}” again before finishing it — ${pre.arrivals_since_export} record(s) arrived from other stations`
+      + ' after the last export, so that file does not hold them, and finishing deletes them from every station.'
+      + ' Use “Export clinic (Excel + backup)” under Backup & Export.');
+  }
   if (pre.needs_export) {
     throw new Error(`Export “${ev.name}” before finishing it — finishing deletes all ${pre.patients} patient record(s)`
       + `${pre.xrays ? ` and ${pre.xrays} x-ray image(s)` : ''} from this computer, the clinic cloud and every other station.`
@@ -3270,9 +3329,10 @@ function collectSyncRows(max = 400, opts = {}) {
   const only = Array.isArray(opts.only) ? opts.only : null;
   const skip = Array.isArray(opts.skip) ? opts.skip : [];
   const xrayBudget = Number(opts.xrayBytes) > 0 ? Number(opts.xrayBytes) : Infinity;
-  let xrayBytes = 0, xrayCount = 0, xraysTooBig = 0;
+  let xrayBytes = 0, xrayCount = 0, xraysTooBig = 0, truncated = false;
   const rows = [];
   const mark = [];
+  const refused = getRefused();
   for (const entity of APPLY_ORDER) {
     if (rows.length >= max) break;
     if (only && !only.includes(entity)) continue;
@@ -3283,24 +3343,45 @@ function collectSyncRows(max = 400, opts = {}) {
     // to send three of them was the expensive part. (Not .iterate(): the loop
     // below writes, and better-sqlite3 refuses writes during an open read.)
     const isXray = entity === 'xray';
-    const source = isXray
-      ? db.prepare(`SELECT id, LENGTH(image_png) AS size FROM ${table} ORDER BY id`).all()
-      : db.prepare(`SELECT * FROM ${table}`).all();
+    // v1.14.0: with the signature cache, only the x-rays that are not known to
+    // be clean are even looked at — a walk of a small index instead of hashing
+    // every image in the clinic (0.3 ms against 741 ms for 200 films).
+    const cacheOn = isXray && xraySigCacheOn();
+    const source = !isXray
+      ? db.prepare(`SELECT * FROM ${table}`).all()
+      : cacheOn
+        ? db.prepare(`SELECT x.id AS id, x.uid AS uid, s.sig AS sig FROM xrays AS x INDEXED BY idx_xrays_synced
+                        LEFT JOIN xray_sig AS s ON s.id = x.id
+                       WHERE s.sig IS NULL OR x.synced_rev IS NULL OR s.sig <> x.synced_rev ORDER BY x.id`).all()
+        : db.prepare('SELECT id FROM xrays ORDER BY id').all();
     const oneXray = isXray ? db.prepare(`SELECT * FROM ${table} WHERE id = ?`) : null;
+    // octet_length reads the stored size without reading the image (2 ms for
+    // 200 films; LENGTH counts characters, which means reading every one).
+    const xraySize = isXray ? db.prepare('SELECT octet_length(image_png) AS size FROM xrays WHERE id = ?') : null;
+    const keepSig = cacheOn ? db.prepare('INSERT INTO xray_sig (id, sig) VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET sig = excluded.sig') : null;
     for (const item of source) {
-      if (rows.length >= max) break;
+      if (rows.length >= max) { truncated = true; break; }
+      const size = isXray ? (((xraySize.get(item.id) || {}).size) || 0) : 0;
       // Too big for the clinic cloud's row limit. It cannot be stored there, so
       // sending it fails every time — and because the lane always sends at
       // least one image, and this is the lowest unsent id, every image after it
       // was stuck behind it for good. addXray refuses these now; this catches
       // the ones saved by an older version or brought in by a restore.
-      if (isXray && (item.size || 0) > XRAY_SYNC_MAX_CHARS) { xraysTooBig++; continue; }
-      if (isXray && xrayCount > 0 && xrayBytes + (item.size || 0) > xrayBudget) break;
+      if (isXray && size > XRAY_SYNC_MAX_CHARS) { xraysTooBig++; continue; }
+      // Refused and unchanged since: skip it without reading the image.
+      if (cacheOn && item.sig && refused[`${table}:${item.uid}`] === item.sig) continue;
+      if (isXray && xrayCount > 0 && xrayBytes + size > xrayBudget) { truncated = true; break; }
       const row = isXray ? oneXray.get(item.id) : item;
       if (!row) continue;
       const data = buildData(entity, row);
-      const s = sig(data);
+      let s = cacheOn ? item.sig : null;
+      if (!s) { s = sig(data); if (cacheOn) keepSig.run(row.id, s); }
       if (s === row.synced_rev) continue; // clean
+      // The clinic cloud refused this exact content (too large to store). It is
+      // tried again as soon as it changes, and not before: sending it again
+      // unchanged can only be refused again, and used to hold up the rows
+      // behind it.
+      if (refused[`${table}:${row.uid}`] === s) continue;
       // Stamp updated_at only when the content is different from what it was
       // last stamped for (content_rev), keeping timestamps stable across retries.
       let updatedAt = row.updated_at;
@@ -3344,7 +3425,8 @@ function collectSyncRows(max = 400, opts = {}) {
     mark.push({ tombstone: tomb.uid });
   }
   persistStamp(); // survive restarts / clock rewinds
-  return { rows, mark, xraysTooBig };
+  // truncated: stopped at `max` or the byte budget, so more may be waiting.
+  return { rows, mark, xraysTooBig, truncated: truncated || rows.length >= max };
 }
 
 // Confirm rows as synced (called after a successful push). Only marks clean if
@@ -3378,6 +3460,11 @@ function applyRemoteRows(remoteRows) {
   const list = (remoteRows || []).slice().sort((a, b) => rank(a) - rank(b));
   let applied = 0, skipped = 0, deferred = 0, deleted = 0;
   const deferredRows = [];
+  // v1.14.0: which clinic each applied row belongs to, counted per clinic, so
+  // an export taken before rows arrived from another station is known to be
+  // missing them (see finishPreflight).
+  let arrivedIn = null;
+  const arrivals = new Map();
   const applyOne = (env) => {
     const entity = env.entity, table = ENTITY_TABLE[entity];
     if (!table || !env.uid) { skipped++; return; }
@@ -3513,14 +3600,23 @@ function applyRemoteRows(remoteRows) {
       const ph = allCols.map(() => '?').join(', ');
       db.prepare(`INSERT INTO ${table} (${allCols.join(', ')}) VALUES (${ph})`).run(...vals, ...extraVals);
     }
+    if (parentCol === 'event_id' && entity !== 'user') arrivedIn = parentId;
+    else if (parentCol === 'patient_id') {
+      const p = db.prepare('SELECT event_id FROM patients WHERE id = ?').get(parentId);
+      arrivedIn = p ? p.event_id : null;
+    }
     applied++;
   };
   // Each row is applied in its own transaction so one malformed/poison row can
   // never roll back or wedge the whole pull batch — it is counted and skipped.
   for (const env of list) {
-    try { db.transaction(applyOne)(env); }
-    catch (e) { skipped++; }
+    arrivedIn = null;
+    try {
+      db.transaction(applyOne)(env);
+      if (arrivedIn) arrivals.set(arrivedIn, (arrivals.get(arrivedIn) || 0) + 1);
+    } catch (e) { skipped++; }
   }
+  for (const [evId, n] of arrivals) setSetting(arrivalsKey(evId), String(syncArrivals(evId) + n));
   // If any event synced in, re-resolve the clinic's active event so a "Set active"
   // performed on another laptop takes effect here too (highest selected_at wins).
   if (list.some((e) => e.entity === 'event')) resolveActiveEvent();
@@ -3572,10 +3668,176 @@ function setSyncMeta(patch) {
 // clinic from the cloud on the next sync. Used by Admin -> Cloud -> "Re-sync
 // everything" when a station is missing patients the others can see. Applying
 // rows is idempotent (last-write-wins), so nothing local is lost or duplicated.
+//
+// v1.14.0: it also clears the lane cursors, the server identity and the list of
+// refused rows, and bumps the sync generation — all in one transaction — so a
+// cycle already in flight against the old cursor cannot save its place back
+// over the reset when it finishes (see commitPull).
 function resetSyncCursor() {
-  setSetting('cloud_cursor', '');
-  setSetting('cloud_pending', '[]');
+  db.transaction(() => {
+    setSetting('cloud_cursor', '');
+    setSetting('cloud_pending', '[]');
+    setSetting('cloud_lanes', '');
+    setSetting('cloud_server_instance', '');
+    setSetting('cloud_refused', '');
+    setSetting('cloud_sync_state', '');
+    setSetting('cloud_sync_gen', String(syncGen() + 1));
+  })();
   return { ok: true };
+}
+
+/* ---- v1.14.0: lane cursors ----------------------------------------------
+ * A v1.14 server hands rows out in four lanes, each with its own cursor:
+ *   e  deletions, clinics and the volunteer list
+ *   p  staff accounts, reports, patients
+ *   k  everything else clinical (vitals, treatment, consents)
+ *   x  x-ray images
+ * so a laptop that has fallen behind gets every check-out before the image
+ * backlog, instead of behind it. The single cursor older versions use
+ * (cloud_cursor) is kept equal to the LOWEST lane, so a laptop that goes back
+ * to an older version re-reads a little more than it needs to — never less.
+ * See cloud/SYNC_CONTRACT.md.
+ */
+const LANES = ['e', 'p', 'k', 'x'];
+const isSeq = (v) => /^\d+$/.test(String(v == null ? '' : v));
+
+// Bumped by every reset. A pull captures it when it starts and commits only if
+// it is unchanged, so a reset always wins over a cycle that was already running.
+function syncGen() { return Number(getSetting('cloud_sync_gen') || 0) || 0; }
+
+// The lane cursors to ask from. null when the single cursor is still the old
+// timestamp kind, which lanes cannot start from (that laptop pulls the old way
+// until the counter switch-over in cloud.js has run).
+function getSyncLanes() {
+  const C = getSetting('cloud_cursor') || '';
+  const Cn = C === '' ? 0 : (isSeq(C) ? Number(C) : null);
+  if (Cn == null) return null;
+  const J = safeJson(getSetting('cloud_lanes'), null);
+  let lanes;
+  const valid = J && J.v === 1 && LANES.every((L) => isSeq(J[L])) && isSeq(J.base);
+  if (!valid) lanes = { e: Cn, p: Cn, k: Cn, x: Cn };
+  else if (String(J.base) === C) lanes = { e: Number(J.e), p: Number(J.p), k: Number(J.k), x: Number(J.x) };
+  // The single cursor moved forward without the lanes: a page pulled the old
+  // way (an older server, or an older version of this app). Everything up to
+  // it has been read, so no lane needs to start below it.
+  else if (Cn > Number(J.base)) lanes = { e: Math.max(Number(J.e), Cn), p: Math.max(Number(J.p), Cn), k: Math.max(Number(J.k), Cn), x: Math.max(Number(J.x), Cn) };
+  // It moved BACK: a reset by an older version. Start every lane from there.
+  else lanes = { e: Cn, p: Cn, k: Cn, x: Cn };
+  // ONE-TIME HEAL. The server before v1.14 could hand out a row's number before
+  // the row was stored, and a laptop pulling at that moment stepped past it for
+  // good. Re-reading the three clinical lanes from the start is cheap (no
+  // images) and recovers anything lost that way. Re-sync everything recovers
+  // the images too.
+  if (getSetting('cloud_lanes_heal') !== 'v1') { lanes.e = 0; lanes.p = 0; lanes.k = 0; }
+  return lanes;
+}
+
+// Save where a pull got to — lanes (v2) or a single cursor (legacy) — together
+// with the rows still waiting for a parent and the server's identity, in ONE
+// transaction, after the page has been applied. Returns false (saving nothing)
+// if a reset happened since the pull began.
+//
+// v1.13 saved the cursor after every page but the waiting rows only when the
+// loop ended, so a crash or a failed page in between lost the rows the cursor
+// had already stepped past.
+function commitPull({ gen, lanes, cursor, pending, instance, state } = {}) {
+  let ok = false;
+  db.transaction(() => {
+    if (gen != null && syncGen() !== gen) return;
+    if (lanes) {
+      const L = {};
+      for (const k of LANES) L[k] = Number(lanes[k]);
+      if (!LANES.every((k) => Number.isSafeInteger(L[k]) && L[k] >= 0)) throw new Error('bad lane cursor');
+      const m = Math.min(L.e, L.p, L.k, L.x);
+      setSetting('cloud_lanes', JSON.stringify({ v: 1, ...L, base: String(m) }));
+      setSetting('cloud_cursor', String(m));
+      setSetting('cloud_lanes_heal', 'v1');
+    } else if (cursor != null) {
+      setSetting('cloud_cursor', String(cursor));
+    }
+    if (pending) setSetting('cloud_pending', JSON.stringify(pending));
+    if (instance) setSetting('cloud_server_instance', String(instance));
+    if (state) setSetting('cloud_sync_state', JSON.stringify(state));
+    ok = true;
+  })();
+  return ok;
+}
+
+// What the last successful pull knew about how complete this laptop is. Kept
+// on disk so a laptop that has lost the network (or been restarted) can still
+// say it was behind when it last heard from the cloud.
+function getSyncState() { return safeJson(getSetting('cloud_sync_state'), null); }
+
+// The server sends this app's own rows back as stubs — uid and stamp, no data —
+// instead of a second copy of every image it just uploaded. A stub is only
+// accepted if applying the full row would change nothing here. Returns the
+// stubs that fail that test; the caller then asks for the full rows instead.
+function echoMissing(stubs) {
+  const missing = [];
+  for (const st of (stubs || [])) {
+    const table = ENTITY_TABLE[st.entity];
+    if (!table || !st.uid) continue; // applyRemoteRows would skip it too
+    const stamp = String(st.updated_at || '');
+    const loc = db.prepare(`SELECT updated_at FROM ${table} WHERE uid = ?`).get(st.uid);
+    const tomb = db.prepare('SELECT updated_at FROM tombstones WHERE uid = ?').get(st.uid);
+    const locOk = !!(loc && loc.updated_at != null && String(loc.updated_at) >= stamp);
+    const tombOk = !!(tomb && String(tomb.updated_at) >= stamp);
+    const fine = st.deleted ? (loc ? locOk : tombOk) : (tombOk || locOk);
+    if (!fine) missing.push(st);
+  }
+  return missing;
+}
+
+// Rows the clinic cloud refused to store (too large), by content hash. Bounded:
+// a row that falls off the list is simply tried again.
+const REFUSED_CAP = 1000;
+function getRefused() { return safeJson(getSetting('cloud_refused'), {}) || {}; }
+function markRefused(marks) {
+  const list = getRefused();
+  for (const m of (marks || [])) {
+    if (!m || m.tombstone || !m.table || !m.sig) continue;
+    const r = db.prepare(`SELECT uid FROM ${m.table} WHERE id = ?`).get(m.id);
+    if (!r || !r.uid) continue;
+    const k = `${m.table}:${r.uid}`;
+    delete list[k];
+    list[k] = m.sig;
+  }
+  const keys = Object.keys(list);
+  for (const k of keys.slice(0, Math.max(0, keys.length - REFUSED_CAP))) delete list[k];
+  setSetting('cloud_refused', JSON.stringify(list));
+  return Math.min(keys.length, REFUSED_CAP);
+}
+
+// Push everything again — for a laptop now talking to a DIFFERENT clinic
+// database (a new address, or the same address with a new database behind it).
+// Only the "already sent" marks are cleared; the stamps stay, so the copies
+// that go up carry their original times and last-write-wins is unaffected.
+function markAllDirty() {
+  db.transaction(() => {
+    for (const table of Object.values(ENTITY_TABLE)) db.prepare(`UPDATE ${table} SET synced_rev = NULL`).run();
+    db.prepare('UPDATE tombstones SET synced_rev = NULL').run();
+    setSetting('cloud_refused', '');
+  })();
+}
+
+// How many x-rays this laptop still has to send, and how many bytes. Uses the
+// signature cache, so it reads no images: an x-ray with no kept hash yet counts
+// as unsent until the next collect looks at it.
+function xrayBacklog() {
+  if (!xraySigCacheOn()) return { count: null, bytes: null };
+  const ids = db.prepare(`SELECT x.id AS id, x.uid AS uid, s.sig AS sig FROM xrays AS x INDEXED BY idx_xrays_synced
+                            LEFT JOIN xray_sig AS s ON s.id = x.id
+                           WHERE s.sig IS NULL OR x.synced_rev IS NULL OR s.sig <> x.synced_rev`).all();
+  const size = db.prepare('SELECT octet_length(image_png) AS size FROM xrays WHERE id = ?');
+  const refused = getRefused();
+  let count = 0, bytes = 0;
+  for (const { id, uid, sig: kept } of ids) {
+    if (kept && refused[`xrays:${uid}`] === kept) continue; // refused by the cloud; will not be sent
+    const n = (size.get(id) || {}).size || 0;
+    if (n > XRAY_SYNC_MAX_CHARS) continue; // can never be sent; counted as too big instead
+    count++; bytes += n;
+  }
+  return { count, bytes };
 }
 
 function ensureDeviceId() {
@@ -3593,10 +3855,15 @@ function ensureDeviceId() {
 // everything") never has to drop a child whose parent lands later in the run.
 // If it ever does overflow, the oldest are kept — they are the ones whose parent
 // is most likely already on its way — and a re-sync recovers the rest.
-const PENDING_CAP = 5000;
+//
+// v1.14.0: never truncated. Dropping a row here lost it for good — the cursor
+// had already moved past it — and a laptop catching up on a whole clinic can
+// legitimately hold more than 5000 for a moment. PENDING_WARN is now only the
+// size at which the Management card says so.
+const PENDING_WARN = 5000;
 function getSyncPending() { return safeJson(getSetting('cloud_pending'), []); }
 function setSyncPending(rows) {
-  const arr = Array.isArray(rows) ? rows.slice(0, PENDING_CAP) : [];
+  const arr = Array.isArray(rows) ? rows : [];
   setSetting('cloud_pending', JSON.stringify(arr));
 }
 
@@ -3631,4 +3898,7 @@ module.exports = {
   // v1.1.0 cloud sync
   collectSyncRows, applyRemoteRows, markSynced, getSyncMeta, setSyncMeta, ensureDeviceId,
   getSyncPending, setSyncPending, resetSyncCursor,
+  // v1.14.0 lanes
+  syncGen, getSyncLanes, commitPull, getSyncState, echoMissing, getRefused, markRefused, markAllDirty,
+  xrayBacklog, syncArrivals, PENDING_WARN,
 };

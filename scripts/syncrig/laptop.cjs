@@ -116,6 +116,19 @@ const commands = {
     return { id: x.id };
   },
 
+  // Re-label the tooth on a patient's first x-ray: an edit of an image another
+  // laptop took.
+  async retooth({ first, tooth }) {
+    const p = byFirst(first);
+    const x = db.listXrays(p.id)[0];
+    db.updateXrayTooth(admin, x.id, String(tooth));
+    return { id: x.id };
+  },
+  async teeth({ first }) {
+    const p = byFirst(first);
+    return { teeth: p ? db.listXrays(p.id).map((x) => x.tooth) : [] };
+  },
+
   async complete({ first }) {
     const p = byFirst(first);
     db.saveTreatment(admin, p.id, { fillings: [{ tooth: '3', surfaces: ['O'] }], provider_name: 'Dr Rig' }, 'complete');
@@ -180,7 +193,7 @@ function lanes() {
   try {
     const m = db.getSyncMeta();
     const out = { cursor: m.cursor };
-    for (const k of ['cloud_cursor_xray', 'cloud_lanes', 'cloud_server_caps']) {
+    for (const k of ['cloud_lanes', 'cloud_server_instance']) {
       const v = db.getSetting ? db.getSetting(k) : undefined;
       if (v != null && v !== '') out[k] = v;
     }

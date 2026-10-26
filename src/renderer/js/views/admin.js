@@ -4,6 +4,10 @@ import { api } from '../api.js';
 import { store } from '../store.js';
 import { icon } from '../icons.js';
 
+// For text from elsewhere — another station's name arrives through the clinic
+// cloud — going into a modal body, which is HTML.
+const esc = (v) => String(v == null ? '' : v).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
 // Cloud-sync live-update subscription. Kept at module scope so repaints of the
 // Cloud tab can drop the previous listener before adding a new one (no stacking).
 let cloudUnsub = null;
@@ -482,6 +486,27 @@ export function renderAdmin(ctx, params = {}) {
             waiting = (f && Number(f.count)) || 0;
           } catch (_e) { /* no import folder on this computer */ }
 
+          // v1.14.0: records still on their way to this laptop are not in an
+          // export taken here, and finishing deletes them everywhere.
+          if (pre.sync && pre.sync.blocked) {
+            await modal({
+              title: 'Still receiving this clinic',
+              body: `${pre.sync.imagesBehind ? `<b>${pre.sync.imagesBehind} x-ray image(s)</b>` : 'Records'} from other stations are still arriving on this laptop.`
+                + ' Finishing now would delete them from every station without them being in your export.'
+                + '<br><br>Wait until the cloud badge reads <b>synced</b>, export again, then finish.',
+              confirmText: 'Got it',
+            });
+            return;
+          }
+          if (pre.needs_export && pre.last_export && pre.arrivals_since_export) {
+            await modal({
+              title: 'Export this clinic again',
+              body: `<b>${pre.arrivals_since_export} record(s)</b> arrived from other stations after your last export, so that file does not hold them — and finishing deletes them from every station.`
+                + '<br><br>Open <b>Backup &amp; Export</b> in the sidebar, use “Export clinic (Excel + backup)” again, then come back.',
+              confirmText: 'Got it',
+            });
+            return;
+          }
           if (pre.needs_export) {
             await modal({
               title: 'Export this clinic first',
@@ -504,6 +529,7 @@ export function renderAdmin(ctx, params = {}) {
             pre.xrays ? `<li><b>${pre.xrays} x-ray image(s) will be destroyed</b> — the kept report holds a count, never the films.</li>` : '',
             waiting ? `<li><b>${waiting} image(s) are still waiting in the x-ray import folder</b> — attach them to a patient first or they belong to nobody.</li>` : '',
             pre.changes_since_export ? `<li><b>${pre.changes_since_export} change(s) recorded since the last export</b> — export again so the backup matches what is here.</li>` : '',
+            ...((pre.sync && pre.sync.problems) || []).map((p) => `<li><b>This laptop may not hold the whole clinic:</b> ${esc(p)}.</li>`),
           ].filter(Boolean).join('');
           const exp = pre.last_export;
           const ok = await modal({
@@ -518,8 +544,22 @@ export function renderAdmin(ctx, params = {}) {
             danger: true,
           });
           if (!ok) return;
+          const incomplete = (pre.sync && pre.sync.problems) || [];
+          if (incomplete.length) {
+            const sure = await modal({
+              title: 'Finish without the rest of the clinic?',
+              body: 'This laptop may not hold every record of this clinic:'
+                + `<ul style="margin:var(--space-2) 0 0; padding-left:1.2em">${incomplete.map((p) => `<li>${esc(p)}</li>`).join('')}</ul>`
+                + '<br>Anything missing here is <b>not in your export</b>, and finishing deletes it from every station for good.'
+                + ' The safe course is to cancel, let this laptop finish syncing, and export again.',
+              confirmText: 'Finish anyway',
+              cancelText: 'Cancel',
+              danger: true,
+            });
+            if (!sure) return;
+          }
           try {
-            const r = await api.finishEvent(e.id);
+            const r = await api.finishEvent(e.id, incomplete.length ? { allowIncompleteSync: true } : undefined);
             toast(`“${e.name}” finished — report kept, ${r.removed} patient record(s) removed.`, 'success');
             paint();
           } catch (err) { toast(err.message, 'error'); }
@@ -742,6 +782,20 @@ export function renderAdmin(ctx, params = {}) {
       class: 'btn btn--danger', disabled: true,
       title: 'Export first — this cannot be undone',
       onClick: async () => {
+        // v1.14.0: the same sync check as Finish (see ipc.js).
+        let pre = null;
+        try { pre = await api.finishPreflight(); } catch (_e) { pre = null; }
+        if (pre && pre.sync && pre.sync.blocked) {
+          await modal({
+            title: 'Still receiving this clinic',
+            body: `${pre.sync.imagesBehind ? `<b>${pre.sync.imagesBehind} x-ray image(s)</b>` : 'Records'} from other stations are still arriving on this laptop.`
+              + ' Deleting now would remove them from every station without them being in your export.'
+              + '<br><br>Wait until the cloud badge reads <b>synced</b>, export again, then delete.',
+            confirmText: 'Got it',
+          });
+          return;
+        }
+        const incomplete = (pre && pre.sync && pre.sync.problems) || [];
         const ok = await modal({
           title: 'Remove this clinic’s patient data?',
           body: `This permanently deletes <b>every patient record for the current clinic</b> from this computer, from the clinic cloud, and from every other station when it next syncs.<br><br>You exported <b>${exported && exported.patients} patient record(s)</b> to:<br><code>${exported && exported.xlsxPath}</code><br><br>Keep that file safe — restoring later is only possible from the <b>.chbak.json</b> saved beside it. This cannot be undone.`,
@@ -750,9 +804,21 @@ export function renderAdmin(ctx, params = {}) {
           danger: true,
         });
         if (!ok) return;
+        if (incomplete.length) {
+          const sure = await modal({
+            title: 'Delete without the rest of the clinic?',
+            body: 'This laptop may not hold every record of this clinic:'
+              + `<ul style="margin:var(--space-2) 0 0; padding-left:1.2em">${incomplete.map((p) => `<li>${esc(p)}</li>`).join('')}</ul>`
+              + '<br>Anything missing here is <b>not in your export</b>, and deleting removes it from every station for good.',
+            confirmText: 'Delete anyway',
+            cancelText: 'Cancel',
+            danger: true,
+          });
+          if (!sure) return;
+        }
         purgeBtn.disabled = true;
         try {
-          const r = await api.purgeEvent();
+          const r = await api.purgeEvent(undefined, incomplete.length ? { allowIncompleteSync: true } : undefined);
           toast(`${r.removed} patient record(s) removed from this computer and the cloud.`, 'success');
           exported = null; paint();
         } catch (e) { toast(e.message, 'error'); purgeBtn.disabled = false; }

@@ -61,6 +61,26 @@ export function renderManagement(ctx) {
           ? el('span', { class: 'pill pill--warning', title: 'Saved on this laptop by an older version. Too large for the clinic cloud, so they stay here instead of blocking every other upload.' },
             [`${st.xraysTooBig} x-ray(s) too large to share`])
           : null,
+        // v1.14.0: how complete this laptop's copy is, in the terms that matter
+        // at the end of a clinic.
+        st.online && st.imagesBehind
+          ? el('span', { class: 'pill pill--warning', title: 'Images other stations took that are still downloading to this laptop. Check-outs and charts arrive first.' },
+            [`X-rays still arriving: ${st.imagesBehind}`])
+          : null,
+        st.online && st.toSend && st.toSend.xrays
+          ? el('span', { class: 'pill pill--neutral', title: 'Images taken on this laptop that are still uploading.' },
+            [`X-rays still sending: ${st.toSend.xrays}${st.toSend.bytes ? ` (≈${Math.max(1, Math.round(st.toSend.bytes / 1048576))} MB)` : ''}`])
+          : null,
+        st.online && st.orphans
+          ? el('span', { class: st.orphansWarn ? 'pill pill--warning' : 'pill pill--neutral', title: 'Records that arrived before the patient they belong to. They are applied as soon as the patient arrives.' },
+            [`Waiting for their patient: ${st.orphans}`])
+          : null,
+        st.rowsRefused
+          ? el('span', { class: 'pill pill--warning', title: 'Too large for the clinic cloud to store. They stay on this laptop, and are tried again if they are edited.' },
+            [`Refused by the cloud: ${st.rowsRefused}`])
+          : null,
+        ...((st.online && st.peers) || []).map((p) => el('span', { class: 'pill pill--neutral', title: 'Another station that still has records it has not uploaded.' },
+          [`${p.who || 'Another station'}: ${p.xrays ? `${p.xrays} x-ray(s)` : 'records'} still to send`])),
         el('button', { class: 'btn btn--ghost btn--sm', onClick: async () => { try { await api.cloudSyncNow(); toast('Sync run', 'success'); paint(); } catch (e) { toast(e.message, 'error'); } } }, [icon('refresh', { size: 14 }), 'Sync now']),
         st.url ? el('button', { class: 'btn btn--ghost btn--sm', title: 'Open the server health page in your browser', onClick: () => api.openExternal(String(st.url).replace(/\/+$/, '') + '/health') }, [icon('globe', { size: 14 }), 'Open server page']) : el('span'),
       );
