@@ -302,7 +302,8 @@ function migrate() {
   // that page. Now each page writes only the rows that started or stopped
   // waiting.
   db.exec(`CREATE TABLE IF NOT EXISTS sync_pending (
-    uid TEXT PRIMARY KEY, updated_at TEXT NOT NULL, entity TEXT, patient_uid TEXT, env TEXT NOT NULL)`);
+    uid TEXT PRIMARY KEY, updated_at TEXT NOT NULL, entity TEXT, patient_uid TEXT, event_uid TEXT,
+    deleted INTEGER NOT NULL DEFAULT 0, env TEXT NOT NULL)`);
   const oldPending = safeJson(getSetting('cloud_pending'), []);
   if (Array.isArray(oldPending) && oldPending.length) {
     db.transaction(() => { savePending(oldPending); setSetting('cloud_pending', '[]'); })();
@@ -3033,7 +3034,7 @@ function lastClinicExport(eventId) {
 // of "this cannot be undone" and hope.
 function finishPreflight(eventId) {
   const evId = Number(eventId || getSetting('active_event_id'));
-  const ev = db.prepare('SELECT id, name FROM events WHERE id = ?').get(evId);
+  const ev = db.prepare('SELECT id, uid, name FROM events WHERE id = ?').get(evId);
   if (!ev) throw new Error('Event not found.');
   const one = (sql, ...args) => db.prepare(sql).get(...args).n;
   const patients = one('SELECT COUNT(*) AS n FROM patients WHERE event_id = ?', evId);
@@ -3082,6 +3083,7 @@ function finishPreflight(eventId) {
   const arrivalsSinceExport = lastExport ? Math.max(0, syncArrivals(evId) - (Number(lastExport.arrivals) || 0)) : 0;
   return {
     event_id: evId,
+    event_uid: ev.uid || null,
     event_name: ev.name,
     patients,
     queued,
@@ -3895,20 +3897,26 @@ function savePending(rows) {
   const have = new Map(db.prepare('SELECT uid, updated_at FROM sync_pending').all().map((x) => [x.uid, x.updated_at]));
   const del = db.prepare('DELETE FROM sync_pending WHERE uid = ?');
   for (const uid of have.keys()) if (!want.has(uid)) del.run(uid);
-  const put = db.prepare(`INSERT INTO sync_pending (uid, updated_at, entity, patient_uid, env) VALUES (?, ?, ?, ?, ?)
+  const put = db.prepare(`INSERT INTO sync_pending (uid, updated_at, entity, patient_uid, event_uid, deleted, env) VALUES (?, ?, ?, ?, ?, ?, ?)
                           ON CONFLICT(uid) DO UPDATE SET updated_at = excluded.updated_at, entity = excluded.entity,
-                            patient_uid = excluded.patient_uid, env = excluded.env`);
+                            patient_uid = excluded.patient_uid, event_uid = excluded.event_uid, deleted = excluded.deleted, env = excluded.env`);
   for (const [uid, r] of want) {
     const stamp = String(r.updated_at || '');
     if (have.get(uid) === stamp) continue; // already saved, exactly this version
-    put.run(uid, stamp, r.entity || null, r.patient_uid || null, JSON.stringify(r));
+    put.run(uid, stamp, r.entity || null, r.patient_uid || null, r.event_uid || null, r.deleted ? 1 : 0, JSON.stringify(r));
   }
 }
-// How many rows wait, and how many of them are x-rays, without loading them.
-function pendingCounts() {
-  const r = db.prepare("SELECT COUNT(*) AS n, COALESCE(SUM(entity = 'xray'), 0) AS x FROM sync_pending").get();
+// How many records wait for a parent, and how many of them are x-rays, without
+// loading them. Deletions waiting for their children's deletions to arrive are
+// left out (nothing is missing), and with a clinic's uid so is a row known to
+// belong to a DIFFERENT clinic. A chart row waiting for its patient cannot say
+// which clinic it is for, so it always counts.
+function pendingCounts(eventUid) {
+  const r = db.prepare(`SELECT COUNT(*) AS n, COALESCE(SUM(entity = 'xray'), 0) AS x FROM sync_pending
+                         WHERE deleted = 0 AND (? IS NULL OR event_uid IS NULL OR event_uid = ?)`).get(eventUid || null, eventUid || null);
   return { rows: r.n, xrays: r.x };
 }
+function eventUid(eventId) { return eventId ? uidOf('events', eventId) : null; }
 // Start over against a different database: reset AND re-send everything, in
 // one transaction. As two, a laptop killed between them (marking every row to
 // send is the slow part) came back reset but with nothing marked, and never
@@ -3948,5 +3956,5 @@ module.exports = {
   getSyncPending, setSyncPending, resetSyncCursor,
   // v1.14.0 lanes
   syncGen, getSyncLanes, commitPull, getSyncState, echoMissing, getRefused, markRefused, markAllDirty,
-  xrayBacklog, syncArrivals, PENDING_WARN, pendingCounts, startOver,
+  xrayBacklog, syncArrivals, PENDING_WARN, pendingCounts, startOver, eventUid,
 };

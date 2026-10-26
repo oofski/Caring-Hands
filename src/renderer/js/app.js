@@ -101,10 +101,33 @@ function navigate(name, params = {}) {
   renderShell(name, view.render(ctx, params));
 }
 
+// The sidebar's cloud badge. v1.14.0: it says "synced" only when this laptop
+// has actually caught up — it used to read "synced" all the way through a
+// catch-up of hundreds of x-rays, and Finish clinic tells people to wait for
+// it. Kept current on its own: live screens refresh in place now, so the
+// sidebar is not rebuilt often enough to carry it.
+let cloudBadgeNode = null;
+function refreshCloudBadge() {
+  const badge = cloudBadgeNode;
+  if (!badge || !api.cloudStatus) return;
+  api.cloudStatus().then((st) => {
+    if (!st || badge !== cloudBadgeNode) return;
+    clear(badge);
+    if (st.online) {
+      badge.append(el('span', { class: 'offline-dot', style: 'background:var(--success, #2f8f66)' }),
+        st.lastError ? 'Cloud · reconnecting' : (st.caughtUp === false ? 'Cloud · catching up' : (st.lastOk ? 'Cloud · synced' : 'Cloud · online')));
+    } else {
+      badge.append(el('span', { class: 'offline-dot', style: 'background:var(--text-subtle)' }), 'Offline mode');
+    }
+  }).catch(() => { /* leave the label as it is */ });
+}
+if (typeof setInterval === 'function') { const t = setInterval(refreshCloudBadge, 10000); if (t && t.unref) t.unref(); }
+
 // v1.1.0: when cloud sync pulls new data, refresh the current list view so the
 // queue visibly "moves through" across stations without a manual refresh.
 if (api.onCloudChanged) {
   api.onCloudChanged(() => {
+    refreshCloudBadge();
     if (!store.user || !LIVE_VIEWS.has(lastNav.name)) return;
     // Never repaint over an open patient detail/chart (whether reached by nav or
     // an internal detail() call), or someone typing, or with a dialog open.
@@ -183,17 +206,8 @@ function renderShell(active, contentNode) {
 
   // Live cloud-status badge (replaces the old, now-inaccurate "No cloud" label).
   const cloudBadge = el('div', { class: 'offline-badge' }, [el('span', { class: 'offline-dot' }), 'Cloud sync']);
-  if (api.cloudStatus) {
-    api.cloudStatus().then((st) => {
-      if (!st) return;
-      clear(cloudBadge);
-      if (st.online) {
-        cloudBadge.append(el('span', { class: 'offline-dot', style: 'background:var(--success, #2f8f66)' }), st.lastError ? 'Cloud · reconnecting' : (st.lastOk ? 'Cloud · synced' : 'Cloud · online'));
-      } else {
-        cloudBadge.append(el('span', { class: 'offline-dot', style: 'background:var(--text-subtle)' }), 'Offline mode');
-      }
-    }).catch(() => { /* leave the neutral label */ });
-  }
+  cloudBadgeNode = cloudBadge;
+  refreshCloudBadge();
 
   const verChip = el('button', {
     id: 'ver-chip',

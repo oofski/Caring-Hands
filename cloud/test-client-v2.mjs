@@ -640,7 +640,7 @@ if (SRC !== path.join(REPO, 'src/main')) {
   Module._load = function (req) { return req === 'electron' ? fakeElectron : origLoad.apply(this, arguments); };
   // A server whose answers the test chooses: how far behind this laptop is,
   // and what the other stations still have to send.
-  const answer = { more: false, xMore: false, xLeft: 0, peers: [] };
+  const answer = { more: false, xMore: false, xLeft: 0, peers: [], delayMs: 0, pulls: 0 };
   const srv = http.createServer((req, res) => {
     let body = ''; req.on('data', (c) => { body += c; });
     req.on('end', () => {
@@ -651,9 +651,12 @@ if (SRC !== path.join(REPO, 'src/main')) {
         return send({ ok: true, proto: 2, applied: rows.length, skipped: 0, complete: true, max_rows: 400, results: rows.map(() => 'applied') });
       }
       if (u.pathname === '/v1/pull') {
+        answer.pulls++;
         const lane = (more, left) => ({ cursor: '0', more, left, left_exact: true });
-        return send({ ok: true, proto: 2, mode: 'seq', head: '10', instance: 'guard-db-0001', more: answer.more,
-          lanes: { e: lane(false, 0), p: lane(false, 0), k: lane(false, 0), x: lane(answer.xMore, answer.xLeft) }, peers: answer.peers, rows: [] });
+        const out = { ok: true, proto: 2, mode: 'seq', head: '10', instance: 'guard-db-0001', more: answer.more,
+          lanes: { e: lane(false, 0), p: lane(false, 0), k: lane(false, 0), x: lane(answer.xMore, answer.xLeft) }, peers: answer.peers, rows: [] };
+        if (answer.delayMs) { setTimeout(() => send(out), answer.delayMs); return undefined; }
+        return send(out);
       }
       return send({ ok: true, seq: true });
     });
@@ -682,38 +685,80 @@ if (SRC !== path.join(REPO, 'src/main')) {
   r = await call('event:purge', { eventId: ev.id });
   check(r.ok === false && /still arriving/.test(r.error), '...and so does Delete this clinic’s patient data');
 
-  // b. Rows waiting for their patient: refused unless confirmed.
+  // b. Rows waiting for their patient: refused unless confirmed. Waiting
+  //    deletions, and rows known to belong to another clinic, do not count.
   answer.more = false; answer.xMore = false; answer.xLeft = 0;
   await idle(); await sync();
   db.setSyncPending([{ entity: 'xray', uid: uuid(), patient_uid: uuid(), deleted: 0, updated_at: stamp(), data: {} }]);
   r = await call('event:finish', { eventId: ev.id });
-  check(r.ok === false && /waiting for the patient/.test(r.error), 'guard: records waiting for their patient stop Finish', r.error);
+  check(r.ok === false && /waiting here for a patient/.test(r.error), 'guard: records waiting for their patient stop Finish', r.error);
+  db.setSyncPending([
+    { entity: 'patient', uid: uuid(), event_uid: 'some-other-clinic', deleted: 0, updated_at: stamp(), data: {} },
+    { entity: 'patient', uid: uuid(), event_uid: null, deleted: 1, updated_at: stamp(), data: {} },
+  ]);
+  const preO = (await call('event:preflight', { eventId: ev.id })).data;
+  check(!(preO.sync.problems || []).some((p) => /waiting/.test((p && p.text) || p)), '...but a waiting deletion, or a record of another clinic, does not', JSON.stringify(preO.sync.problems));
   db.setSyncPending([]);
 
-  // c. Another station still has x-rays to send.
+  // c. Another station still has x-rays to send — and the go-ahead covers
+  //    only what was shown.
   answer.peers = [{ device: 'desk-2', who: 'Front <desk>', clinical: 0, xrays: 3, bytes: 900000, at: new Date().toISOString() }];
   await idle(); await sync();
   const pre2 = (await call('event:preflight', { eventId: ev.id })).data;
-  check((pre2.sync.problems || []).some((p) => /Front <desk> still has 3 x-ray/.test(p)), 'guard: Finish names the station still holding unsent x-rays', JSON.stringify(pre2.sync.problems));
+  check((pre2.sync.problems || []).some((p) => /Front <desk> still has 3 x-ray/.test((p && p.text) || p)), 'guard: Finish names the station still holding unsent x-rays', JSON.stringify(pre2.sync.problems));
   r = await call('event:finish', { eventId: ev.id });
   check(r.ok === false && /Front <desk>/.test(r.error), '...and refuses without confirmation');
+  const shown = pre2.sync.problems.map((p) => (p && p.key) || p);
+  answer.peers = [{ device: 'desk-2', who: 'Front <desk>', clinical: 0, xrays: 5, bytes: 1500000, at: new Date().toISOString() },
+    { device: 'xray-1', who: 'XRAY-LAPTOP', clinical: 0, xrays: 25, bytes: 9e6, at: new Date().toISOString() }];
+  r = await call('event:finish', { eventId: ev.id, allowIncompleteSync: true, acceptedProblems: shown });
+  check(r.ok === false && /XRAY-LAPTOP still has 25/.test(r.error) && /new since you confirmed/.test(r.error), 'guard: a go-ahead does not cover a problem that appeared after it was given', r.error);
+
+  // d. A sync already running when Finish is pressed: wait for it, then sync.
+  answer.peers = [];
+  await idle(); await sync();
+  answer.delayMs = 400;
+  const flying = cloud.syncOnce();
+  await sleep(60);
+  answer.peers = [{ device: 'desk-3', who: 'DESK-3', clinical: 0, xrays: 2, bytes: 1, at: new Date().toISOString() }];
+  const pullsBefore = answer.pulls;
+  r = await call('event:purge', { eventId: ev.id });
+  await flying;
+  answer.delayMs = 0;
+  check(r.ok === false && /DESK-3/.test(r.error) && answer.pulls > pullsBefore, 'guard: with a sync already running, Finish/Delete waits for it and syncs again before deciding', r.ok ? 'it went ahead' : r.error);
   answer.peers = [];
 
-  // d. The cloud cannot be reached.
+  // e. The cloud cannot be reached.
   await new Promise((r2) => srv.close(r2));
   cloud._resetTuning(); // forget the last good contact, as a restart would
   r = await call('event:finish', { eventId: ev.id });
   check(r.ok === false && /has not reached the clinic cloud/.test(r.error), 'guard: a laptop that cannot reach the cloud must confirm before finishing', r.error);
-  r = await call('event:finish', { eventId: ev.id, allowIncompleteSync: true });
-  check(r.ok === true && r.data && r.data.removed === 1, '...and can, once confirmed', JSON.stringify(r).slice(0, 120));
+  const preU = (await call('event:preflight', { eventId: ev.id })).data;
 
-  // e. Running offline by choice: this laptop is the whole clinic.
+  // f. Delete patient data: the same export interlock as Finish.
+  db.setSetting('sync_arrivals_event_' + ev.id, String(db.syncArrivals(ev.id) + 4)); // four rows reached this laptop after the export
+  r = await call('event:purge', { eventId: ev.id, allowIncompleteSync: true, acceptedProblems: preU.sync.problems.map((p) => (p && p.key) || p) });
+  check(r.ok === false && /Export again before deleting — 4 record/.test(r.error), 'guard: Delete patient data refuses when records arrived after the export', r.error);
+  db.recordClinicExport(ev.id, { patients: 1, xlsxPath: '/tmp/g2.xlsx', backupPath: '/tmp/g2.chbak.json' });
+  r = await call('event:finish', { eventId: ev.id, allowIncompleteSync: true, acceptedProblems: preU.sync.problems.map((p) => (p && p.key) || p) });
+  check(r.ok === true && r.data && r.data.removed === 1, 'guard: ...and once confirmed (and exported again), Finish goes ahead', JSON.stringify(r).slice(0, 120));
+
+  // g. Running offline by choice: fine for a clinic this laptop holds alone...
   const ev2 = localClinic('Offline Clinic');
   localPatient('Offline1');
   db.recordClinicExport(ev2.id, { patients: 1, xlsxPath: '/tmp/o.xlsx', backupPath: '/tmp/o.chbak.json' });
   db.setSyncMeta({ mode: 'offline' });
   r = await call('event:finish', { eventId: ev2.id });
   check(r.ok === true, 'guard: a clinic running offline by choice finishes without being asked about the cloud', r.error || '');
+  // ...but not for one other stations have been adding to.
+  const ev3 = localClinic('Was Shared');
+  localPatient('Shared1');
+  db.setSetting('sync_arrivals_event_' + ev3.id, '6');
+  db.recordClinicExport(ev3.id, { patients: 1, xlsxPath: '/tmp/s.xlsx', backupPath: '/tmp/s.chbak.json' });
+  r = await call('event:finish', { eventId: ev3.id });
+  check(r.ok === false && /set to run offline, but other stations have been adding/.test(r.error), 'guard: switched offline mid-clinic, a laptop that shared the clinic must still confirm', r.error);
+  r = await call('event:finish', { eventId: ev3.id, allowIncompleteSync: true, acceptedProblems: ['offline-shared'] });
+  check(r.ok === true, '...and can, once confirmed', r.error || '');
 }
 
 if (cloud) cloud.stop();

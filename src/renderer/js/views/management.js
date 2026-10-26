@@ -52,7 +52,7 @@ export function renderManagement(ctx) {
       clear(body);
       if (!st) { body.append(el('span', { class: 'subtle small' }, ['Cloud status unavailable.'])); return; }
       const pill = st.online
-        ? el('span', { class: 'pill pill--success' }, [el('span', { class: 'pill-dot' }), st.lastError ? 'Reconnecting' : (st.lastOk ? 'Online · synced ' + fmtTime(st.lastOk) : 'Online')])
+        ? el('span', { class: 'pill pill--success' }, [el('span', { class: 'pill-dot' }), st.lastError ? 'Reconnecting' : (st.caughtUp === false ? 'Online · catching up' : (st.lastOk ? 'Online · synced ' + fmtTime(st.lastOk) : 'Online'))])
         : el('span', { class: 'pill pill--neutral' }, ['Offline mode']);
       body.append(
         pill,

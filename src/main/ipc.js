@@ -247,7 +247,14 @@ function register(getMainWindow) {
   // held unsynced check-ins used to record a number lower than the clinic
   // actually saw — and the patients were gone, so it could never be corrected.
   const syncBeforeRemoving = async () => {
-    try { if (cloud.status().enabled) await cloud.syncOnce(); } catch (_e) { /* offline: proceed with local totals */ }
+    try {
+      if (!cloud.status().enabled) return { ok: true, skipped: true };
+      // A cycle already running would make syncOnce return at once, having
+      // pulled nothing — and the checks below would read the state from
+      // before it. Wait for it, then run one of our own.
+      for (let i = 0; cloud.status().running && i < 120; i++) await new Promise((r) => setTimeout(r, 500));
+      return await cloud.syncOnce();
+    } catch (e) { return { ok: false, error: e.message || String(e) }; }
   };
   // v1.14.0: and refuse while this laptop does not hold the whole clinic.
   // Finishing deletes every record of it from every station — including the
@@ -256,32 +263,60 @@ function register(getMainWindow) {
   // gone from every laptop and in no backup.
   //   - still downloading, and the cloud is reachable: wait. No override; it
   //     finishes on its own, usually in minutes.
-  //   - rows waiting for a parent, the cloud unreachable, or another station
-  //     still holding unsent records: refused unless the person confirms, on
-  //     the finish screen, that they mean to go ahead anyway.
-  const syncProblems = (c) => {
+  //   - anything else that means this laptop may be missing records: refused
+  //     unless the person confirms, on the finish screen, the problems listed
+  //     there. The go-ahead names those problems; one that appears or grows
+  //     after the confirmation is refused, and shown, before anything goes.
+  const eventOf = (eventId) => Number(eventId || db.getSetting('active_event_id')) || null;
+  const syncProblems = (c, { evId, lastSync } = {}) => {
     const out = [];
-    if (c.orphans > 0) out.push(`${c.orphans} record(s) from other stations${c.orphanXrays ? ` (${c.orphanXrays} x-ray image(s))` : ''} are still waiting for the patient they belong to`);
-    if (!c.reachable) out.push(c.lastContactAt ? `this laptop has not reached the clinic cloud since ${new Date(c.lastContactAt).toLocaleString()}${c.behind ? ', and it was still receiving records then' : ''}` : 'this laptop has not reached the clinic cloud');
+    const add = (key, text) => out.push({ key, text });
+    if (!c.online) {
+      // Running offline by choice is fine for a clinic this laptop holds
+      // alone. Not for one it has been sharing: what the other stations added
+      // since it went offline is not here, and its deletions reach them when
+      // it is next switched online.
+      if (evId && db.syncArrivals(evId) > 0) add('offline-shared', 'this laptop is set to run offline, but other stations have been adding to this clinic — anything they added since it went offline is not here');
+      return out;
+    }
+    if (c.orphans > 0) add(`orphans:${c.orphans}:${c.orphanXrays}`, `${c.orphans} record(s) from other stations${c.orphanXrays ? ` (${c.orphanXrays} x-ray image(s))` : ''} are waiting here for a patient this laptop has not received yet`);
+    if (!c.reachable) add('unreachable', c.lastContactAt ? `this laptop has not reached the clinic cloud since ${new Date(c.lastContactAt).toLocaleString()}${c.behind ? ', and it was still receiving records then' : ''}` : 'this laptop has not reached the clinic cloud');
+    else if (lastSync && lastSync.ok === false && !lastSync.skipped && !lastSync.busy) add('sync-failed', `the sync just before finishing did not complete (${lastSync.error || 'unknown error'})`);
     for (const p of c.peers || []) {
       // A report can be old: the station that matters most is one that went
       // offline holding unsent x-rays, and it cannot update its report.
       const when = p.at ? new Date(p.at).toLocaleString() : '';
-      out.push(`${p.who || 'another station'} still has ${p.xrays ? `${p.xrays} x-ray image(s)` : 'records'} it has not sent${when ? ` (as of ${when})` : ''}`);
+      add(`peer:${p.device}:${p.xrays || 0}:${p.clinical || 0}`, `${p.who || 'another station'} still has ${p.xrays ? `${p.xrays} x-ray image(s)` : 'records'} it has not sent${when ? ` (as of ${when})` : ''}`);
     }
     return out;
   };
-  const syncGuard = (opts) => {
-    const c = cloud.syncCompleteness();
-    if (!c.online) return; // running offline by choice: this laptop is the whole clinic
-    if (c.reachable && c.behind) {
+  // Did the person's go-ahead cover this problem? Only if they were shown it,
+  // or the same thing at least as bad.
+  const covered = (key, accepted) => {
+    const [kind, ...v] = String(key).split(':');
+    return (accepted || []).some((a) => {
+      const [k, ...w] = String(a).split(':');
+      if (k !== kind) return false;
+      if (kind === 'orphans') return Number(v[0]) <= Number(w[0]) && Number(v[1]) <= Number(w[1]);
+      if (kind === 'peer') return v[0] === w[0] && Number(v[1]) <= Number(w[1]) && Number(v[2]) <= Number(w[2]);
+      return true;
+    });
+  };
+  const syncGuard = (eventId, opts = {}, lastSync = null) => {
+    const evId = eventOf(eventId);
+    const pending = db.pendingCounts(db.eventUid(evId));
+    const c = { ...cloud.syncCompleteness(), orphans: pending.rows, orphanXrays: pending.xrays };
+    if (c.online && c.reachable && c.behind) {
       throw new Error(`${c.imagesBehind ? `${c.imagesBehind} x-ray image(s)` : 'Records'} from other stations are still arriving on this laptop.`
         + ' Finishing now would delete them from every station without them being in your export.'
-        + ' Wait until the cloud badge reads “synced”, export again, then finish.');
+        + ' Wait until the cloud badge stops saying “catching up”, export again, then finish.');
     }
-    const problems = syncProblems(c);
-    if (problems.length && !(opts && opts.allowIncompleteSync === true)) {
-      throw new Error(`This laptop may not hold the whole clinic: ${problems.join('; ')}. Anything missing here is not in your export, and finishing deletes it from every station.`);
+    const problems = syncProblems(c, { evId, lastSync });
+    const accepted = opts.allowIncompleteSync === true && Array.isArray(opts.acceptedProblems) ? opts.acceptedProblems : [];
+    const open = problems.filter((p) => !covered(p.key, accepted));
+    if (open.length) {
+      throw new Error(`This laptop may not hold the whole clinic: ${open.map((p) => p.text).join('; ')}. Anything missing here is not in your export, and finishing deletes it from every station.`
+        + (accepted.length ? ' (This is new since you confirmed — look again before going ahead.)' : ''));
     }
   };
   // What is still outstanding before a clinic is closed for good. The image
@@ -289,24 +324,34 @@ function register(getMainWindow) {
   // side that can read the disk.
   handle('event:preflight', ({ eventId } = {}) => {
     const pre = db.finishPreflight(eventId);
-    const c = cloud.syncCompleteness();
+    const pending = db.pendingCounts(pre.event_uid);
+    const c = { ...cloud.syncCompleteness(), orphans: pending.rows, orphanXrays: pending.xrays };
     return {
       ...pre,
       sync: {
         ...c,
         blocked: !!(c.online && c.reachable && c.behind),
-        problems: c.online ? syncProblems(c) : [],
+        problems: syncProblems(c, { evId: pre.event_id }),
       },
     };
   });
-  handle('event:finish', async ({ eventId, allowIncompleteSync } = {}) => {
-    await syncBeforeRemoving();
-    syncGuard({ allowIncompleteSync });
+  handle('event:finish', async ({ eventId, allowIncompleteSync, acceptedProblems } = {}) => {
+    const last = await syncBeforeRemoving();
+    syncGuard(eventId, { allowIncompleteSync, acceptedProblems }, last);
     return db.finishEvent(currentUser, eventId);
   });
-  handle('event:purge', async ({ eventId, allowIncompleteSync } = {}) => {
-    await syncBeforeRemoving();
-    syncGuard({ allowIncompleteSync });
+  handle('event:purge', async ({ eventId, allowIncompleteSync, acceptedProblems } = {}) => {
+    const last = await syncBeforeRemoving();
+    syncGuard(eventId, { allowIncompleteSync, acceptedProblems }, last);
+    // The same export interlock as Finish. The Delete button is armed by an
+    // export taken on that screen, but records that reached this laptop after
+    // that export are not in it — and this deletes them from every station.
+    const pre = db.finishPreflight(eventId);
+    if (pre.needs_export) {
+      throw new Error(pre.last_export
+        ? `Export again before deleting — ${pre.arrivals_since_export} record(s) arrived from other stations after your last export, so that file does not hold them.`
+        : 'Export this clinic before deleting its patient data.');
+    }
     return db.purgeEventPatients(currentUser, eventId);
   });
   handle('reports:archived', () => db.listEventReports());

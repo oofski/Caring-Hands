@@ -4289,7 +4289,7 @@ async function main() {
     log(finishes.length === 0, 'v1.14.0: ...and nothing is finished');
 
     // b. Might not hold everything: shown in the list, then a second confirmation.
-    sync = { blocked: false, problems: ['Front <b>desk</b> still has 3 x-ray image(s) it has not sent'] };
+    sync = { blocked: false, problems: [{ key: 'peer:d2:3:0', text: 'Front <b>desk</b> still has 3 x-ray image(s) it has not sent' }] };
     root = await finishFrom();
     const body = modalBody();
     log(!!body && /Front <b>desk<\/b> still has 3 x-ray/.test(body.textContent) && !body.querySelector('li b + b, li > b ~ b'),
@@ -4303,6 +4303,8 @@ async function main() {
     await press(/Finish anyway/); root.remove();
     log(finishes.length === 1 && finishes[0].allowIncompleteSync === true && finishes[0].eventId === evG.id,
       'v1.14.0: ...and only "Finish anyway" sends the go-ahead', JSON.stringify(finishes));
+    log(finishes.length === 1 && JSON.stringify(finishes[0].acceptedProblems) === '["peer:d2:3:0"]',
+      'v1.14.0: ...naming exactly the problems that were shown', JSON.stringify(finishes[0] || {}));
 
     // c. Nothing wrong: no second question, and no go-ahead sent.
     sync = { blocked: false, problems: [] };
@@ -4335,15 +4337,26 @@ async function main() {
     root = await dataView();
     log(/Still receiving/.test(modalTitle()), 'v1.14.0: Delete patient data also waits while x-rays are arriving');
     await press(/Got it/); root.remove();
-    sync = { blocked: false, problems: ['this laptop has not reached the clinic cloud'] };
+    sync = { blocked: false, problems: [{ key: 'unreachable', text: 'this laptop has not reached the clinic cloud' }] };
     root = await dataView();
     await press(/Delete the patient data/);
     log(/Delete without the rest/.test(modalTitle()), 'v1.14.0: ...and asks a second time when it may not hold everything');
     await press(/Delete anyway/); root.remove();
-    log(purges.length === 1 && purges[0].allowIncompleteSync === true, 'v1.14.0: ...sending the go-ahead only after it', JSON.stringify(purges));
+    log(purges.length === 1 && purges[0].allowIncompleteSync === true && JSON.stringify(purges[0].acceptedProblems) === '["unreachable"]', 'v1.14.0: ...sending the go-ahead only after it', JSON.stringify(purges));
+    // Records that arrived after the export that armed the button.
+    sync = { blocked: false, problems: [] };
+    preExtra = { needs_export: true, arrivals_since_export: 3 };
+    root = await dataView();
+    log(/Export this clinic again/.test(modalTitle()) && /3 record\(s\)/.test((modalBody() || {}).textContent || ''),
+      'v1.14.0: Delete patient data asks for a new export when records arrived after the one that armed it');
+    await press(/Got it/);
+    const delBtn = Array.from(root.querySelectorAll('button')).find((b) => /Delete this clinic/.test(b.textContent));
+    log(purges.length === 1 && delBtn && delBtn.disabled, '...deletes nothing, and the button disarms until the next export');
+    root.remove();
+    preExtra = {};
 
     // f. The Management cloud card.
-    window.api.cloudStatus = async () => ({ ok: true, data: { enabled: true, mode: 'online', online: true, url: 'http://127.0.0.1:1', hasKey: true, lastOk: '', lastError: '', pushed: 0, pulled: 0, applied: 0,
+    window.api.cloudStatus = async () => ({ ok: true, data: { enabled: true, mode: 'online', online: true, url: 'http://127.0.0.1:1', hasKey: true, lastOk: new Date().toISOString(), lastError: '', pushed: 0, pulled: 0, applied: 0, caughtUp: false,
       imagesBehind: 4, toSend: { clinical: 0, xrays: 2, bytes: 3 * 1048576 }, orphans: 3, orphansWarn: false, rowsRefused: 1,
       peers: [{ device: 'd2', who: 'Desk <i>2</i>', clinical: 0, xrays: 5, bytes: 1, at: new Date().toISOString() }] } });
     const { renderManagement } = await import('../src/renderer/js/views/management.js');
@@ -4352,6 +4365,7 @@ async function main() {
     for (let i = 0; i < 10; i++) await tick();
     const card = Array.from(mg.querySelectorAll('.card')).find((c) => /Cloud connection/.test(c.textContent));
     const ct = card ? card.textContent : '';
+    log(/Online · catching up/.test(ct), 'v1.14.0: the cloud pill says "catching up" while this laptop is behind, not "synced"', ct.slice(0, 80));
     log(/X-rays still arriving: 4/.test(ct) && /X-rays still sending: 2 \(≈3 MB\)/.test(ct) && /Waiting for their patient: 3/.test(ct) && /Refused by the cloud: 1/.test(ct),
       'v1.14.0: the Management cloud card shows what is still arriving, still sending, waiting and refused', ct.slice(0, 200));
     log(/Desk <i>2<\/i>: 5 x-ray\(s\) still to send/.test(ct) && !(card && card.querySelector('i')),

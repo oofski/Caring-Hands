@@ -493,7 +493,7 @@ export function renderAdmin(ctx, params = {}) {
               title: 'Still receiving this clinic',
               body: `${pre.sync.imagesBehind ? `<b>${pre.sync.imagesBehind} x-ray image(s)</b>` : 'Records'} from other stations are still arriving on this laptop.`
                 + ' Finishing now would delete them from every station without them being in your export.'
-                + '<br><br>Wait until the cloud badge reads <b>synced</b>, export again, then finish.',
+                + '<br><br>Wait until the cloud badge stops saying <b>catching up</b>, export again, then finish.',
               confirmText: 'Got it',
             });
             return;
@@ -529,7 +529,7 @@ export function renderAdmin(ctx, params = {}) {
             pre.xrays ? `<li><b>${pre.xrays} x-ray image(s) will be destroyed</b> — the kept report holds a count, never the films.</li>` : '',
             waiting ? `<li><b>${waiting} image(s) are still waiting in the x-ray import folder</b> — attach them to a patient first or they belong to nobody.</li>` : '',
             pre.changes_since_export ? `<li><b>${pre.changes_since_export} change(s) recorded since the last export</b> — export again so the backup matches what is here.</li>` : '',
-            ...((pre.sync && pre.sync.problems) || []).map((p) => `<li><b>This laptop may not hold the whole clinic:</b> ${esc(p)}.</li>`),
+            ...((pre.sync && pre.sync.problems) || []).map((p) => `<li><b>This laptop may not hold the whole clinic:</b> ${esc(p.text)}.</li>`),
           ].filter(Boolean).join('');
           const exp = pre.last_export;
           const ok = await modal({
@@ -549,7 +549,7 @@ export function renderAdmin(ctx, params = {}) {
             const sure = await modal({
               title: 'Finish without the rest of the clinic?',
               body: 'This laptop may not hold every record of this clinic:'
-                + `<ul style="margin:var(--space-2) 0 0; padding-left:1.2em">${incomplete.map((p) => `<li>${esc(p)}</li>`).join('')}</ul>`
+                + `<ul style="margin:var(--space-2) 0 0; padding-left:1.2em">${incomplete.map((p) => `<li>${esc(p.text)}</li>`).join('')}</ul>`
                 + '<br>Anything missing here is <b>not in your export</b>, and finishing deletes it from every station for good.'
                 + ' The safe course is to cancel, let this laptop finish syncing, and export again.',
               confirmText: 'Finish anyway',
@@ -559,7 +559,9 @@ export function renderAdmin(ctx, params = {}) {
             if (!sure) return;
           }
           try {
-            const r = await api.finishEvent(e.id, incomplete.length ? { allowIncompleteSync: true } : undefined);
+            // The go-ahead names exactly what was shown: anything new or worse
+            // by the time it is checked is refused and shown first.
+            const r = await api.finishEvent(e.id, incomplete.length ? { allowIncompleteSync: true, acceptedProblems: incomplete.map((p) => p.key) } : undefined);
             toast(`“${e.name}” finished — report kept, ${r.removed} patient record(s) removed.`, 'success');
             paint();
           } catch (err) { toast(err.message, 'error'); }
@@ -790,7 +792,22 @@ export function renderAdmin(ctx, params = {}) {
             title: 'Still receiving this clinic',
             body: `${pre.sync.imagesBehind ? `<b>${pre.sync.imagesBehind} x-ray image(s)</b>` : 'Records'} from other stations are still arriving on this laptop.`
               + ' Deleting now would remove them from every station without them being in your export.'
-              + '<br><br>Wait until the cloud badge reads <b>synced</b>, export again, then delete.',
+              + '<br><br>Wait until the cloud badge stops saying <b>catching up</b>, export again, then delete.',
+            confirmText: 'Got it',
+          });
+          return;
+        }
+        // The export that armed this button may be older than records that have
+        // reached this laptop since; the main process refuses then, so say it
+        // here and disarm the button until a fresh export.
+        if (pre && pre.needs_export) {
+          exported = null; purgeBtn.disabled = true;
+          purgeBtn.title = 'Export first — this cannot be undone';
+          await modal({
+            title: pre.last_export ? 'Export this clinic again' : 'Export this clinic first',
+            body: pre.last_export
+              ? `<b>${pre.arrivals_since_export} record(s)</b> arrived from other stations after your last export, so that file does not hold them — and deleting removes them from every station.<br><br>Use “Export clinic (Excel + backup)” again, then delete.`
+              : 'Use “Export clinic (Excel + backup)” first, then delete.',
             confirmText: 'Got it',
           });
           return;
@@ -808,7 +825,7 @@ export function renderAdmin(ctx, params = {}) {
           const sure = await modal({
             title: 'Delete without the rest of the clinic?',
             body: 'This laptop may not hold every record of this clinic:'
-              + `<ul style="margin:var(--space-2) 0 0; padding-left:1.2em">${incomplete.map((p) => `<li>${esc(p)}</li>`).join('')}</ul>`
+              + `<ul style="margin:var(--space-2) 0 0; padding-left:1.2em">${incomplete.map((p) => `<li>${esc(p.text)}</li>`).join('')}</ul>`
               + '<br>Anything missing here is <b>not in your export</b>, and deleting removes it from every station for good.',
             confirmText: 'Delete anyway',
             cancelText: 'Cancel',
@@ -818,7 +835,7 @@ export function renderAdmin(ctx, params = {}) {
         }
         purgeBtn.disabled = true;
         try {
-          const r = await api.purgeEvent(undefined, incomplete.length ? { allowIncompleteSync: true } : undefined);
+          const r = await api.purgeEvent(undefined, incomplete.length ? { allowIncompleteSync: true, acceptedProblems: incomplete.map((p) => p.key) } : undefined);
           toast(`${r.removed} patient record(s) removed from this computer and the cloud.`, 'success');
           exported = null; paint();
         } catch (e) { toast(e.message, 'error'); purgeBtn.disabled = false; }
