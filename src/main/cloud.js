@@ -310,6 +310,26 @@ async function pushOnce(base, key, deviceId, ctx) {
   return { pushed, more, note };
 }
 
+// The clinic this laptop is on, sent with its report so only that clinic's
+// stations are named when they go quiet.
+function activeEventUid() {
+  try { return db.eventUid(Number(db.getSetting('active_event_id')) || null) || ''; } catch (_e) { return ''; }
+}
+
+// Closing (or switching to offline): send a last report saying so, with what
+// is still outstanding, so the other laptops' Finish does not mistake a laptop
+// shut down with everything sent for one that went quiet holding x-rays. Best
+// effort, three seconds at most; a server older than v1.14 has nowhere to put it.
+async function signOff() {
+  const m = db.getSyncMeta();
+  if (!m.enabled || !m.url || !m.key || serverProto !== 2) return { ok: false, skipped: true };
+  const clinicalLeft = db.collectSyncRows(1, { skip: ['xray'] }).rows.length;
+  const b = { c: clinicalLeft ? 1 : 0, ...xrayBacklogNow(), w: String(os.hostname() || '').slice(0, 60), e: activeEventUid() };
+  const run = httpJson('POST', trimUrl(m.url) + '/v1/signoff', m.key, { device_id: db.ensureDeviceId(), backlog: b }).catch(() => null);
+  const r = await Promise.race([run, new Promise((res) => setTimeout(() => res(null), 3000))]);
+  return { ok: !!(r && r.ok) };
+}
+
 function xrayBacklogNow() {
   try { const b = db.xrayBacklog(); return { x: b.count || 0, b: b.bytes || 0, t: b.stuck || 0 }; } catch (_e) { return { x: 0, b: 0, t: 0 }; }
 }
@@ -479,15 +499,26 @@ async function pullLegacy(base, key, ctx) {
 // cursor so the Finish guard can use it even after the network has gone.
 function completeness(proto, behind, r, carry) {
   const x = r && r.lanes && r.lanes.x;
+  // The other stations' reports come only with the new protocol. A page pulled
+  // the old way keeps the last ones for ten minutes (a passing fallback), and
+  // after that has none — which the Finish guard then says, rather than read
+  // "no reports" as "nothing outstanding".
+  let peers = [], peersAt = null;
+  if (r && Array.isArray(r.peers)) { peers = r.peers.slice(0, 200); peersAt = Date.now(); }
+  else {
+    const prev = lastPull || db.getSyncState();
+    if (prev && prev.peersAt && Date.now() - prev.peersAt < PEERS_KEEP_MS) { peers = prev.peers || []; peersAt = prev.peersAt; }
+  }
   return {
     at: new Date().toISOString(), proto, behind: !!behind,
     imagesBehind: x && x.more ? Number(x.left) || 0 : 0,
     imagesBehindExact: x ? x.left_exact !== false : true,
     orphans: carry.length,
     orphanXrays: carry.filter((row) => row.entity === 'xray').length,
-    peers: (r && Array.isArray(r.peers)) ? r.peers.slice(0, 20) : [],
+    peers, peersAt,
   };
 }
+const PEERS_KEEP_MS = 10 * 60 * 1000;
 
 // Is this a page in the new protocol, and a sane one? A lane cursor that went
 // BACKWARDS, or past the server's own counter, means something is wrong on the
@@ -548,7 +579,7 @@ async function pullV2(base, key, ctx) {
       since_e: String(lanes.e), since_p: String(lanes.p), since_k: String(lanes.k), since_x: String(lanes.x),
       rows: '1000', max_bytes: String(Math.round(pullBytes)),
       origin: echoToken, echo_min: String(echoMin),
-      device: ctx.deviceId, backlog: JSON.stringify({ c: backlog.c, x: backlog.x, b: backlog.b, t: backlog.t || 0, w: who }),
+      device: ctx.deviceId, backlog: JSON.stringify({ c: backlog.c, x: backlog.x, b: backlog.b, t: backlog.t || 0, w: who, e: activeEventUid() }),
     });
     const info = {};
     let r;
@@ -675,7 +706,9 @@ async function syncOnce() {
     db.setSyncMeta({ lastOk: new Date().toISOString(), lastError: '' });
     return { ok: true, pushed, pulled, applied, deleted, again };
   } catch (e) {
-    const msg = (pushError ? (pushError.message || String(pushError)) + ' · ' : '') + (e.message || String(e));
+    const pullMsg = e.message || String(e);
+    const pushMsg = pushError ? (pushError.message || String(pushError)) : '';
+    const msg = pushMsg && pushMsg !== pullMsg ? `${pushMsg} · ${pullMsg}` : pullMsg;
     db.setSyncMeta({ lastError: msg });
     return { ok: false, pullFailed: true, error: msg };
   } finally {
@@ -706,6 +739,7 @@ function status() {
     running, ...lastResult, xraysTooBig,
     // v1.14.0
     protocol: serverProto === 2 ? 'lanes' : serverProto === 1 ? 'single' : 'unknown',
+    reachable: Date.now() - lastPullOkAt < REACHABLE_MS,
     caughtUp: st ? !st.behind : null,
     imagesBehind: st ? st.imagesBehind || 0 : 0,
     imagesBehindExact: st ? st.imagesBehindExact !== false : true,
@@ -737,11 +771,18 @@ function syncCompleteness() {
     orphans: pending.rows,
     orphanXrays: pending.xrays,
     peers: (st && st.peers) || [],
+    // When those reports were received, by this laptop's clock: a report's age
+    // is the server's measure at that moment plus the time since.
+    peersAt: (st && st.peersAt) || null,
+    proto: st ? st.proto : null,
   };
 }
 
 function applyConfig({ url, key, enabled, mode, online }) {
   const before = trimUrl(db.getSyncMeta().url);
+  const wasOnline = db.getSyncMeta().enabled;
+  const goingOffline = wasOnline && (mode === 'offline' || online === false || enabled === false);
+  if (goingOffline) signOff().catch(() => {}); // sent with the settings still online
   const patch = {};
   if (url !== undefined) patch.url = trimUrl(url);
   if (key !== undefined) patch.key = key;
@@ -812,5 +853,5 @@ function _resetTuning() {
 
 module.exports = {
   start, stop, syncOnce, resyncAll, testConnection, status, applyConfig, normalizeUrl: trimUrl,
-  syncCompleteness, rotateEchoToken, _tuning, _resetTuning,
+  syncCompleteness, rotateEchoToken, signOff, _tuning, _resetTuning,
 };

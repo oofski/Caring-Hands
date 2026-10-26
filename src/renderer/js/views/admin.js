@@ -8,6 +8,19 @@ import { icon } from '../icons.js';
 // cloud — going into a modal body, which is HTML.
 const esc = (v) => String(v == null ? '' : v).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
+// A window that stays up while the main process checks with the clinic cloud
+// before a removal — it can take a while on a poor connection, and a button
+// that seems to do nothing gets pressed again. Returns a function that closes it.
+function busyWindow(text) {
+  const overlay = el('div', { class: 'modal-overlay' }, [el('div', { class: 'modal-card', role: 'status', 'aria-live': 'polite' }, [
+    el('p', { style: 'margin:0' }, [text]),
+  ])]);
+  document.body.append(overlay);
+  return () => overlay.remove();
+}
+const problemList = (list) => `<ul style="margin:var(--space-2) 0 0; padding-left:1.2em">${list.map((p) => `<li>${esc(p.text)}</li>`).join('')}</ul>`;
+const goAheadFor = (pre, list) => (list.length ? { allowIncompleteSync: true, acceptedProblems: list.map((p) => p.key), checkedAt: pre.sync.checkedAt } : undefined);
+
 // Cloud-sync live-update subscription. Kept at module scope so repaints of the
 // Cloud tab can drop the previous listener before adding a new one (no stacking).
 let cloudUnsub = null;
@@ -469,16 +482,23 @@ export function renderAdmin(ctx, params = {}) {
       actions.append(el('button', {
         class: 'btn btn--soft btn--sm',
         title: 'Keep the reporting totals, remove every patient record',
-        onClick: async () => {
+        onClick: async (ev) => {
+          const button = ev && ev.currentTarget;
+          if (button) button.disabled = true;
+          try { await finishClinic(); } finally { if (button) button.disabled = false; }
+        },
+      }, [icon('checkCircle', { size: 14 }), 'Finish clinic']));
+      async function finishClinic() {
           // Count what is outstanding BEFORE asking. The old dialog said "this
           // cannot be undone" and nothing else — it never mentioned x-rays,
           // which are the one thing finishing a clinic destroys outright, and it
           // never noticed patients still sitting in the queue.
           let pre;
           // The preflight syncs first (see ipc.js), which can take a moment.
-          toast('Checking with the clinic cloud…', 'info');
+          const closeBusy = busyWindow('Checking with the clinic cloud before finishing…');
           try { pre = await api.finishPreflight(e.id); }
-          catch (err) { toast(err.message, 'error'); return; }
+          catch (err) { closeBusy(); toast(err.message, 'error'); return; }
+          closeBusy();
           // Films the import folder is still holding belong to nobody yet. Only
           // the main process can read the disk, so this is a separate call and a
           // best-effort one — no folder configured is not a problem.
@@ -551,24 +571,29 @@ export function renderAdmin(ctx, params = {}) {
             const sure = await modal({
               title: 'Finish without the rest of the clinic?',
               body: 'This laptop may not hold every record of this clinic:'
-                + `<ul style="margin:var(--space-2) 0 0; padding-left:1.2em">${incomplete.map((p) => `<li>${esc(p.text)}</li>`).join('')}</ul>`
+                + problemList(incomplete)
                 + '<br>Anything missing here is <b>not in your export</b>, and finishing deletes it from every station for good.'
-                + ' The safe course is to cancel, let this laptop finish syncing, and export again.',
+                + ' The safe course is to cancel, deal with what is listed, and export again.',
               confirmText: 'Finish anyway',
               cancelText: 'Cancel',
               danger: true,
             });
             if (!sure) return;
           }
+          // The go-ahead names exactly what was shown: anything new or worse by
+          // the time it is checked is refused — and shown, in a dialog, not a
+          // toast that is gone before it is read.
+          const closeWorking = busyWindow(`Finishing “${e.name}”…`);
           try {
-            // The go-ahead names exactly what was shown: anything new or worse
-            // by the time it is checked is refused and shown first.
-            const r = await api.finishEvent(e.id, incomplete.length ? { allowIncompleteSync: true, acceptedProblems: incomplete.map((p) => p.key) } : undefined);
+            const r = await api.finishEvent(e.id, goAheadFor(pre, incomplete));
+            closeWorking();
             toast(`“${e.name}” finished — report kept, ${r.removed} patient record(s) removed.`, 'success');
             paint();
-          } catch (err) { toast(err.message, 'error'); }
-        },
-      }, [icon('checkCircle', { size: 14 }), 'Finish clinic']));
+          } catch (err) {
+            closeWorking();
+            await modal({ title: 'The clinic was not finished', body: esc(err.message) + '<br><br>Nothing was deleted. Press Finish clinic again to see the current list.', confirmText: 'OK' });
+          }
+      }
       if (e.active) actions.append(el('button', { class: 'btn btn--ghost btn--sm', onClick: () => setState(e, false) }, ['Turn off']));
       else actions.append(el('button', { class: 'btn btn--ghost btn--sm', onClick: () => setState(e, true) }, ['Reactivate']));
       actions.append(el('button', { class: 'btn btn--danger btn--sm', onClick: () => delEvent(e) }, [icon('trash', { size: 14 })]));
@@ -675,10 +700,22 @@ export function renderAdmin(ctx, params = {}) {
         await api.deleteEvent(e.id, false);
         toast('Event deleted', 'success'); store.setEvent(await api.activeEvent()); paint();
       } catch (err) {
-        // Has patients — offer a forced cascade delete.
-        const force = await modal({ title: 'Permanently delete with patients?', body: `${err.message}<br><br>This will permanently delete the event <b>and all ${e.patient_count} patient record(s)</b>. This cannot be undone.`, confirmText: 'Delete everything', cancelText: 'Cancel', danger: true });
+        // Has patients — offer a forced cascade delete. It removes them from
+        // every station, so the same check as Finish (see ipc.js) first.
+        const closeBusy = busyWindow('Checking with the clinic cloud before deleting…');
+        let pre = null;
+        try { pre = await api.finishPreflight(e.id, { action: 'deleting' }); } catch (_e) { pre = null; }
+        closeBusy();
+        if (pre && pre.sync && pre.sync.blocked) {
+          await modal({ title: 'Still receiving this clinic', body: 'Records from other stations are still arriving on this laptop. Wait until the cloud badge stops saying <b>catching up</b>, then delete.', confirmText: 'Got it' });
+          return;
+        }
+        const incomplete = (pre && pre.sync && pre.sync.problems) || [];
+        const force = await modal({ title: 'Permanently delete with patients?', body: `${esc(err.message)}<br><br>This will permanently delete the event <b>and all ${e.patient_count} patient record(s)</b> from every station. This cannot be undone.`
+          + (incomplete.length ? `<br><br><b>This laptop may not hold every record of it:</b>${problemList(incomplete)}` : ''), confirmText: 'Delete everything', cancelText: 'Cancel', danger: true });
         if (!force) return;
-        try { await api.deleteEvent(e.id, true); toast('Event and patients deleted', 'success'); store.setEvent(await api.activeEvent()); paint(); } catch (e2) { toast(e2.message, 'error'); }
+        try { await api.deleteEvent(e.id, true, pre ? goAheadFor(pre, incomplete) : undefined); toast('Event and patients deleted', 'success'); store.setEvent(await api.activeEvent()); paint(); }
+        catch (e2) { await modal({ title: 'The event was not deleted', body: esc(e2.message), confirmText: 'OK' }); }
       }
     }
   }
@@ -788,8 +825,9 @@ export function renderAdmin(ctx, params = {}) {
       onClick: async () => {
         // v1.14.0: the same sync check as Finish (see ipc.js).
         let pre = null;
-        toast('Checking with the clinic cloud…', 'info');
-        try { pre = await api.finishPreflight(); } catch (_e) { pre = null; }
+        const closeBusy = busyWindow('Checking with the clinic cloud before deleting…');
+        try { pre = await api.finishPreflight(undefined, { action: 'deleting' }); } catch (_e) { pre = null; }
+        closeBusy();
         if (pre && pre.sync && pre.sync.blocked) {
           await modal({
             title: 'Still receiving this clinic',
@@ -828,7 +866,7 @@ export function renderAdmin(ctx, params = {}) {
           const sure = await modal({
             title: 'Delete without the rest of the clinic?',
             body: 'This laptop may not hold every record of this clinic:'
-              + `<ul style="margin:var(--space-2) 0 0; padding-left:1.2em">${incomplete.map((p) => `<li>${esc(p.text)}</li>`).join('')}</ul>`
+              + problemList(incomplete)
               + '<br>Anything missing here is <b>not in your export</b>, and deleting removes it from every station for good.',
             confirmText: 'Delete anyway',
             cancelText: 'Cancel',
@@ -838,7 +876,7 @@ export function renderAdmin(ctx, params = {}) {
         }
         purgeBtn.disabled = true;
         try {
-          const r = await api.purgeEvent(undefined, incomplete.length ? { allowIncompleteSync: true, acceptedProblems: incomplete.map((p) => p.key) } : undefined);
+          const r = await api.purgeEvent(undefined, goAheadFor(pre, incomplete));
           toast(`${r.removed} patient record(s) removed from this computer and the cloud.`, 'success');
           exported = null; paint();
         } catch (e) { toast(e.message, 'error'); purgeBtn.disabled = false; }

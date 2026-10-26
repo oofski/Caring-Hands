@@ -114,11 +114,15 @@ function refreshCloudBadge() {
     if (!st || badge !== cloudBadgeNode) return;
     clear(badge);
     if (st.online) {
-      // "Catching up" wins over "reconnecting": Finish clinic tells people to
-      // wait for it to go, and an upload error alone does not mean this laptop
-      // has stopped receiving.
+      // "Catching up" only while downloads are actually arriving (Finish
+      // clinic tells people to wait for it to go); an upload error alone does
+      // not hide it, but a laptop that has stopped receiving says
+      // "reconnecting" whatever it was in the middle of.
+      const receiving = st.reachable !== false;
       badge.append(el('span', { class: 'offline-dot', style: 'background:var(--success, #2f8f66)' }),
-        st.caughtUp === false ? 'Cloud · catching up' : (st.lastError ? 'Cloud · reconnecting' : (st.lastOk ? 'Cloud · synced' : 'Cloud · online')));
+        st.lastError && !receiving ? 'Cloud · reconnecting'
+          : st.caughtUp === false ? 'Cloud · catching up'
+            : st.lastError ? 'Cloud · reconnecting' : (st.lastOk ? 'Cloud · synced' : 'Cloud · online'));
     } else {
       badge.append(el('span', { class: 'offline-dot', style: 'background:var(--text-subtle)' }), 'Offline mode');
     }

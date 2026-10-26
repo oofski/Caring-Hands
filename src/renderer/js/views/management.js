@@ -52,7 +52,7 @@ export function renderManagement(ctx) {
       clear(body);
       if (!st) { body.append(el('span', { class: 'subtle small' }, ['Cloud status unavailable.'])); return; }
       const pill = st.online
-        ? el('span', { class: 'pill pill--success' }, [el('span', { class: 'pill-dot' }), st.caughtUp === false ? 'Online · catching up' : (st.lastError ? 'Reconnecting' : (st.lastOk ? 'Online · synced ' + fmtTime(st.lastOk) : 'Online'))])
+        ? el('span', { class: 'pill pill--success' }, [el('span', { class: 'pill-dot' }), st.lastError && st.reachable === false ? 'Reconnecting' : st.caughtUp === false ? 'Online · catching up' : (st.lastError ? 'Reconnecting' : (st.lastOk ? 'Online · synced ' + fmtTime(st.lastOk) : 'Online'))])
         : el('span', { class: 'pill pill--neutral' }, ['Offline mode']);
       body.append(
         pill,
@@ -80,7 +80,7 @@ export function renderManagement(ctx) {
             [`Refused by the cloud: ${st.rowsRefused}`])
           : null,
         ...((st.online && st.peers) || []).map((p) => el('span', { class: 'pill pill--neutral', title: 'Another station that still has records it has not uploaded.' },
-          [`${p.who || 'Another station'}: ${p.xrays ? `${p.xrays} x-ray(s)` : 'records'} still to send`])),
+          [`${p.who || 'Another station'}: ${p.xrays ? `${p.xrays} x-ray(s) still to send` : p.clinical ? 'records still to send' : `${p.stuck} record(s) the cloud cannot take`}`])),
         el('button', { class: 'btn btn--ghost btn--sm', onClick: async () => { try { await api.cloudSyncNow(); toast('Sync run', 'success'); paint(); } catch (e) { toast(e.message, 'error'); } } }, [icon('refresh', { size: 14 }), 'Sync now']),
         st.url ? el('button', { class: 'btn btn--ghost btn--sm', title: 'Open the server health page in your browser', onClick: () => api.openExternal(String(st.url).replace(/\/+$/, '') + '/health') }, [icon('globe', { size: 14 }), 'Open server page']) : el('span'),
       );

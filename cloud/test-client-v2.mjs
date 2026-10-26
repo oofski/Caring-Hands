@@ -978,6 +978,7 @@ if (!fs.existsSync(path.join(SRC, 'ipc.js'))) {
   const shown = pre2.sync.problems.map((p) => (p && p.key) || p);
   answer.peers = [{ device: 'desk-2', who: 'Front <desk>', clinical: 0, xrays: 5, bytes: 1500000, at: new Date().toISOString() },
     { device: 'xray-1', who: 'XRAY-LAPTOP', clinical: 0, xrays: 25, bytes: 9e6, at: new Date().toISOString() }];
+  await idle(); await sync(); // the four-second timer picks the new reports up
   r = await call('event:finish', { eventId: ev.id, allowIncompleteSync: true, acceptedProblems: shown });
   check(r.ok === false && /XRAY-LAPTOP still has 25/.test(r.error) && /new since you confirmed/.test(r.error), 'guard: a go-ahead does not cover a problem that appeared after it was given', r.error);
 
@@ -994,6 +995,7 @@ if (!fs.existsSync(path.join(SRC, 'ipc.js'))) {
   answer.delayMs = 0;
   check(r.ok === false && /DESK-3/.test(r.error) && answer.pulls > pullsBefore, 'guard: with a sync already running, Finish/Delete waits for it and syncs again before deciding', r.ok ? 'it went ahead' : r.error);
   answer.peers = [];
+  await idle(); await sync(); // as the four-second timer would
 
   // d2. A failed UPLOAD is not a reason to refuse: this laptop's own records
   //     are in its own export. A failed DOWNLOAD is, and it can be confirmed.
@@ -1021,16 +1023,30 @@ if (!fs.existsSync(path.join(SRC, 'ipc.js'))) {
   check((preOld.sync.problems || []).some((p) => /OLD-DESK.*older version/.test(p.text)), 'guard: a station put back on an older version is named, and the screen says why its count may be stale', JSON.stringify(preOld.sync.problems));
   // A station holding images the cloud can never take: they are on no other laptop.
   const ago = (min) => new Date(Date.now() - min * 60000).toISOString();
-  answer.peers = [{ device: 'big-1', who: 'BIG-XRAY', clinical: 0, xrays: 0, stuck: 2, bytes: 0, at: ago(1) },
-    { device: 'quiet-1', who: 'QUIET-DESK', clinical: 0, xrays: 0, stuck: 0, bytes: 0, at: ago(40) },
-    { device: 'fresh-1', who: 'FRESH-DESK', clinical: 0, xrays: 0, stuck: 0, bytes: 0, at: ago(2) },
-    { device: 'old-2', who: '', clinical: 0, xrays: 0, stuck: 0, bytes: 0, at: ago(3), older: true }];
+  const evUidG = raw.prepare('SELECT uid FROM events WHERE id = ?').get(ev.id).uid;
+  const peer = (device, who, min, extra = {}) => ({ device, who, clinical: 0, xrays: 0, stuck: 0, bytes: 0, at: ago(min), age: min * 60000, ev: evUidG, ...extra });
+  answer.peers = [peer('big-1', 'BIG-XRAY', 1, { stuck: 2 }), peer('quiet-1', 'QUIET-DESK', 40), peer('fresh-1', 'FRESH-DESK', 2),
+    peer('old-2', '', 3, { older: true, ev: '' }), peer('off-1', 'CLOSED-DESK', 40, { off: true }), peer('other-1', 'OTHER-CLINIC', 40, { ev: 'some-other-clinic' })];
   await idle(); await sync();
   const preP = (await call('event:preflight', { eventId: ev.id, sync: false })).data;
   const texts = (preP.sync.problems || []).map((p) => p.text).join(' | ');
   check(/BIG-XRAY holds 2 record\(s\) too large/.test(texts), 'guard: a station holding images the cloud can never take is named — they are on no other laptop', texts);
   check(/QUIET-DESK has not been heard from since/.test(texts) && !/FRESH-DESK/.test(texts), 'guard: a station not heard from for a while is named (it may be working offline), one that checked in just now is not', texts);
-  check(/A laptop on an older version of the app cannot report what it has not sent/.test(texts), 'guard: a laptop on an older version is named as unable to report', texts);
+  check(!/CLOSED-DESK/.test(texts) && !/OTHER-CLINIC/.test(texts), 'guard: ...but not one that signed off when it was closed, nor one on another clinic', texts);
+  check(/a laptop on an older version of the app \(id old-2\) cannot report what it has not sent/.test(texts), 'guard: a laptop on an older version is named as unable to report, with an id to tell it apart', texts);
+  // A station about to cross the 15 minutes is judged as of the screen the person confirmed on.
+  const evE = localClinic('Edge Clinic');
+  localPatient('Edge1');
+  db.recordClinicExport(evE.id, { patients: 1, xlsxPath: '/tmp/e.xlsx', backupPath: '/tmp/e.chbak.json' });
+  const evEUid = (db.collectSyncRows(1), raw.prepare('SELECT uid FROM events WHERE id = ?').get(evE.id).uid);
+  answer.peers = [peer('edge-1', 'EDGE-DESK', 14.98, { ev: evEUid })];
+  await idle(); await sync();
+  const preEdge = (await call('event:preflight', { eventId: evE.id, sync: false })).data;
+  await sleep(1500);
+  const shownEdge = (preEdge.sync.problems || []).map((p) => p.key);
+  const late = await call('event:finish', { eventId: evE.id, allowIncompleteSync: true, acceptedProblems: shownEdge });
+  const onTime = await call('event:finish', { eventId: evE.id, allowIncompleteSync: true, acceptedProblems: shownEdge, checkedAt: preEdge.sync.checkedAt });
+  check(late.ok === false && /EDGE-DESK/.test(late.error) && onTime.ok === true, 'guard: a station crossing the 15 minutes between the screen and the go-ahead does not make the go-ahead stale', JSON.stringify({ late: late.ok, onTime: onTime.ok, err: onTime.error || '' }));
   answer.peers = [];
   await idle(); await sync();
   // A single patient's delete waits while images are arriving, too.
@@ -1049,11 +1065,18 @@ if (!fs.existsSync(path.join(SRC, 'ipc.js'))) {
   const evDel = localClinic('Delete Me');
   localPatient('DeleteMe1');
   answer.more = true; answer.xMore = true; answer.xLeft = 3;
+  await idle(); await sync();
   r = await call('events:delete', { id: evDel.id, force: true });
   check(r.ok === false && /still arriving/.test(r.error), 'guard: deleting a clinic with patients waits while records are still arriving', r.error);
   answer.more = false; answer.xMore = false; answer.xLeft = 0;
+  answer.peers = [peer('quiet-del', 'QUIET-AT-DELETE', 40, { ev: (db.collectSyncRows(1), raw.prepare('SELECT uid FROM events WHERE id = ?').get(evDel.id).uid) })];
+  await idle(); await sync();
   r = await call('events:delete', { id: evDel.id, force: true });
-  check(r.ok === true, '...and goes ahead once they are here', r.error || '');
+  check(r.ok === false && /QUIET-AT-DELETE/.test(r.error) && /deleting deletes it/.test(r.error), 'guard: deleting a clinic names a quiet station of it, worded for deleting', r.error);
+  const preDel = (await call('event:preflight', { eventId: evDel.id, sync: false, action: 'deleting' })).data;
+  r = await call('events:delete', { id: evDel.id, force: true, allowIncompleteSync: true, acceptedProblems: preDel.sync.problems.map((p) => p.key), checkedAt: preDel.sync.checkedAt });
+  answer.peers = [];
+  check(r.ok === true, '...and goes ahead once confirmed', r.error || '');
 
   // e. The cloud cannot be reached.
   await new Promise((r2) => srv.close(r2));
@@ -1067,8 +1090,8 @@ if (!fs.existsSync(path.join(SRC, 'ipc.js'))) {
   r = await call('event:purge', { eventId: ev.id, allowIncompleteSync: true, acceptedProblems: preU.sync.problems.map((p) => (p && p.key) || p) });
   check(r.ok === false && /Export again before deleting — 4 record/.test(r.error), 'guard: Delete patient data refuses when records arrived after the export', r.error);
   db.recordClinicExport(ev.id, { patients: 1, xlsxPath: '/tmp/g2.xlsx', backupPath: '/tmp/g2.chbak.json' });
-  r = await call('event:finish', { eventId: ev.id, allowIncompleteSync: true, acceptedProblems: preU.sync.problems.map((p) => (p && p.key) || p) });
-  check(r.ok === true && r.data && r.data.removed === 1, 'guard: ...and once confirmed (and exported again), Finish goes ahead', JSON.stringify(r).slice(0, 120));
+  r = await call('event:finish', { eventId: ev.id, allowIncompleteSync: true, acceptedProblems: preU.sync.problems.map((p) => String((p && p.key) || p).replace(/^unreachable$/, 'sync-failed')) });
+  check(r.ok === true && r.data && r.data.removed === 1, 'guard: ...and once confirmed (and exported again), Finish goes ahead — a go-ahead for a failed download also covers the cloud going out of reach a minute later', JSON.stringify(r).slice(0, 160));
 
   // g. Running offline by choice: fine for a clinic this laptop holds alone...
   const ev2 = localClinic('Offline Clinic');
@@ -1086,6 +1109,20 @@ if (!fs.existsSync(path.join(SRC, 'ipc.js'))) {
   check(r.ok === false && /set to run offline, but other stations have been adding/.test(r.error), 'guard: switched offline mid-clinic, a laptop that shared the clinic must still confirm', r.error);
   r = await call('event:finish', { eventId: ev3.id, allowIncompleteSync: true, acceptedProblems: ['offline-shared'] });
   check(r.ok === true, '...and can, once confirmed', r.error || '');
+
+  // i. A clinic cloud that cannot tell this laptop about the other stations
+  //    (older than v1.14): Finish says so, rather than read silence as "all sent".
+  {
+    const oldSrv = await startServer({ workerPath: OLD_WORKER });
+    await freshLaptop(oldSrv.url); // a laptop that has only ever known this server
+    await call('auth:login', { username: 'admin', password: 'admin' });
+    const evN = localClinic('No Reports');
+    await sync(); await sync();
+    const preN = (await call('event:preflight', { eventId: evN.id, sync: false })).data;
+    check((preN.sync.problems || []).some((p) => p.key === 'no-reports'), 'guard: on a clinic cloud that does not report the other stations, Finish says so and asks to check them', JSON.stringify(preN.sync.problems));
+    db.setSyncMeta({ mode: 'offline' });
+    await oldSrv.close();
+  }
 
   // h. The export counts what had arrived when its file was built: a row that
   //    syncs in while the save dialog is open is not in that file.

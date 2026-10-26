@@ -31,7 +31,7 @@ export const api = {
   setActiveEvent: (id) => call('eventsSetActive', id),
   setEventState: (id, active) => call('eventsSetState', { id, active }),
   setEventPrereg: (id, open) => call('eventsSetPrereg', { id, open }),
-  deleteEvent: (id, force) => call('eventsDelete', { id, force }),
+  deleteEvent: (id, force, opts) => call('eventsDelete', { id, force, ...(opts || {}) }),
 
   createPatient: (p) => call('patientsCreate', p),
   updatePatient: (p) => call('patientsUpdate', p),
@@ -104,7 +104,7 @@ export const api = {
   // opts.allowIncompleteSync: the person has confirmed finishing although this
   // laptop may not hold the whole clinic (see the guard in ipc.js).
   finishEvent: (eventId, opts) => call('eventFinish', { eventId, ...(opts || {}) }),
-  finishPreflight: (eventId) => call('eventPreflight', { eventId }),
+  finishPreflight: (eventId, opts) => call('eventPreflight', { eventId, ...(opts || {}) }),
   purgeEvent: (eventId, opts) => call('eventPurge', { eventId, ...(opts || {}) }),
   archivedReports: () => call('reportsArchived'),
   reportRollup: (eventId) => call('reportsRollup', { eventId }),

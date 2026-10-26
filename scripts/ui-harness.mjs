@@ -4312,6 +4312,35 @@ async function main() {
     await press(/Finish clinic & remove/); root.remove();
     log(finishes.length === 2 && finishes[1].allowIncompleteSync === undefined, 'v1.14.0: with nothing outstanding, Finish asks once and sends no go-ahead', JSON.stringify(finishes[1] || {}));
 
+    // c2. While the check runs the button is disabled and a window says what is
+    //     happening; a refusal comes back as a dialog, not a toast.
+    {
+      sync = { blocked: false, problems: [] };
+      let release;
+      const slow = new Promise((r) => { release = r; });
+      const realPre = window.api.eventPreflight;
+      window.api.eventPreflight = async (p) => { await slow; return realPre(p); };
+      const realFin = window.api.eventFinish;
+      window.api.eventFinish = async () => ({ ok: false, error: 'This laptop may not hold the whole clinic: SOMEONE has 2 x-ray image(s) it has not sent. (This is new since you confirmed — look again before going ahead.)' });
+      root = renderAdmin({ navigate: () => {}, toast: () => {}, store: storeG }, { section: 'events' });
+      document.body.append(root);
+      for (let i = 0; i < 8; i++) await tick();
+      const row = Array.from(root.querySelectorAll('tr')).find((tr) => /Guard Screen/.test(tr.textContent));
+      const fbtn = row && Array.from(row.querySelectorAll('button')).find((b) => /Finish clinic/.test(b.textContent));
+      fbtn.click();
+      for (let i = 0; i < 4; i++) await tick();
+      const busyShown = Array.from(document.querySelectorAll('.modal-card')).some((c) => /Checking with the clinic cloud/.test(c.textContent));
+      log(fbtn.disabled === true && busyShown, 'v1.14.0: while Finish checks with the cloud, the button is disabled and a window says so');
+      release();
+      await press(/Finish clinic & remove/);
+      for (let i = 0; i < 8; i++) await tick();
+      log(/was not finished/.test(modalTitle()) && /SOMEONE/.test((modalBody() || {}).textContent || ''), 'v1.14.0: a refusal comes back as a dialog naming what is new');
+      await press(/^OK$/);
+      log(fbtn.disabled === false, '...and the button is usable again');
+      window.api.eventPreflight = realPre; window.api.eventFinish = realFin;
+      root.remove();
+    }
+
     // d. Records arrived after the export.
     preExtra = { needs_export: true, arrivals_since_export: 2 };
     root = await finishFrom();

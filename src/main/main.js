@@ -92,7 +92,15 @@ app.whenReady().then(() => {
   });
 });
 
-app.on('window-all-closed', () => {
+// v1.14.0: tell the clinic cloud this laptop is closing (and what, if
+// anything, it still has to send) before the database closes — three seconds
+// at most. See cloud.signOff.
+let signedOff = false;
+app.on('window-all-closed', async () => {
+  if (!signedOff) {
+    signedOff = true;
+    try { await require('./cloud').signOff(); } catch (_e) { /* closing anyway */ }
+  }
   db.close();
   if (process.platform !== 'darwin') app.quit();
 });

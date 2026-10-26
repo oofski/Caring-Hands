@@ -3877,13 +3877,25 @@ function xrayBacklog() {
   // stuck: held here and never going to the cloud — too big for it, or refused
   // by it (chart rows too). They exist on this laptop and nowhere else, so the
   // other laptops are told, and their Finish says so.
-  let count = 0, bytes = 0, stuck = Object.keys(refused).filter((k) => !k.startsWith('xrays:')).length;
+  // A refused chart row counts only while it still exists with the content
+  // that was refused; an entry for a row since edited, sent or deleted is
+  // dropped (it used to be reported for ever, and named on every Finish).
+  let count = 0, bytes = 0, stuck = 0, pruned = false;
+  for (const k of Object.keys(refused)) {
+    if (k.startsWith('xrays:')) continue;
+    const [table, uid] = k.split(':');
+    let row = null;
+    try { row = /^[a-z_]+$/.test(table) ? db.prepare(`SELECT content_rev FROM ${table} WHERE uid = ?`).get(uid) : null; } catch (_e) { row = null; }
+    if (row && row.content_rev === refused[k]) stuck++;
+    else { delete refused[k]; pruned = true; }
+  }
   for (const { id, uid, sig: kept } of ids) {
     if (kept && refused[`xrays:${uid}`] === kept) { stuck++; continue; } // refused by the cloud; will not be sent
     const n = (size.get(id) || {}).size || 0;
     if (n > XRAY_SYNC_MAX_CHARS) { stuck++; continue; } // can never be sent
     count++; bytes += n;
   }
+  if (pruned) setSetting('cloud_refused', JSON.stringify(refused));
   return { count, bytes, stuck };
 }
 
